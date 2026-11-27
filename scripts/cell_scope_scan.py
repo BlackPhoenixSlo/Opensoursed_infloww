@@ -89,6 +89,10 @@ JOBS = {
     "link-figures-prewarm": ("model", "registry", "per-Creator link figures"),
     "proxy-health-probe": ("cell_local", "none", "probes this Relay's proxies"),
     "clock-in-missed": ("agency", "db", "agency shifts and clock events; control Cell only"),
+    "leak-watch-sync": ("agency", "db", "pushes each Agency's Leak watches to the removal service; never started in "
+                                        "cell mode (leak_tracker.jobs_on)"),
+    "leak-watch-tombstones": ("agency", "db", "lands each Agency's Leak watch deletes at the removal service; never "
+                                              "started in cell mode (leak_tracker.jobs_on)"),
     "push-send": ("cell_local", "none", "prunes sent push rows on this Relay"),
     "persist-worker": ("cell_local", "none", "drains this Relay's inbound event queue"),
     "vault-sweep": ("cell_local", "none", "vault spool sweep on this Relay"),

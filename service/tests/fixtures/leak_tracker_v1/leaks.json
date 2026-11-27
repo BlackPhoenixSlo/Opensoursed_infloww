@@ -1,0 +1,47 @@
+{
+  "method": "GET",
+  "path": "/v1/leaks?watch_id=w_miavale_0001&watch_id=w_rowanash_0002&limit=2",
+  "request": null,
+  "response": {
+    "leaks": [
+      {
+        "came_back": false,
+        "first_seen_at": "2026-11-27T04:02:00Z",
+        "found_on_first_scan": false,
+        "kind": "page",
+        "last_probe_at": null,
+        "last_up_at": null,
+        "leak_id": "lk_0004",
+        "leak_site": "example-leaks.test",
+        "origin_status": null,
+        "pill": "not_checked",
+        "sources": [
+          "google_web"
+        ],
+        "title": "miavale set 2",
+        "url": "https://pics.example-leaks.test/miavale/set-2",
+        "watch_id": "w_miavale_0001"
+      },
+      {
+        "came_back": false,
+        "first_seen_at": "2026-11-20T09:06:00Z",
+        "found_on_first_scan": true,
+        "kind": "mega",
+        "last_probe_at": null,
+        "last_up_at": null,
+        "leak_id": "lk_0003",
+        "leak_site": "example-index.test",
+        "origin_status": null,
+        "pill": "listed",
+        "sources": [
+          "mega_index"
+        ],
+        "title": "miavale folder",
+        "url": "https://mega.example-index.test/folder/miavale",
+        "watch_id": "w_miavale_0001"
+      }
+    ],
+    "next_cursor": "MjAyNi0xMS0yMFQwOTowNjowMFp8bGtfMDAwMw"
+  },
+  "status": 200
+}

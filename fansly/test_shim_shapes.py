@@ -360,7 +360,54 @@ def main() -> int:
           "subs: iter_online_subscribers yields the online fan", fails)
     check(sp.subscription_counts() == {"active": 1, "expired": 0, "all": 1},
           "subs: counts come off stats", fails)
+    check("renew" not in fans[0]["subscribedOnData"] and fans[0]["fanslySubscription"]["autoRenew"] == 1,
+          f"subs: no renew key, raw autoRenew passes through, got {fans[0]['subscribedOnData']}", fails)
+    check(sp.subscribers(type="active", limit=10)["hasMore"] is False,
+          "subs: a roster whose ids match totalActive is complete", fails)
     print("subscribers: fixture row reshaped to OF's fan object; online walk works")
+
+    expired = json.loads((HERE / "fixtures" / "subscribers_expired.json").read_text())
+    gone_fan = expired["subscriptions"][0]["subscriberId"]
+
+    def roster(stats, *rows):
+        probe = _SubProbe()
+        probe._subscribers_payload = lambda: {"stats": stats, "subscriptions": list(rows)}
+        return probe
+
+    def sub(sid, status):
+        return {**payload["subscriptions"][0], "subscriberId": sid, "status": status}
+
+    ep = roster(expired["stats"], *expired["subscriptions"])
+    got = ep.subscribers(type="expired", limit=10)
+    check([f["id"] for f in got["list"]] == [gone_fan] and got["hasMore"] is True,
+          f"subs: status 5 is expired and the expired roster is never complete, got {got}", fails)
+    check(ep.subscribers(type="active", limit=10) == {"list": [], "hasMore": False},
+          "subs: an expired row is not active", fails)
+    odd = roster({"totalActive": 1}, sub("900000000000000002", 3), sub("900000000000000003", 2))
+    for want in ("active", "expired", "all"):
+        got = odd.subscribers(type=want, limit=10)
+        check("900000000000000003" not in [f["id"] for f in got["list"]] and got["hasMore"] is True,
+              f"subs: an unknown status is in no roster and flags {want} incomplete, got {got}", fails)
+    for label, probe in (("short", roster({"totalActive": 2}, sub("900000000000000002", 3))),
+                         ("duplicate", roster({"totalActive": 2}, sub("900000000000000002", 3),
+                                              sub("900000000000000002", 3))),
+                         ("bad id", roster({"totalActive": 2}, sub("900000000000000002", 3), sub("", 3))),
+                         ("no total", roster({}, sub("900000000000000002", 3)))):
+        got = probe.subscribers(type="active", limit=10)
+        check(got["hasMore"] is True, f"subs: {label} active roster is incomplete, got {got}", fails)
+        try:
+            probe.iter_online_subscribers(max_fans=5)
+            fails.append(f"subs: iter_online_subscribers must refuse a {label} roster")
+        except shim.FanslyUnsupported as e:
+            check(e.reason == "platform_lacks:subscribers:incomplete", f"subs: refusal reason {e!r}", fails)
+    many = [sub(str(900000000000000100 + i), 3) for i in range(5)]
+    full = roster({"totalActive": 5}, *many)
+    pages = [full.subscribers(type="active", limit=2, offset=off) for off in (0, 2, 4)]
+    check([[f["id"] for f in p["list"]] for p in pages] == [[r["subscriberId"] for r in many[i:i + 2]]
+                                                            for i in (0, 2, 4)]
+          and [p["hasMore"] for p in pages] == [True, True, False],
+          f"subs: a complete roster pages by offset to its end, got {pages}", fails)
+    print("subscribers: 3 active, 5 expired, any other status, a count mismatch or expired read is incomplete")
 
     GRANT, OTHER = "900640044332167168", "900712726843187200"
     priced = {"id": "1", "senderId": "700237824869654528", "content": "ppv"}
@@ -500,6 +547,222 @@ def main() -> int:
                     "900000000000000202": ["900000000000000002"]},
           f"list-add: returns string ids read from the echo, got {added}", fails)
     print("list-add: recipe body, string ids back")
+
+    class _RemoveProbe(_ListProbe):
+        def __init__(self, echo):
+            super().__init__()
+            self.echo = echo
+
+        def _request(self, method, path, *, params=None, json_body=None, **kw):
+            self.calls.append((method, path, json_body))
+            return self.echo(json_body["listCommands"])
+
+    lid, fid = "900000000000000201", "900000000000000002"
+    rp = _RemoveProbe(lambda cmds: cmds)
+    check(rp.remove_user_from_list(int(lid), int(fid)) == {"success": True}
+          and rp.calls == [("POST", "/lists/commands", {"listCommands": [
+              {"type": 2, "listId": lid, "itemIds": [fid]}]})],
+          f"list-remove: recipe type-2 body, echoed command confirms, got {rp.calls}", fails)
+    for label, echo in (
+            ("an empty echo", lambda _c: []),
+            ("a non-list echo", lambda _c: None),
+            ("an add echo for the fan", lambda _c: [{"type": 1, "listItem": {"id": fid, "listId": lid}}]),
+            ("a remove of another fan", lambda _c: [{"type": 2, "listId": lid, "itemIds": ["900000000000000003"]}]),
+            ("a remove from another list", lambda _c: [{"type": 2, "listId": "900000000000000202", "itemIds": [fid]}])):
+        try:
+            _RemoveProbe(echo).remove_user_from_list(lid, fid)
+        except shim.FanslyAPIError:
+            continue
+        fails.append(f"list-remove: {label} must raise")
+    print("list-remove: counts only when the type-2 command for that fan is echoed")
+
+    dp = _RemoveProbe(lambda _c: None)
+    dp._request = lambda method, path, *, params=None, json_body=None, **kw: dp.calls.append(
+        (method, path, json_body))
+    check(dp.delete_list(int(lid)) == {"success": True}
+          and dp.calls == [("POST", "/lists/remove", {"listId": lid})],
+          f"list-delete: recipe body, null answer confirms, got {dp.calls}", fails)
+    try:
+        bad = _ListProbe()
+        bad._request = lambda *a, **k: {"id": lid}
+        bad.delete_list(lid)
+        fails.append("list-delete: a non-null answer must raise")
+    except shim.FanslyAPIError:
+        pass
+    check(getattr(shim.FanslyShimClient.delete_list, "platform_live_check", None),
+          "list-delete: marked platform_live_check", fails)
+    print("list-delete: POST /lists/remove {listId}, null answer, Live-check marked")
+
+    class _ReadProbe(_ListProbe):
+        def __init__(self, rows, lists=(lid,)):
+            super().__init__()
+            self.rows, self.lists = rows, lists
+            self.session = type("S", (), {"account_id": ACCOUNT_ID})()
+
+        def _request(self, method, path, *, params=None, json_body=None, **kw):
+            self.calls.append((method, path, params, json_body))
+            if path == "/lists/account":
+                if not isinstance(self.lists, tuple):
+                    return self.lists
+                return [{"id": i, "label": "x", "type": 1, "accountId": ACCOUNT_ID} for i in self.lists]
+            if path == "/lists/edit":
+                return self.rows(json_body)
+            return self.rows
+
+    def member(i, **kw):
+        return {"id": i, "sortId": "0", "listId": lid, "type": 1, "metadata": "", **kw}
+
+    lists_read = ("GET", "/lists/account", {"itemId": ""}, None)
+    items_read = ("GET", "/lists/itemsnew", {"listId": lid, "limit": "50", "sortMode": "3"}, None)
+    rp = _ReadProbe([member(fid)])
+    check(rp.list_users_in(int(lid)) == {"list": [{"id": fid}], "hasMore": False}
+          and rp.calls == [lists_read, items_read],
+          f"list-read: account lists, then one itemsnew page as {{list, hasMore}}, got {rp.calls}", fails)
+    full = _ReadProbe([member(str(900000000000001000 + i)) for i in range(50)])
+    page = full.list_users_in(lid)
+    check(page["hasMore"] is True and len(page["list"]) == 50 and full.calls == [lists_read, items_read],
+          f"list-read: a 50-row page is hasMore and never a second GET, got {full.calls}", fails)
+    over = _ReadProbe([member(str(900000000000001000 + i)) for i in range(51)])
+    check(over.list_users_in(lid)["hasMore"] is True and over.calls == [lists_read, items_read],
+          f"list-read: a 51-row page is hasMore too, got {over.calls}", fails)
+    for label, args, kw in (("a built-in key", ("fans",), {}), ("limit 20", (lid,), {"limit": 20}),
+                            ("offset 50", (lid,), {"offset": 50}), ("a query", (lid,), {"query": "a"}),
+                            ("an empty query", (lid,), {"query": ""})):
+        probe = _ReadProbe([member(fid)])
+        try:
+            probe.list_users_in(*args, **kw)
+            fails.append(f"list-read: {label} must raise")
+        except shim.FanslyUnsupported as e:
+            check(e.reason == "platform_lacks:list_users_in" and probe.calls == [],
+                  f"list-read: {label} must refuse before any request, got {e.reason} {probe.calls}", fails)
+    gone = _ReadProbe([member(fid)], lists=())
+    try:
+        gone.list_users_in(lid)
+        fails.append("list-read: a list absent from /lists/account must raise, never read empty")
+    except shim.FanslyUnsupported as e:
+        check(e.reason == "platform_lacks:list_users_in:unknown_list" and gone.calls == [lists_read],
+              f"list-read: an unknown list refuses after the account read, got {e.reason} {gone.calls}", fails)
+    for label, answer in (("a null", None), ("a dict", {"list": [{"id": lid}]})):
+        odd = _ReadProbe([member(fid)], lists=answer)
+        try:
+            odd.list_users_in(lid)
+            fails.append(f"list-read: {label} /lists/account answer must raise")
+        except shim.FanslyUnsupported:
+            fails.append(f"list-read: {label} /lists/account answer is a bad answer, not a gone list")
+        except shim.FanslyAPIError:
+            check(odd.calls == [lists_read], f"list-read: {label} account answer stops there, got {odd.calls}", fails)
+    for label, rows in (("a type-2 row", [member(fid, type=2)]), ("a numeric id", [member(int(fid))]),
+                        ("a non-digit id", [member("abc")]), ("an empty id", [member("")]),
+                        ("a malformed row beside the Proof fan", [member(fid), member("x1")]),
+                        ("a dict answer", {"list": []}), ("a null answer", None)):
+        try:
+            _ReadProbe(rows).list_users_in(lid)
+            fails.append(f"list-read: {label} must raise")
+        except shim.FanslyUnsupported:
+            fails.append(f"list-read: {label} is a bad answer, not a refusal")
+        except shim.FanslyAPIError:
+            pass
+    check(shim.FanslyShimClient.platform_list_page == 50, "list-read: platform_list_page is 50", fails)
+    print("list-read: one itemsnew page, hasMore from 50 rows, refusals before any request, unknown list refused")
+
+    np = _ReadProbe(lambda body: {"accountId": ACCOUNT_ID, "type": 1, "id": body["id"], "label": body["label"]})
+    check(np.rename_list(int(lid), "renamed") == {"id": lid, "name": "renamed"}
+          and np.calls == [("POST", "/lists/edit", None, {"id": lid, "accountId": ACCOUNT_ID, "pos": None,
+                                                          "type": 1, "label": "renamed"})],
+          f"list-rename: recipe body, echoed label confirms, got {np.calls}", fails)
+    for label, echo in (("another label", lambda b: {"id": b["id"], "label": "old"}),
+                        ("another list", lambda b: {"id": "900000000000000202", "label": b["label"]}),
+                        ("a null echo", lambda _b: None), ("a list echo", lambda _b: [])):
+        try:
+            _ReadProbe(echo).rename_list(lid, "renamed")
+            fails.append(f"list-rename: an echo of {label} must raise")
+        except shim.FanslyAPIError:
+            pass
+    for key in ("fans", "", "12a"):
+        probe = _ReadProbe(lambda b: b)
+        try:
+            probe.rename_list(key, "renamed")
+            fails.append(f"list-rename: list id {key!r} must raise")
+        except shim.FanslyUnsupported as e:
+            check(e.reason == "platform_lacks:rename_list" and probe.calls == [],
+                  f"list-rename: list id {key!r} must refuse before any request, got {e.reason} {probe.calls}", fails)
+    check(not getattr(shim.FanslyShimClient.rename_list, "platform_live_check", None),
+          "list-rename: built without a Live check", fails)
+    print("list-rename: POST /lists/edit, echo of that list and label confirms, non-numeric id refused, no Live check")
+
+    class _BlockProbe(_ListProbe):
+        def __init__(self, ignore, echo=None):
+            super().__init__()
+            self.ignore, self.echo = ignore, echo
+
+        def _request(self, method, path, *, params=None, json_body=None, **kw):
+            self.calls.append((method, path, params, json_body))
+            if path == "/ignore":
+                return self.ignore
+            return self.echo if self.echo is not None else {"accountId": ACCOUNT_ID, **json_body}
+
+    read = ("GET", "/ignore", {"noAggregation": "true"}, None)
+    bp = _BlockProbe({"ignoring": [], "accounts": []})
+    check(bp.block_user(int(fid)) == {"success": True}
+          and bp.calls == [read, ("POST", "/account/ignore", None, {"ignoredId": fid, "ignoreFlags": 2})],
+          f"block: empty /ignore read, then ignoreFlags 2 for that fan, got {bp.calls}", fails)
+    for label, ignore in (
+            ("a populated read", {"ignoring": [{"ignoredId": fid, "ignoreFlags": 2}], "accounts": []}),
+            ("an extra key", {"ignoring": [], "accounts": [], "more": True}),
+            ("a null read", None),
+            ("a list read", [])):
+        probe = _BlockProbe(ignore)
+        try:
+            probe.block_user(fid)
+            fails.append(f"block: {label} must raise")
+        except shim.FanslyUnsupported as e:
+            check(e.reason == "platform_lacks:block_user", f"block: {label} reason {e.reason!r}", fails)
+        check(probe.calls == [read], f"block: {label} must stop before any POST, got {probe.calls}", fails)
+    for label, echo in (("another fan", {"ignoredId": "900000000000000003", "ignoreFlags": 2}),
+                        ("a mute", {"ignoredId": fid, "ignoreFlags": 1}), ("no echo", [])):
+        try:
+            _BlockProbe({"ignoring": [], "accounts": []}, echo).block_user(fid)
+            fails.append(f"block: an echo of {label} must raise")
+        except shim.FanslyAPIError:
+            pass
+    check(getattr(shim.FanslyShimClient.block_user, "platform_live_check", None),
+          "block: marked platform_live_check", fails)
+    check(getattr(shim.FanslyShimClient.unblock_user, "platform_blocked", None),
+          "unblock: stays platform_blocked", fails)
+    print("block: GET /ignore empty, then POST /account/ignore flags 2, Live-check marked; unblock Blocked")
+
+    class _PromoProbe(_ListProbe):
+        def _request(self, method, path, *, params=None, json_body=None, **kw):
+            self.calls.append((method, path, json_body))
+            if path == "/subscriptions/tiers":
+                return [{"id": "t1", "plans": [{"id": "p1", "status": 1, "price": 5000}]}]
+            return {"id": "g1", "status": 1, "maxUses": json_body["maxUses"], "duration": json_body["duration"]}
+
+    for label, kw in (("type all", {"type": "all"}), ("type expired", {"type": "expired"}),
+                      ("a type list", {"type": ["all", "expired"]}), ("finish_days", {"finish_days": 3}),
+                      ("finish_days 0", {"finish_days": 0}), ("unlimited claims", {"subscribe_counts": 0})):
+        pp = _PromoProbe()
+        try:
+            pp.create_promo(**{"discount": 50, "subscribe_counts": 3, **kw})
+        except shim.FanslyUnsupported as e:
+            check(pp.calls == [], f"create_promo {label}: raised after a request {pp.calls}", fails)
+            check(e.reason == ("platform_lacks:promotion_type" if "type" in kw else None),
+                  f"create_promo {label}: reason {e.reason!r}", fails)
+            continue
+        fails.append(f"create_promo: {label} must raise before any request, sent {pp.calls}")
+    pp = _PromoProbe()
+    try:
+        pp.create_promo(discount=50, subscribe_counts=3, mirror=True)
+        fails.append(f"create_promo: an unknown kwarg must raise, sent {pp.calls}")
+    except TypeError:
+        check(pp.calls == [], f"create_promo unknown kwarg: raised after a request {pp.calls}", fails)
+    pp = _PromoProbe()
+    made = pp.create_promo(discount=50, subscribe_counts=3, subscribe_days=7, type="new", finish_days=None)
+    check([c[:2] for c in pp.calls] == [("GET", "/subscriptions/tiers"), ("POST", "/subscriptions/giftcodes")]
+          and pp.calls[1][2]["newSubscribersOnly"] == 1 and pp.calls[1][2]["maxUses"] == 3
+          and made["subscribeCounts"] == 3,
+          f"create_promo: a new-subscriber giftcode still posts, got {pp.calls}", fails)
+    print("create_promo: type other than new, finish_days and unlimited claims raise before any request")
 
     missing = set(reads) - used
     check(not missing, f"fixture reads not used: {sorted(missing)}", fails)

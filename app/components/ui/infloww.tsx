@@ -483,13 +483,14 @@ function CreatorAvatar({ account }: { account: AccountMeta }) {
 
 const ALL_CREATORS = "";
 
-export function IfCreatorSelect({ accounts, value, onChange, onAll, allLabel, watchers, searchable, disabled, className }: {
+export function IfCreatorSelect({ accounts, value, onChange, onAll, allLabel, watchers, chips, searchable, disabled, className }: {
   accounts: AccountMeta[];
   value: string | null | undefined;
   onChange: (accountId: string) => void;
   onAll?: () => void;
   allLabel?: string;
   watchers?: WatcherAccount[];
+  chips?: Record<string, string>;
   searchable?: boolean;
   disabled?: boolean;
   className?: string;
@@ -503,6 +504,9 @@ export function IfCreatorSelect({ accounts, value, onChange, onAll, allLabel, wa
       <>
         <CreatorAvatar account={a} />
         <span className="truncate">{creatorName(a)}</span>
+        {chips?.[a.id] && (
+          <span data-testid="of-creator-chip" className="shrink-0 rounded-full border border-border px-1.5 text-[10px] text-fg-dim">{chips[a.id]}</span>
+        )}
       </>
     ),
   })), ...(watchers ?? []).map((w) => ({
@@ -556,8 +560,7 @@ const readCreatorParam = () => new URLSearchParams(window.location.search).get("
  * every caller grow a `<Suspense>` boundary (see `useTabParam`); the server render reads no param.
  */
 export function useCreatorParam(accounts: AccountMeta[] | undefined): [string | null, (accountId: string) => void] {
-  const router = useRouter();
-  const pathname = usePathname();
+  const writeCreator = useSetCreatorParam();
   const fromUrl = useSyncExternalStore(subscribePopstate, readCreatorParam, () => null);
   const [picked, setPicked] = useState<string | null>(null);
   const list = accounts ?? [];
@@ -565,11 +568,19 @@ export function useCreatorParam(accounts: AccountMeta[] | undefined): [string | 
   const id = want && list.some((a) => a.id === want) ? want : list[0]?.id ?? null;
   const set = useCallback((accountId: string) => {
     setPicked(accountId);
+    writeCreator(accountId);
+  }, [writeCreator]);
+  return [id, set];
+}
+
+export function useSetCreatorParam(): (accountId: string) => void {
+  const router = useRouter();
+  const pathname = usePathname();
+  return useCallback((accountId: string) => {
     const params = new URLSearchParams(window.location.search);
     params.set("creator", accountId);
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   }, [router, pathname]);
-  return [id, set];
 }
 
 

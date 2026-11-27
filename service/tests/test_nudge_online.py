@@ -446,6 +446,38 @@ async def case_with_image_layers_the_payload_over_the_account_cfg():
     assert await enqueued_with_image("pt", cfg_value=False, payload={"with_image": True}) is True
 
 
+
+class _RosterRefused(RuntimeError):
+    reason = "platform_lacks:subscribers:incomplete"
+
+
+async def _roster_refused_run(aid: str, error: Exception) -> tuple[dict, list, list]:
+    await _seed_cfg(aid)
+    await _warm(aid)
+    fake = _use_fake([_online(3001, "Eve")])
+
+    def refuse(**_kw):
+        raise error
+    fake.iter_online_subscribers = refuse
+    res = await run_once(aid, "nudge_online", payload={})
+    async with get_session() as s:
+        states = (await s.execute(select(NudgeState.fan_id, NudgeState.last_seen_online_at).where(
+            NudgeState.account_id == aid))).all()
+    return res, states, await _jobs(aid, "nudge_online_fire")
+
+
+async def case_incomplete_roster_skips_before_any_last_seen_or_enqueue():
+    res, states, jobs = await _roster_refused_run("n_incomplete", _RosterRefused("short roster"))
+    assert res["status"] == "skipped" and res["reason"] == "platform_lacks:subscribers:incomplete", res
+    assert [fid for fid, _seen in states] == [1] and jobs == [], (states, jobs)
+
+
+async def case_a_roster_read_error_without_a_lack_is_still_an_error():
+    res, states, jobs = await _roster_refused_run("n_read_error", RuntimeError("network"))
+    assert res["status"] == "error", res
+    assert [fid for fid, _seen in states] == [1] and jobs == [], (states, jobs)
+
+
 _harness.run(
     case_warmup_seeds_no_send,
     case_newly_online_enqueues,
@@ -465,4 +497,6 @@ _harness.run(
     case_small_hours_of_the_night_slot_read_the_evening_before,
     case_legacy_info_line_keys_ignored,
     case_preview_picks_the_asked_day,
+    case_incomplete_roster_skips_before_any_last_seen_or_enqueue,
+    case_a_roster_read_error_without_a_lack_is_still_an_error,
 )

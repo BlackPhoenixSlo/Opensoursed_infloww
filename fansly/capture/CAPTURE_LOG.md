@@ -687,3 +687,71 @@ delete is a fourth delete convention (`/lists/remove {listId}`).
 Left on the account: promo `900999000000085664` ($3, ends 2026-12-03); locked
 text story `900999000000022624` + its $1 message to the fan; broadcast list
 `900999000000022112` (fan only) and its group. `zz-capture-tmp` list removed.
+
+## 2026-11-26/27 — paid proofs stopped at 3DS; free rows closed
+
+Runs `out/fansly-creator-1126b/`, `out/fansly-fan-1126b/` (gitignored).
+The owner gave a billing address; a fan card was added (≤ $0.10 verification)
+and set default. The $3 promo sub reached Pay, then needed 3DS that nobody
+approved and was cancelled after ~30 s: **$0 charged for it; total spend ≤ $0.10.**
+Shapes up to that point are in RECIPES "Paid flow up to 3DS".
+
+The owner then dropped the paid proofs (2026-11-27): 1.10 tip half, 3.4
+`resubscribe_user`, 3.5 and 6.7–6.9 are deferred to passive capture from real
+traffic (recipe in the same section).
+
+Flipped from evidence already captured: 1.6 (re-measured: fan typing → creator
+`5/22`; sender `POST /message/typing`), 1.7 (`serviceId 9` push, 09-02), 3.4
+`like_post` (`POST /likes`, 09-02).
+
+Left: promo `900999000000085664` (ends 2026-12-03); fan card saved as default.
+
+## 2026-11-27 — Phase 2 live tracer (creator :9231 only, gate + watchdog)
+
+Self-test on :9231: 5/5 passed (an orphaned `record.py` attachment had to be stopped first).
+
+- `20261127T043655-fabb`: halted on POST Intercom `/messenger/web/ping` (denied, nothing reached
+  the host). Audit FAIL (halt). Fix: TELEMETRY fake, 204.
+- `20261127T043915-a3f4`: halted on POST `metrics.fansly.com/event/track/v1/` (denied). Audit FAIL
+  (halt), groups_compared=10. Fix: TELEMETRY fake, 204. Audit unread compare changed to per-group
+  first/last (first observations were empty, so the old compare was vacuous).
+- `20261127T044001-0d12`: Audit PASS. continued=1233, continued_writes=0, faked=45, waf=51,
+  groups_observations=34, groups_compared=10. Warn: unverified fake `/api/v1/it/pis` fired on
+  messages/thread; screenshot normal. Saved: home, profile, messages/thread, creator/stats/overview,
+  settings/account, messages/thread/state-menu (all light). Bell and messages badges unchanged.
+  Light theme set and dark restored inside the session via `/settings/display` (client-side, zero
+  writes). New On-open writes: none beyond the table.
+
+
+## 2026-11-27 — Phase 2 full capture (creator :9231 only, gate + watchdog)
+
+- Earlier attempt this morning: audit FAIL, then self-test failures; the creator Chrome was relaunched
+  with the documented flags before the next session.
+- `20261127T072912-ee10`: 55 pages + 13 states saved, then opening Change Password
+  (`/settings/account`) fired POST `/api/v1/twofa/session/create`; the watchdog failed it before
+  dispatch and halted. Audit FAIL (halt only; continued_writes=0). All its saves count as unaudited.
+- `20261127T080311-31cc`: recapture. Audit PASS. continued=5754, continued_writes=0, faked=279,
+  waf=281, groups_observations=142, groups_compared=10. 55 pages, 14 states, 14 assets. Warn:
+  unverified fakes `/it/pis` (profile) and `/notifications/ack` (notifications); screenshots normal.
+- `20261127T082951-85bd`: payouts re-saved via `/creator/wallet` (balance-menu link; redirects to
+  the payouts tab). Audit PASS, continued_writes=0.
+- Manifest: complete, 69 entries, 21 optional skips, 0 missing, 0 uncovered links. `/` (logged-out
+  landing) and `/cookies` (legal) joined the out-routes.
+- Skipped as unsafe: every `/settings/account` modal (2FA session write on open; username Change
+  disabled), session close (same flow), add payment method (third-party form), create session
+  (disabled without 2FA), audience fan detail (one halt voids the session). Skipped as absent or a
+  write: post page and post menu, wall manage, story, broadcast queue/history/composer, message
+  schedule, read receipts, vault upload, promotion create, list edit and row menu.
+- Theme: Display toggle label names the target mode; a click right after a nav sometimes does not
+  take, so the label is re-read after each click. Dark restored before each stop.
+
+## 2026-11-27 — webfonts + gap states (creator :9231 only, gate + watchdog)
+
+- `20261127T202552-610f`: Audit PASS. continued=528, continued_writes=0, faked=16, waf=20.
+  `assets` now fetches stylesheet `url()` woff2 refs via `Network.loadNetworkResource` (no
+  credentials): 12 FA Pro 7.2 webfonts saved; 4 of them also sat in the resource tree but
+  `getResourceContent` had no body (counted as failures, then fetched). Saved
+  `creator/stats/overview/state-custom-range` (light). Skipped `home/state-search`: the top-bar
+  search icon navigates to the Explore discovery feed, not a popup.
+- Manifest: complete, 70 entries, 22 optional skips, 26 assets, 0 missing, 0 uncovered links.
+- Theme left light after stop (second toggle click took); client-side only.

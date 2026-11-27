@@ -91,6 +91,18 @@ services:
       # The logo path prefix (app/lib/brand.ts BRAND_LOGO): the Web Push icon is its -180.png
       # (service/push_notice.py ICON); empty = /icon.svg.
       BRAND_LOGO: "${BRAND_LOGO:-}"
+      # The Leak tracker: off unless both are set (https URL; the System switches panel can only force it off).
+      LEAK_TRACKER_URL: "${LEAK_TRACKER_URL:-}"
+      LEAK_TRACKER_ENABLED: "${LEAK_TRACKER_ENABLED:-}"
+      # Support chat (service/support_api.py): the help widget's Support tab talks to the hub at
+      # SUPPORT_HUB_URL with SUPPORT_HUB_TOKEN, labelled SUPPORT_INSTANCE; blank = tab hidden.
+      # SUPPORT_HUB_PASSWORD set = this relay also serves the hub page at /support (one install only).
+      # SUPPORT_HUB_DEEPSEEK_KEY = Summarise key; own var so the hub needs no DEEPSEEK_API_KEY (that turns house-key AI on for all users).
+      SUPPORT_HUB_URL: "${SUPPORT_HUB_URL:-}"
+      SUPPORT_HUB_TOKEN: "${SUPPORT_HUB_TOKEN:-}"
+      SUPPORT_INSTANCE: "${SUPPORT_INSTANCE:-}"
+      SUPPORT_HUB_PASSWORD: "${SUPPORT_HUB_PASSWORD:-}"
+      SUPPORT_HUB_DEEPSEEK_KEY: "${SUPPORT_HUB_DEEPSEEK_KEY:-}"
       # The SQLite DB, in the bind-mounted directory below. Literal values, not
       # ${...}: a compose .env cannot move the DB, and service/.env loses to
       # them (db/engine.py loads it with override=False). DATABASE_URL is what

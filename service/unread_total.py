@@ -50,7 +50,13 @@ def _slot(aid: str) -> dict:
             **decide.amber_slot(_amber.get(aid))}
 
 
+def _lacks(aid: str) -> bool:
+    return platforms.Lack.UNREAD_TOTAL in platforms.for_account(aid).lacks
+
+
 def _moved(aid: str) -> bool:
+    if _lacks(aid):
+        return False
     nxt = _slot(aid)
     was = _shown[aid]["grey"] if aid in _shown else None
     if nxt["grey"] != was:
@@ -214,14 +220,14 @@ def on_reply(account_id: str, fan_id: int, at: int) -> None:
 
 def snapshot(account_id: str) -> dict[str, Any] | None:
     aid = str(account_id)
-    if not ENABLED or platforms.Lack.UNREAD_TOTAL in platforms.for_account(aid).lacks:
+    if not ENABLED or _lacks(aid):
         return None
     with _lock:
         return {**_shown.get(aid, _UNSEEDED), "v": _v.get(aid, 0)}
 
 
 def on_tick(account_id: str) -> None:
-    if ENABLED and platforms.Lack.UNREAD_TOTAL not in platforms.for_account(account_id).lacks:
+    if ENABLED and not _lacks(account_id):
         with _lock:
             _moved(account_id)
 
@@ -231,6 +237,13 @@ def badge_versions(account_ids: frozenset[str]) -> dict[str, int]:
         return {}
     with _lock:
         return {a: _v.get(a, 0) for a in account_ids if a in _shown}
+
+
+def restricted_unknown(account_id: str) -> bool:
+    aid = str(account_id)
+    with _lock:
+        known = aid in _r
+    return ENABLED and not known and not _lacks(aid)
 
 
 def window_due(account_id: str) -> bool:

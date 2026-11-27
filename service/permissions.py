@@ -93,6 +93,31 @@ def granted_pages(ctx: AgencyContext, roles: dict[str, Any]) -> set[str] | None:
     return {href for href, ok in (role.get("permissions") or {}).items() if ok is True and "#" not in href}
 
 
+LEAK_PAGE = "/creators/leaks"
+
+
+def _leak_role(ctx: AgencyContext, roles: dict[str, Any]) -> dict[str, Any] | None:
+    if not enforced(roles):
+        return None
+    return _granting_role(roles, ctx.employee_id)
+
+
+def _owner_or_admin(role: dict[str, Any] | None) -> bool:
+    return role is _EVERY_PAGE or (role is not None and role.get("id") in ("owner", "admin"))
+
+
+# Fails closed, unlike granted_pages: enforcement off or no role never grants the Leak tracker.
+def leak_page_granted(ctx: AgencyContext, roles: dict[str, Any]) -> bool:
+    if ctx.is_owner:
+        return True
+    role = _leak_role(ctx, roles)
+    return _owner_or_admin(role) or (role is not None and (role.get("permissions") or {}).get(LEAK_PAGE) is True)
+
+
+def leak_writer(ctx: AgencyContext, roles: dict[str, Any]) -> bool:
+    return ctx.is_owner or _owner_or_admin(_leak_role(ctx, roles))
+
+
 def denied_actions(ctx: AgencyContext, roles: dict[str, Any]) -> set[str]:
     if ctx.is_owner or not enforced(roles):
         return set()
@@ -299,6 +324,7 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "/creators": ("Manage creators", (
         "/admin/accounts/active", "/admin/automation", "/admin/reload-session")),
     "/creators/proxy": ("Custom proxy", ()),
+    "/creators/leaks": ("Leak tracker", ()),
     "/employees": ("Manage employees", ("/api/of/v2/vault/lists",)),
     "/employees/shifts": ("Shift schedule", ("/admin/shifts", _BATCH_REASSIGN)),
 }
@@ -323,11 +349,15 @@ UNMAPPED: dict[str, str] = {
     "/admin/of-consent": "a Creator's Auto-accept OnlyFans consent switch (of_consent_api): the route checks"
                          " the Creator is the session's; its PUT is owner-only there",
     "/admin/screens": "a screen's reads in one call (screens_api): each inner read is checked as its own route",
+    "/admin/leaks": "the Leak tracker (leak_tracker_api): every route runs leak_tracker.require_gates,"
+                    " whose role gate is leak_page_granted and answers 404",
     "/admin/settings": "Settings blobs (owner-only) and the Applied settings read every session needs",
     "/admin/shifts/me": "the top bar's clock", "/admin/shifts/clock-in": "the top bar's clock",
     "/admin/shifts/clock-out": "the top bar's clock",
     "/admin/shifts/clock-status": "the top bar's clock", "/admin/shifts/clock-heartbeat": "the top bar's clock",
     "/admin/assistant": "the shell's assistant widget",
+    "/admin/support": "the help widget's Support tab (support_api): the session's own thread, no Creator data",
+    "/support": "the central support hub (support_hub): its own owner password and instance token, no Creator data",
     "/admin/mcp": "the hosted MCP endpoint (mcp_api): owner token or no credential, never a session;"
                   " each tool's inner read is checked as its own route",
     "/admin/ai-key-status": "the AI-key notice on every automation page (key presence only)",

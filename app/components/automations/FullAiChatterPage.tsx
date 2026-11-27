@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Full AI Chat (ours; owner only, a My Automations sidebar link, same /full-ai-chatter address). The header's "AI rules"
- * opens the Full AI Turn diagram (`AiRulesDiagram`, also at /ai-rules) in a near full-screen popup. A settings column
+ * The My Automations sidebar link for Full AI Chat (/full-ai-chatter) is hidden from chatter-only sessions. Roles granted the page can open it.
+ * The header's "AI rules" opens the Full AI Turn diagram (`AiRulesDiagram`, also at /ai-rules) in a near full-screen popup. A settings column
  * (`FullAiSettings`: Make draft live / Roll back / JSON over the draft config on top, then Mode, LLM keys, reply speed, Human
  * style, GIFs, Sell); beside it (under it on a phone: the column comes first) one row with the persona editor
  * (`ModelInfoBlock`, saved straight to the account, not into the checkpoint) and, beside that, "Who Full AI answers

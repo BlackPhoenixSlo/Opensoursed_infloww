@@ -27,7 +27,7 @@ def main() -> int:
         session = rl._bb_create_session()
     except RuntimeError as e:
         raise SystemExit(f"[x] {rl.scrub(e, password)} (failed loud)")
-    print("[*] egress: Browserbase managed proxies (nothing persisted)", flush=True)
+    print("[*] egress: Browserbase's own network, no proxy (nothing persisted)", flush=True)
 
     sid = session.get("id")
     print(f"[*] session id: {sid}", flush=True)

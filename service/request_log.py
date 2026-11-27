@@ -6,6 +6,7 @@ import re
 import secrets
 import time
 
+import cell_stats
 from auth import get_request_user
 from chatters import get_request_chatter
 
@@ -55,6 +56,8 @@ class RequestLog:
             route = scope.get("route")
             path = getattr(route, "path_format", None) or getattr(route, "path", None) \
                 or self.redact(scope["path"])
+            if cell_stats.ENABLED and route is not None and not stream:
+                cell_stats.route(f"{scope['method']} {path}", ms)
             params = scope.get("path_params") or {}
             user, chatter = get_request_user(), get_request_chatter()
             extra = {"user": user and user.id, "chatter": chatter and chatter.id,

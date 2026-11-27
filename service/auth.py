@@ -691,6 +691,8 @@ async def admin_delete_user(user_id: str, body: DeleteUserBody = Body(...)) -> d
     if body.confirm != "delete":
         raise HTTPException(status_code=400, detail="confirm must equal 'delete'")
     _assert_admin_password(body.admin_password)
+    import leak_tracker
+    await leak_tracker.before_user_delete(user_id)
     async with get_session() as s:
         row = (await s.execute(
             select(User).where(User.id == user_id)
@@ -788,8 +790,10 @@ async def admin_revoke_user_account(
     user_id: str, account_id: str, body: RevokeAccountBody = Body(...),
 ) -> dict:
     _assert_admin_password(body.admin_password)
-    import notifications_api  # lazy: it imports this module
-    # The Agency's pinned row for it goes first: a failed drop is a retryable 500 with nothing committed.
+    import leak_tracker  # lazy: both import this module
+    import notifications_api
+    await leak_tracker.drop_watches(account_id=account_id, agency_user_id=user_id)
+    # Both drops run before the link goes; each is safe to retry after a 500.
     await notifications_api.drop_pinned(account_id, [user_id])
     async with get_session() as s:
         result = await s.execute(

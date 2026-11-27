@@ -1823,6 +1823,57 @@ class UserLlmKey(Base):
     updated_at: Mapped[datetime] = _ts_now()
 
 
+class LeakTrackerTenant(Base):
+    __tablename__ = "leak_tracker_tenant"
+
+    agency_user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False)
+    bound_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class LeakWatch(Base):
+    __tablename__ = "leak_watch"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agency_user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    account_id: Mapped[str] = mapped_column(String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
+    watch_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    on: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("1"))
+    platform: Mapped[str] = mapped_column(String, nullable=False)
+    username: Mapped[str] = mapped_column(String, nullable=False)
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("0"))
+    display_name: Mapped[str] = mapped_column(String(64), nullable=False, default="", server_default=text("''"))
+    aliases_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default=text("'[]'"))
+    instagram: Mapped[str | None] = mapped_column(String)
+    x: Mapped[str | None] = mapped_column(String)
+    consent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consent_by: Mapped[str] = mapped_column(String, nullable=False)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    synced_paused: Mapped[bool | None] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        UniqueConstraint("agency_user_id", "account_id", name="uq_leak_watch_account"),
+        UniqueConstraint("agency_user_id", "platform", "username", name="uq_leak_watch_handle"),
+    )
+
+
+class LeakWatchTombstone(Base):
+    __tablename__ = "leak_watch_tombstone"
+
+    watch_id: Mapped[str] = mapped_column(String, primary_key=True)
+    agency_user_id: Mapped[str] = mapped_column(String, nullable=False)
+    account_id: Mapped[str] = mapped_column(String, nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _ts_now()
+
+
 class UserSetting(Base):
     __tablename__ = "user_settings"
 

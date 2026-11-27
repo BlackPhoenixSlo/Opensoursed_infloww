@@ -14,7 +14,7 @@ In the Removal service, Phase 1's daily purge job gains two things:
 
 Notices are untouched: Phase 3 keeps only linked sources' Notices, by source client, as the owner's case records, and Phase 1's purge drops `client_watches` through its `WATCH_TABLES` hook.
 
-Re-enrolling the same Creator within the window adopts the deleted watch's history under the new `watch_id`. The old id stays deleted, so a late DELETE retry still names a watch that no longer matters (ADR-0071).
+Re-enrolling the same Creator within the window adopts the deleted watch's history under the new `watch_id`. The old id stays deleted, so a late DELETE retry still names a watch that no longer matters (ADR-0076).
 
 The owner replaces a key by issuing a new one (Phase 1's `key issue`) and revoking the old one when they choose, and offboards tenants and reinstates them. All of this runs from the Removal service's CLI, and the service enforces it on reads, dispatch and scheduling. The CRM:
 - shows "Key no longer valid" for any refused key (Phase 1's state, now also on the bell job);
@@ -93,7 +93,7 @@ The README tells self-hosters how to opt in, without the brand or a hostname. Th
   - Phase 1's Tracker API client and watch sync: `restored_from` handling, the `account_taken` wait, and the pieces moved from Phase 1: the rename rule, the kill switch pushing paused, and orphan-watch logging. Key refusal, the 410 drop and `requested_at` are Phase 1's.
   - Phase 1's `PUT /admin/leaks/key`: the one rebind rule (moved from Phase 1).
   - `leak_watch.identity_note` (moved from Phase 1): an additive nullable column through the boot's additive-column pass (`service/db/engine.py:255-280`), as Phase 3's `offer_snoozed_until` is.
-  - The Demo tracker (moved from Phase 1): new `demo/fake_tracker`, serving the Tracker API from fixtures through an in-process transport swapped into `leak_tracker`'s client, and its install in `demo/relay` with `LEAK_TRACKER_URL` a `.invalid` placeholder. Seed rows set the flag and a fake key for the demo Agency and cover every pill, Came back, Found on first scan, Not checked yet, Paused, key-invalid, and the Phase 2 and 3 shapes those Phases' demo sections show. New `demo/tests/test_fake_tracker.py` takes over from Phase 1's `demo/tests/test_leak_tracker_off.py`.
+  - The Demo tracker (moved from Phase 1): new `demo/fake_tracker`, serving the Tracker API from fixtures through an in-process transport swapped into `leak_tracker`'s client, and its install in `demo/relay` with `LEAK_TRACKER_URL` a `.invalid` placeholder. Seed rows set the flag and a fake key for the demo Agency and cover every pill, Came back, Found on first scan, Not checked yet, Paused, key-invalid, and the Phase 2 and 3 shapes those Phases' demo sections show. That includes abstract placeholder preview images from local fixtures behind a demo-on previews switch (Phase 2 stories 47-57) and Phase 3's popup with `video: null` and the offer-video routes answering 404 (Phase 3 story 61), with zero egress. New `demo/tests/test_fake_tracker.py` takes over from Phase 1's `demo/tests/test_leak_tracker_off.py`.
   - `README` (self-host opt-in).
   - The public-sync skill (the owner-flip runbook) and deploy-all (selftest plants, plus the Twin check in `live.py`).
 - **Owns (the Removal service repo).**
@@ -267,13 +267,13 @@ The `# manual` lines are not run by the block; the Phase is not accepted until e
 - The watch purge, the `requested_at` clamp, the tenant binding and the compose pass-through: Phase 1.
 - The CSV export: cut in Fable round 2.
 - Pause reasons: cut in Fable round 2. The CRM sends one paused bit (Phase 1).
-- The delete triggers themselves: Phase 1, per ADR-0071's delete half.
+- The delete triggers themselves: Phase 1, per ADR-0076's delete half.
 - Routing `/admin/leaks` in cell mode: the tracker is off there; left unowned, as in Phase 1.
 - A list of a past day's Leaks under `?day=`: the strip shows counts only.
 - Re-linking a restored Creator's Service status: Phase 3 makes the owner re-link it.
 - Creating tracker backups: none exist today and the plan asks only for roll-off.
 - Turning Twin on: needs the owner's sign-off on integration and Removal offer.
-- Naming the brand in public copy: owner call, ADR-0069.
+- Naming the brand in public copy: owner call, ADR-0074.
 - A timer for the public flip: owner flip only (ticket 03).
 - Measuring caps and cost: Phase 2's pilot.
 - The four-target tracker report in `live.py`: parked until after the pilot (Fable round 3); ticket 03 asks only that Twin stay off.
@@ -297,10 +297,10 @@ ASSUMPTION: the job skips an Agency whose `leak_daily` preference is off, so tur
 ASSUMPTION: a key change is Phase 1's `key issue` then this Phase's `key revoke`, with no `key rotate` command and no `expires_at`; the overlap is however long the owner waits (rung 5; the cut itself is rung 2, coordinator on six-hats 17). Overturned if keys must expire on their own or an Agency must be told a date.
 ASSUMPTION: a tenant whose keys are all revoked stops scanning but starts no purge clock until offboarded (rung 4). Overturned if revoking the last key should offboard.
 ASSUMPTION: the 30-day undo is automatic adoption on re-enrol of the same (tenant, account), not a separate button or owner request (rung 5). Overturned if an agency must be able to start fresh inside the window; that adds a "start fresh" flag to the PUT.
-ASSUMPTION: adoption moves the history to the CRM's new `watch_id` instead of reviving the old one, so Phase 1's never-revive rule and ADR-0071's late-retry guarantee hold unchanged (rung 3). Overturned by none known.
+ASSUMPTION: adoption moves the history to the CRM's new `watch_id` instead of reviving the old one, so Phase 1's never-revive rule and ADR-0076's late-retry guarantee hold unchanged (rung 3). Overturned by none known.
 ASSUMPTION (evidence blocked): there is no tracker DB backup in the Removal service today, so roll-off is the purge job pruning `TRACKER_BACKUP_DIR` (rung 5). Only the deploy script and compose were read; a host cron or provider snapshot outside the repo would overturn it, and it must then keep at most 30 days. See needs-human in Review.
 ASSUMPTION: a failed Daily-scan day is one warning line in the service log from the daily pass, with no dedupe table, so a restart may log it twice (rung 2 for log-only, coordinator on six-hats 17; rung 5 for no dedupe). Overturned if the owner wants a push channel; then the fleet's `ALERT_WEBHOOK_URL` pattern is the precedent.
-ASSUMPTION: all four delete triggers and their tombstones are Phase 1's (ADR-0071's delete half plus the agency-user delete), while this Phase owns the selftest plants for Phase 1's leak-check rules (rung 5, the plan's "public-sync verification"). Overturned if Phase 1 ships the plants; then user story 44 is done.
+ASSUMPTION: all four delete triggers and their tombstones are Phase 1's (ADR-0076's delete half plus the agency-user delete), while this Phase owns the selftest plants for Phase 1's leak-check rules (rung 5, the plan's "public-sync verification"). Overturned if Phase 1 ships the plants; then user story 44 is done.
 ASSUMPTION: the tenant purge loops Phase 1's per-watch purge over the tenant's watches instead of its own delete (rung 5). Overturned if a tenant with many watches makes the daily pass too slow; then it batches by tenant.
 ASSUMPTION: an adopted watch gets fresh `weekly_slot` and `plan_loads` from Phase 2's admission and drops the old `carry_json`, while its `lane_state`, `lane_day` and `load_reservation` rows move (rung 5). Overturned if a restored Creator must keep their weekly slot or carried queries.
 ASSUMPTION: `live.py` checks only Twin's gate and goes red when it reads on; the four-target report is parked (rung 2 for the scope, ticket 03 says only "Twin: off"; rung 4 for the red). Overturned if the owner wants every target's tracker state reported, or when the owner signs off Twin.
@@ -323,9 +323,9 @@ Blind call:
 - B4c dated link must show the requested day — **accept**: `GET /admin/leaks/daily?day=` feeds the strip.
 - B5 an outage-delayed DELETE must honour the original request time — **accept**: `requested_at` sets `purge_after`, clamped (story 33).
 - B5b undo vs re-enrol, rotation vs offboarding — **accept**: adoption design (Restore, Contracts); rotation keeps the tenant, offboarding has its own clock.
-- B5c Agency-user deletion cascades keys and `leak_watch` without tombstones, so the service keeps tracking — **partial, cross-Phase (binds Phase 1)**: ADR-0071 lists three triggers and user deletion is not one; Phase 1 should tombstone (or DELETE synchronously while the key still exists) before the user cascade. Here, offboarding the tenant is the backstop.
+- B5c Agency-user deletion cascades keys and `leak_watch` without tombstones, so the service keeps tracking — **partial, cross-Phase (binds Phase 1)**: ADR-0076 lists three triggers and user deletion is not one; Phase 1 should tombstone (or DELETE synchronously while the key still exists) before the user cascade. Here, offboarding the tenant is the backstop.
 - B5d in-flight writes, replayed Notices and backup restores recreating purged data — **accept**: deleted watches run no scans, Notices are outside the purge, and the stored-clock rule re-purges after a restore (story 36).
-- B6 the public path filter admits `plan/`, `ext/`, leak specs and ADR 0068 — **reject**: `plan/` and `ext/` are the review workspace's layout; in the repo the plan lives under `.scratch/`, stripped by `OPS_PATHS`, and the Removal service repo is not in this tree. The leak specs and ADRs are written public-safe by design, and the selftest plants (story 44) guard the brand.
+- B6 the public path filter admits `plan/`, `ext/`, leak specs and ADR 0073 — **reject**: `plan/` and `ext/` are the review workspace's layout; in the repo the plan lives under `.scratch/`, stripped by `OPS_PATHS`, and the Removal service repo is not in this tree. The leak specs and ADRs are written public-safe by design, and the selftest plants (story 44) guard the brand.
 - B6b the seed's Quick scan store is slug-addressed — **reject, cross-Phase (binds Phase 1)**: the seed is Phase 1's.
 - B6c no rollout threshold from AE measurements — **reject**: ticket 03 makes the owner's flip the authority, with no timer or threshold.
 - B7 seams: browser → Front door → Relay with a fake Tracker API — **partial**: seam 1 stays the Relay HTTP surface; a verify-app manual line with screenshots is added; `cellRoute.test.ts` now names the real bell paths so both lists can't be wrong together.
@@ -333,7 +333,7 @@ Blind call:
 
 Draft call:
 - D1 `/v1/` key rule rejects Phase 3's Ingest key — **accept**: ingest is the one exception; Ingest key refused on tenant routes (story 28, seam 3).
-- D2 restore names `POST /v1/watches` and revives an id Phase 1 retires, contradicting ADR-0071 and Phase 1's offline enrolment — **accept**: replaced by adoption on Phase 1's `PUT` with the CRM's fresh id; enable path unchanged; `restored_since`, the 200 DELETE body and the tombstone schema change are gone.
+- D2 restore names `POST /v1/watches` and revives an id Phase 1 retires, contradicting ADR-0076 and Phase 1's offline enrolment — **accept**: replaced by adoption on Phase 1's `PUT` with the CRM's fresh id; enable path unchanged; `restored_since`, the 200 DELETE body and the tombstone schema change are gone.
 - D2b automatic revival is an added product decision — **reject**: ticket 10's amendment keeps "a 30-day undo" and names no other mechanism; automatic adoption stays flagged as an ASSUMPTION.
 - D3 an undelivered DELETE plus re-enrol loses the delete — **accept**: `account_taken` with a tombstone waits silently; the DELETE lands, then adoption (story 39, seam 1).
 - D4 `/v1/daily` cannot enforce the failed/capped-day rule — **accept**: `failed` and `capped` fields, the job files nothing on either (story 12, seam 1 and 3).
@@ -366,7 +366,7 @@ One six-hats pass over the four specs, 2026-11-27. Bullets touching this Phase:
 - 2 (stale Problem Statement; DELETE `requested_at` and compose ownership) — **accept**: Problem Statement rewritten; Owns, Contracts and story 42 point to Phase 1 and the compose and clamp ASSUMPTIONs are gone; one clamp rule, Phase 1's.
 - 3 (`identity_note` has no column) — **accept**: Phase 1's `leak_watch.identity_note`; Schema and Depends on updated.
 - 4 (`first_run` → `seen.first_scan`) — **accept**: Contracts `new_leaks`, Depends on.
-- 5 (`capped` reads `lane_day.reason`; `complete` accepts `partial`) — **accept**: Contracts; ADR-0070 and CONTEXT amended in the same pass.
+- 5 (`capped` reads `lane_day.reason`; `complete` accepts `partial`) — **accept**: Contracts; ADR-0075 and CONTEXT amended in the same pass.
 - 6 (`client_watches` at delete vs purge) — **accept**: Solution and Purge rule drop it through Phase 1's hook.
 - 7 (who owns "Notices for non-clients are not kept") — **accept**: Phase 3 owns it; this Phase's purges touch no Notice (also set-level, plan review).
 - 8 (adoption and purge lists; `weekly_slot`, `plan_loads`, `carry_json`) — **accept**: adoption moves `lane_day` and `load_reservation`; slot and loads set afresh by admission, carry dropped (ASSUMPTION); `deleted_ids` is Phase 1's purge.
@@ -383,3 +383,6 @@ Counts: 10 accept, 1 partial, 0 reject. Bullet 20 is set-level (plan review, Nee
 - Cut 2 (deploy-all four-target report) — **accept**: ticket 03 says only "Twin: off", so `live.py` checks Twin's gate and goes red when it is on (story 45 parked, story 46, Per-target, Seam 4, manual lines).
 - Cut 6 (`?day=` route) — **reject**: ticket 07 links the row to `/creators/leaks?day=<date>`; it stays counts-only.
 - C1, C2, cuts 3–5 — not this Phase's.
+
+### Owner answers (2026-11-27, visuals)
+- Wayfinder tickets 11-14: the Demo tracker serves placeholder previews and the popup without a video (Owns, Demo tracker line). `demo/tests/test_fake_tracker.py` asserts no outbound request for those routes too. Nothing else here changes.

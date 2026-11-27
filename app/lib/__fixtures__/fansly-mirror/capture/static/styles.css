@@ -1,0 +1,7 @@
+@font-face{font-family:"Inter";src:url(fonts/inter.woff2) format("woff2"),url(fonts/gone.woff) format("woff")}
+.bright-theme body{color:#111}
+html:not(.bright-theme) body{color:#eee;background:#000}
+.logo{background-image:url("icons/logo.svg")}
+.tick{background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><path d='M0 0h1v1z'/></svg>")}
+.hero{background-image:url(https://cdn3.fansly.com/900000000000000904.jpeg)}
+.dot{background-image:url(data:image/png;base64,iVBORw0KGgo=)}

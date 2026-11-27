@@ -292,7 +292,7 @@ async def _mark_job(job_id: int, status: str, last_error: str | None) -> None:
         await _write_job(s, job_id, status, last_error)
 
 
-async def _release_job(job_id: int | None) -> None:
+async def _release_job(job_id: int | None, *, defer_s: float = 0) -> None:
     if job_id is None:
         return
     async with get_session() as s:
@@ -301,6 +301,8 @@ async def _release_job(job_id: int | None) -> None:
             return
         job.status = "pending"
         job.attempts = max(0, (job.attempts or 0) - 1)
+        if defer_s:
+            job.run_at = datetime.utcnow() + timedelta(seconds=defer_s)
         _announce_scheduled_send(s, job)
 
 

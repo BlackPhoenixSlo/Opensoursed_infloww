@@ -13,7 +13,7 @@ A daily exporter on the owner's laptop reads every Notice ledger read-only, keep
 - `former`: the past track plus an offer.
 - `unknown`: an offer only while the Notice feed is fresh; otherwise nothing.
 
-Every state carries "Notices updated <time>". When the last ingest is more than 48 h old, a stale banner replaces the counts. The Removal offer is a single drill-in card that only an Owner or Admin sees. It leads with the first true angle from the Agency's own counts and has a "Message {brand}" link that carries no handle. A "Not now" snoozes it agency-wide for 7 days, and the Agency Owner can hide every offer from Settings › Preferences. The Leak roster gains a Removal column and a Gone-after-notice column. Phase 4's Demo tracker seeds every state with a disabled button and no egress; until then the demo keeps the tracker off.
+Every state carries "Notices updated <time>". When the last ingest is more than 48 h old, a stale banner replaces the counts. The Removal offer is a single drill-in card that only an Owner or Admin sees. It leads with the first true angle from the Agency's own counts and has one CTA, "Contact us to start removal". That opens the Start removal popup: the service's generic captioned video with the Creator's own results drawn over it by the CRM, the results as text, a labelled before/after Removal preview, and the link to the service's `contact_url`, which carries no handle. An `active` or `former` Creator's Removal area also shows a Taken down gallery of before/after sliders for Leaks gone after a Notice. Removal is never self-serve. No button, switch or form in the CRM turns it on. The service owner talks to the client and then links them with the mapping CLI, and only that sets the Service status to `active`. A "Not now" snoozes it agency-wide for 7 days, and the Agency Owner can hide every offer from Settings › Preferences. Each Creator's entry in the Leak roster (the left Creator column) gains a Removal chip and a Gone-after-notice line. Phase 4's Demo tracker seeds every state with a disabled button and no egress; until then the demo keeps the tracker off.
 
 ## User Stories
 Notice feed (Laptop leak tools)
@@ -44,8 +44,8 @@ Ingest and mapping (Removal service repo)
 23. As an Agency, I want a deleted Leak watch to stop showing Notices at once, and a re-enrolled Creator (a new `watch_id`) to start with no Removal client link, so that Notices no longer show for a Creator I removed and a late delete retry can never unlink the new watch.
 
 Service status and Removal track (Tracker API + CRM)
-24. As a Team Leader, I want the roster's Removal column to read Active, Pending or —, so that I can see at a glance which Creators the service works on.
-25. As a Team Leader, I want the roster's Gone-after-notice column to read "N of M" for active and former Creators while the feed is fresh, and — otherwise, so that the roster never shows stale or non-client counts.
+24. As a Team Leader, I want each Leak roster entry's Removal chip to read Active or Pending, with no chip otherwise, so that I can see at a glance which Creators the service works on.
+25. As a Team Leader, I want each Leak roster entry to add "N of M gone after notice" for active and former Creators while the feed is fresh, and nothing otherwise, so that the roster never shows stale or non-client counts.
 26. As a Team Leader viewing an active Creator, I want "N of M noticed Leaks gone", "Gone, no notice on file", Delisted and "live after notice" as counts, so that I see what happened without any rate or credit claim.
 27. As a Team Leader, I want "Gone after notice" to count a Leak only when the first dead Origin probe of its current gone spell came after its first Notice, once per Leak, and "Gone, no notice on file" to count only gone Leaks with no Notice at all, so that natural decay is never shown as the service's work and a noticed Leak is never labelled un-noticed.
 28. As a Team Leader, I want Delisted only from a Google decision imported as a Notice outcome, so that a Google miss never reads as a delisting.
@@ -63,18 +63,35 @@ Removal offer (CRM)
 38. As a Team Leader or Chatter, I want never to see the offer, enforced by the Relay, so that the page stays a work tool for me.
 39. As an Agency Owner or Admin, I want no offer before the Creator's first Daily scan is complete, so that the card never speaks before there is data.
 40. As an Agency Owner or Admin, I want the offer's lead line to be the first angle that applies: came back in 30 days, gone at origin but still in Google, up 30 days or more, new this week, then any Visible Leaks, so that it reads as a fact about my Creator.
-41. As an Agency Owner or Admin with no Visible Leaks, I want a quiet line, "No live leaks found. {brand} also handles removals if you need them.", that still links to the contact, so that a clean result is not turned into a scare.
+41. As an Agency Owner or Admin with no Visible Leaks, I want a quiet line, "No live leaks found. {brand} also handles removals if you need them.", that still carries the "Contact us to start removal" link, so that a clean result is not turned into a scare.
 42. As an Agency Owner, I want the offer to show counts only, with no percentage, price, revenue estimate, competitor price or cadence promise, so that it stays honest.
-43. As an Agency Owner, I want "Message {brand}" to open the service's `contact_url` as given, with the prefill text the service put in it, in a new tab with no referrer and with nothing about the Creator or the tracker added, so that I choose what to share.
+43. As an Agency Owner, I want "Contact us to start removal", the offer's only CTA, to open the Start removal popup (story 52), whose main button opens the service's `contact_url` as given, with the prefill text the service put in it, in a new tab with no referrer and with nothing about the Creator or the tracker added, so that I choose what to share.
 44. As an Agency Owner or Admin, I want "Not now" to hide the card for that Creator for 7 days for the whole Agency, and new findings not to reset it, so that one dismissal holds.
 45. As an Agency Owner, I want a "Hide removal offers" switch in Settings › Preferences, off by default, that only I can change, so that the Agency can opt out of the offer completely.
 46. As an Agency member linked to two Agencies, I want the hide setting and snooze read for the active Agency only, so that one Agency's choice never decides another's.
 47. As an Agency Owner, I want no card when the Tracker API sends no brand or no valid https `contact_url`, so that a self-hosted install without an offer never shows a broken one.
 48. As a Team Leader, I want the Today strip and the bell to carry no offer, so that the offer has one place.
 
+51. As an Agency Owner, I want no button, switch, setting or form anywhere in the CRM that starts removal, and the Removal area for `none`, `former` or `unknown` never to offer more than the contact link, so that removal starts only after the service owner has spoken with me personally and linked me with the mapping CLI (stories 20, 31).
+
+*Visuals (owner 2026-11-27, wayfinder tickets 12-14):*
+
+52. As an Agency Owner or Admin, I want "Contact us to start removal" to open a "Start removal with {brand}" popup holding a short video, my Creator's results and a Removal preview, with the contact link as its main button, so that I see what removal does before I reach out.
+53. As an Agency Owner or Admin, I want the popup's video to be the service's generic captioned presenter take, played in the CRM with no autoplay and nothing about my Creator in its requests, so that the browser never loads a third-party page.
+54. As an Agency Owner or Admin, I want the popup's results card to repeat the offer's lead line and count and "Last checked <date>" as text, from a live read with the offer decision rerun on open, so that it never shows stale or out-of-scope results.
+55. As an Agency Owner or Admin, I want the Removal preview's before side to be one of my Creator's Visible Leaks as the service records it (actual pill, "First recorded <date>"), and its after side a labelled illustration, with a fixed "Preview · not removed" badge, so that a preview is never mistaken for a done removal.
+56. As an Agency Owner or Admin of an `active` or `former` Creator, I want a Taken down gallery of up to 6 before/after sliders for Leaks gone after a Notice, each captioned "Gone after notice · observed gone <date>" and hidden whenever the Notice feed or the read is stale, so that I can see removals that happened.
+57. As a keyboard or screen-reader user, I want each slider to be a labelled native range with Before and After value text and two endpoint buttons, with no automatic motion, and the popup to trap and restore focus and close on Escape, so that both work without a pointer.
+58. As a phone user, I want the popup as a full-height sheet under 640 px with the video full width and the contact button reachable at 320 px and 200 % zoom, so that it works on a phone.
+59. As an Agency Owner or Admin, I want the popup to drop the player when there is no video or its video or captions fail, keep playing without a poster when only the poster fails, and always keep the results, preview and contact, so that a missing asset never blocks contact.
+60. As the owner, I want the video's bytes served by the Relay from fixed service files, with only the key and one Range sent upstream and `no-store` on every response, so that the take stays on the service and nothing is cached.
+61. Built by Phase 4 on the Demo tracker: the popup with `video: null`, the generic illustration and a disabled contact button; the video routes answer 404 locally.
+62. As an Agency Owner or Admin, I want the popup's video to show my Creator's own results as it plays: Google results, then Google Images tiles, then Mega, forum and X finds, each flipping to a labelled "Removed" illustration, drawn by the CRM over the player from the live read and timed by the service's cue table, so that the video shows what removal would do for this Creator while nothing about the Creator reaches the service.
+63. As a phone or reduced-motion user, I want the overlays below the video under 640 px, instant swaps with no motion when reduced motion is set, and the results card alone when the cue table is missing, so that the overlays stay readable and never block the video.
+
 Demo
 49. Built by Phase 4 (its story 48) on the Demo tracker: seeded Creators for every Removal area state and every offer angle.
-50. Built by Phase 4 (its story 48) on the Demo tracker: the demo's "Message" button disabled and no tracker or contact request. Until then the demo keeps the tracker off.
+50. Built by Phase 4 (its story 48) on the Demo tracker: the demo's "Contact us to start removal" button disabled and no tracker or contact request. Until then the demo keeps the tracker off.
 
 ## Implementation Decisions
 - **Owns.**
@@ -89,7 +106,8 @@ Demo
   - *CRM, this repo*:
     - a new Relay module `leak_removal`, which holds the pure Removal area and offer decisions;
     - modified: Phase 1's Leak tracker Relay module (drill-in and roster reads, plus one new snooze route), `settings_schema` and `settings_api` (one preference), and `db.models` (`leak_watch.offer_snoozed_until`);
-    - new app components: the drill-in Removal area, the Removal offer card, and a pure copy table for the offer copy;
+    - new app components: the drill-in Removal area, the Removal offer card, a pure copy table for the offer copy, the Start removal popup (`StartRemovalPopup`) with its overlay layer (`PopupOverlay`, pure `popupOverlay.ts`), the before/after slider (`RemovalSlider`, pure `removalSlider.ts`) and the Taken down gallery;
+    - Relay additions in `leak_removal`: the popup read (with its pure `overlay_scenes` and cue check) and the offer-video route;
     - modified app code: Phase 1's Leak roster and drill-in, `PreferencesTab`, and `appliedSettings`;
     - in `demo/`: nothing in this Phase. Phase 4 builds the Demo section below with its Demo tracker, seed and boot patch.
 - **Channel table** (the exporter's authority). Only confirmed sends become `sent` events. Decisions become `decision` events.
@@ -136,8 +154,8 @@ Demo
   ```
   - Withheld = events whose (src, src_client) has no `source_links` row, whose `src_client` is null, or whose source is ignored.
   - Ignoring a source client deletes its stored events at once; later ones are withheld like an unmapped source's. Events of linked sources are the owner's case records under the owner's own retention (ticket 10), and no tracker clock deletes them.
-  - `client_watches` is keyed by `watch_id`, as ADR-0071 keys everything in the service. A watch with no `client_watches` row has Service status `none`.
-- **Notices join at read time.** A Leak's `notice` and `notice_outcome` entries are not copied into per-Leak rows. The read builds them by joining on url key: from the watch to `client_watches`, to the Removal client, to its linked, non-ignored sources, to `notice_events`. So pre-discovery attach and a mapping fix cost nothing, and the notice store is itself append-only; the Leak event log stays the append-only record of what was observed, and the mapping only decides which Agency may see a Notice. The leak read serves the joined entries inside each Leak's `events` list as `notice` and `notice_outcome` events, the ADR-0070 types, as well as in the grouped `notices` lines.
+  - `client_watches` is keyed by `watch_id`, as ADR-0076 keys everything in the service. A watch with no `client_watches` row has Service status `none`.
+- **Notices join at read time.** A Leak's `notice` and `notice_outcome` entries are not copied into per-Leak rows. The read builds them by joining on url key: from the watch to `client_watches`, to the Removal client, to its linked, non-ignored sources, to `notice_events`. So pre-discovery attach and a mapping fix cost nothing, and the notice store is itself append-only; the Leak event log stays the append-only record of what was observed, and the mapping only decides which Agency may see a Notice. The leak read serves the joined entries inside each Leak's `events` list as `notice` and `notice_outcome` events, the ADR-0075 types, as well as in the grouped `notices` lines.
 - **Notice time** = `at`, or `observed_at` when `at` is null. For a `former` link, an event whose Notice time is after `status_since` is left out, so an undated row first imported after the cancellation is left out too: the track never claims a Notice it cannot date before the end.
 - **Removal track derivation** (service, per Leak watch, confirmed Leaks, any kind). These counts are served only for `active` and `former`; for every other status the field is null. A Leak's current Origin status is the one its Leak event log derives, whichever lane wrote it (a Phase 2 Mega `deleted` pack is gone; absence from results never is).
   - `noticed`: Leaks with at least one `sent` Notice.
@@ -155,6 +173,11 @@ Demo
 - **Tracker API additions** (contract to the Relay). Unknown fields are ignored, and a field the Relay does not recognise reads as absent.
   - `GET /v1/me`: adds `notices_updated_at` (iso, or null). `brand` and `contact_url` are Phase 1's; this Phase adds the rule that the service's env `contact_url` carries the generic prefill ("Hi, I'd like help with removals for one of my creators") and no tenant, watch or Creator data, checked by the service test.
   - The creator reads (list and one): add `service_status`, `service_status_since`, `removal` (the five counts, or null), `offer_counts` and `first_daily_at` (the finish time of the watch's first `daily_scans` row with outcome `ok` or Phase 2's `partial`, or null).
+  - `GET /v1/me` also adds `video: {duration_s, has_poster, cues} | null`, non-null only when the service holds a captioned take. A missing field reads as null. `cues` is `[{t_s, kind}] | null`, `kind` ∈ `google` | `google_images` | `mega` | `forum` | `x` | `end`: the service's own cue times for its take, the same for every tenant.
+  - The creator read (one) adds:
+    - `taken_down: [{leak_id, leak_site, kind, title, gone_at, preview}] | null`: for `active` and `former` only, at most 6 Leaks with `gone_after_notice` true and a Gone pill, newest gone event first, `leak_id` as tie-break; `gone_at` is the current gone event's time; `preview` is Phase 2's field.
+    - `preview_leak: {leak_id, leak_site, kind, title, pill, first_seen_at, preview} | null`: the Visible Leak with the newest `preview.seen_at`, else the most recently seen live `page` Leak, else null.
+  - `GET /v1/offer-video/{part}`, `part` ∈ `video` | `poster` | `captions`, each one fixed service file with a fixed type (`video/mp4`, `image/webp`, `text/vtt`). Tracker key. One byte range on `video`, 416 on a bad or multiple range, 404 when absent.
   - The leak read: adds to each Leak, for `active` and `former` only, `notices: [{channel, day, n, outcome}]` (grouped by channel, url key and day), `first_notice_at`, `gone_after_notice`, `delisted`, and the joined `notice` and `notice_outcome` entries in `events`.
   - Watch delete: changes nothing in `client_watches`. Phase 1 hides the deleted watch from every read at once, so its Notices stop showing; the row stays until Phase 1's purge removes it through `WATCH_TABLES`. Notices are kept by linked source, not by watch, so the purge touches none. A re-enrolment has a new `watch_id` and no row.
 - **Tracker mapping CLI** (owner-run inside the service container). It is the only writer of `source_links`, `removal_clients` and `client_watches`. It never matches by handle.
@@ -187,7 +210,28 @@ Demo
   - `/v1/me` gave a non-empty `brand` (at most 40 characters) and an absolute https `contact_url` (at most 512 characters).
 
   When it holds, it returns `{brand, contact_url | null, angle, n}`. `angle` is `clean` whenever `visible` is 0, checked first, so a Leak that came back and is gone again never turns a clean result into a pitch (06). Otherwise it is the first non-zero of `came_back`, `cached`, `live_30d`, `new_week`, then `visible`. `contact_url` is null when the demo has turned contact off.
-- **Drill-in and roster payloads** (Relay to app). The drill-in gains `removal: {status, view, notices_updated_at, stale, counts | null}` and `offer: … | null`. Each roster row gains `service_status`, plus `noticed` and `gone_after_notice` (null unless active or former with a fresh feed).
+- **Drill-in and roster payloads** (Relay to app). The drill-in gains `removal: {status, view, notices_updated_at, stale, counts | null, taken_down | null}` and `offer: … | null`. `taken_down` is null unless `counts` is non-null and the read did not come from Phase 1's read cache. Each roster row (one Leak roster entry) gains `service_status`, plus `noticed` and `gone_after_notice` (null unless active or former with a fresh feed).
+- **Popup read.** `GET /admin/leaks/watches/{account_id}/offer` → `{offer, preview_leak | null, video | null, scenes, last_checked_at}`. `video.cues` is kept only when sorted by `t_s`, inside `duration_s`, at most 12 entries and every `kind` known; otherwise it is null. `scenes` comes from `overlay_scenes(leaks)` over the same live leak read: per kind, the Creator's Visible Leaks as `{leak_id, leak_site, kind, title, pill, preview}`, newest seen first, at most 4 (6 for `google_images`): `google` from source `google_web`, `google_images` the `media` Leaks with a `preview`, `mega` Kind `mega`, `forum` source `site_search` off X, `x` Leak site `x.com` or `twitter.com`. Owner or Admin, Phase 1's gates and path rule. It makes a live creator read and `/v1/me` read, never the read cache, and reruns `removal_offer`; null answers 404 and the app closes the popup. The app drops the popup on Agency or Creator change.
+- **Offer-video route.** `GET /admin/leaks/offer-video/{part}`.
+  - Tracker gates plus Owner or Admin; 404 otherwise.
+  - Calls only `LEAK_TRACKER_URL`, no redirects, building outbound headers fresh: Bearer plus one validated `Range`.
+  - Refuses an upstream type other than the part's; bounds size, concurrent streams per Agency and time.
+  - Passes `Content-Range`, `Accept-Ranges` and `Content-Length`; sets the fixed type, `nosniff` and `Cache-Control: private, no-store` on every status. Stores nothing.
+  - An upstream 401 runs Phase 1's invalid-key handling. Logs carry no key, URL or handle.
+- **No iframe and no CSP change.** The service's pages refuse framing (`frame-ancestors 'none'`), and personalising them would need a handle or public scan id in a URL. The CRM sends no Content-Security-Policy today and every new source is same-origin; a future CSP needs `media-src 'self'`.
+- **Start removal popup** (app, `IfModal`). In order: the video (`<video playsinline preload="metadata" controls>`, captions `<track kind="captions" default>`, no autoplay or loop, with the overlay layer below); the results card (lead line, count, "Last checked <date>"); the Removal preview; the contact button with the Copy rules. Under 640 px it is the house full-height sheet. Closing snoozes nothing.
+  - Fallback: `video` null, or the video or captions part failing, gives no player; a poster failure keeps the player.
+- **Popup overlays** (`PopupOverlay`, rung 2: "video showing video with the model results"). The CRM draws them over the native player, synced to `currentTime` on `timeupdate` and `seeked`, from `scenes`; the video bytes stay the one generic take and no request names the Creator.
+  - Pure `activeScene(cues, t)` and `sceneView(scene, t, start, end)` in `popupOverlay.ts`. A scene runs from its cue to the next. `google` shows result rows (site, title); `google_images` a grid under Phase 2's `thumbState` (blurred, SFW placeholder with no request, previews off: site and title cards only); `mega`, `forum` and `x` show site and title cards with the Leak's pill. An empty scene reads "None found here".
+  - From each scene's midpoint its cards flip to the slider's generic "Removed" illustration with the fixed "Preview · not removed" badge (the slider's honesty rule). `end` shows the offer's lead line and count.
+  - `cues` null: no overlays, the results card only. The overlay layer is `aria-hidden`; the results card carries the same facts as text, and captions stay required.
+  - `prefers-reduced-motion`: instant swaps, no fades or slides. Under 640 px the layer sits below the video instead of over it (variant E's prototype found overlays unreadable on a small player).
+- **Before/after slider** (`RemovalSlider`).
+  - Before: Leak site, title, Kind icon, actual pill, "First recorded <date>", and Phase 2's preview under its `thumbState` rule (starting blurred on every popup open), else the Kind icon. Escaped text, local icons, no favicons.
+  - After: one generic panel in a neutral frame: the Leak site's domain, a crossed-out icon, "No longer available", and an "Illustration" label. No third-party logos, colours or per-Kind look-alikes.
+  - Control: a native `<input type="range">` 0-100 step 10 labelled "Before and after", `aria-valuetext` from `sliderText(position, isPreview)` in `removalSlider.ts`, the illustration note in its accessible description, endpoint buttons "Preview removal" and "Show again", `touch-action: pan-y`, no sweep. One position, so `useState`.
+  - Removal preview (popup): `preview_leak`, or a generic illustration with no Leak data when it is null; a fixed "Preview · not removed" badge.
+  - Taken down gallery (Removal area, `active` and `former`): `removal.taken_down`, no count, rate or percentage.
 - **Snooze route.** `POST /admin/leaks/watches/{account_id}/offer-snooze` with `{snoozed: true}` → `{offer_snoozed_until}`. It sets the active Agency's `leak_watch.offer_snoozed_until` to now + 7 days; there is no un-snooze. It sits behind Phase 1's Tracker gates and path rule (404) and is Owner or Admin only (403). Once the drill-in is reopened, a snoozed Creator simply has no card (06). Under `/watches/*` it falls in Phase 1's demo LOCKED rule.
 - **Hide setting.** `hide_removal_offers` is added to the `preferences` tab, after the `hide_trial_popup` precedent. It is written only through the existing owner-session `PUT` of that tab. The Relay reads it from the active Agency's applied preferences, never through the `all` merge. `PreferencesTab` shows the toggle only when the active Agency's `leak_tracker` flag is on.
 - **Copy** (app, generic, brand from runtime).
@@ -199,7 +243,8 @@ Demo
     - "{n} new leaks this week."
     - "{n} leaks are up right now."
   - Second line: "{brand} files removal notices and follows them up."
-  - Buttons: "Message {brand}" and "Not now". After a snooze the card is replaced by "Removal offer hidden until <date>."
+  - Buttons: "Contact us to start removal" (the only CTA; it opens the Start removal popup, whose main button "Contact {brand}" opens `contact_url`, where the client messages {brand}) and "Not now".
+  - Popup: title "Start removal with {brand}"; preview badge "Preview · not removed"; after caption "Illustration · what a removed page can look like"; gallery caption "Gone after notice · observed gone <date>"; preview image label "Google preview · image may be unrelated". After a snooze the card is replaced by "Removal offer hidden until <date>."
   - The clean line is the one quoted in story 41.
   - The link is `target=_blank rel="noopener noreferrer" referrerPolicy="no-referrer"`, and the app adds no query string.
   - Notice lines are labelled by channel: "Notice sent · site", "· host", "· Google DMCA", "· Google outdated".
@@ -207,6 +252,7 @@ Demo
 - **Demo.** Built by Phase 4 with its Demo tracker (moved from Phase 1); this is what it must serve for this Phase.
   - The Demo tracker fixture gains a fake brand, a `.invalid` `contact_url`, a fresh `notices_updated_at`, and one Creator per state: none with each angle, none clean, unknown, pending, active with Notices, active with zero Notices, and former.
   - The seed snoozes one Creator.
+  - `/v1/me` answers `video: null`, so the popup shows the results card, the generic illustration and the disabled contact button; the offer-video routes answer 404 locally.
   - The demo boot swaps `leak_removal.CONTACT_ENABLED` to False through `demo.patch.swap`, so `contact_url` is null and the button renders disabled. The snooze route is LOCKED by Phase 1's `/admin/leaks/watches/*` rule, so "Not now" renders disabled too, and the seeded snoozed Creator shows no card.
 - **Laptop config.** The service base URL and the Ingest key come from the tools' existing out-of-git config or the environment, and are never written into the repo. The launchd agent runs `nice -n 10` and logs to the tools' log directory.
 
@@ -223,7 +269,11 @@ One seam per repo, plus the app render, joined by one end-to-end contract run (r
   - gates off gives 404;
   - a non-https, overlong or missing `contact_url` or brand gives null;
   - `removal.counts` is null when stale;
-  - roster columns per status, and neither the roster rows nor any Today strip payload carry an `offer` key;
+  - the roster entry chip and Gone-after-notice line per status, and neither the roster rows nor any Today strip payload carry an `offer` key;
+  - the popup read: Owner and Admin get it, Team Leader 403 and Chatter 404; a snoozed, hidden or cleaned-up offer answers 404; it calls the fake even when the read cache holds a copy;
+  - `cues` unsorted, past `duration_s`, over 12 or with an unknown kind answers `cues: null`; `overlay_scenes` per-kind mapping, caps and order; no outbound request to the service carries a handle, `watch_id` or Leak id on the video route;
+  - `taken_down` null when stale, when served from the read cache, and for `none`;
+  - the offer-video route: Owner or Admin only; outbound headers are Bearer and one Range only; a multi-range request is refused; an upstream wrong type is refused; 401 marks the key invalid; every response carries `no-store` and `nosniff`; a fake redirect is not followed;
   - when `LEAK_CONTRACT` names a file, the fake serves the real `/v1/me`, creator and leak responses recorded by the Removal service repo's end-to-end test, and the drill-in shows the expected view and counts from them.
 
   `service/tests/test_settings_api.py` gains `hide_removal_offers`: it parses as a bool and refuses a chatter `PUT`.
@@ -233,7 +283,10 @@ One seam per repo, plus the app render, joined by one end-to-end contract run (r
   - the stale banner in place of counts;
   - the angle sentences from the copy table;
   - no `%` or currency sign in any rendered copy;
-  - the link has `href` equal to `contact_url` exactly, plus `rel` and `referrerPolicy`;
+  - the card's CTA opens the popup; the popup's contact link has `href` equal to `contact_url` exactly, plus `rel` and `referrerPolicy`;
+  - the Taken down gallery from `taken_down`, absent when null.
+
+  `popupOverlay.test.ts`: `activeScene` before the first cue, on each cue, between cues and after `end`; `sceneView` flipping at the midpoint; every view carrying the badge once flipped. `StartRemovalPopup.test.tsx`: the order of sections; overlays absent with `cues` null; a seek moving the active scene; the images scene with no `<img>` under SFW and site and title cards with previews off; the layer below the video at phone width; no player with `video` null, a failed video or failed captions, and the player kept with a failed poster; focus trapped and restored, Escape closes; a preview image blurred on every open and absent under SFW; phone width shows the sheet. `removalSlider.test.ts`: `sliderText` over every position and both modes, the illustration note in every preview text.
   - a null `contact_url` gives a disabled button;
   - "Not now" posts `{snoozed: true}` and shows the hidden-until line with no Undo.
 
@@ -256,7 +309,9 @@ One seam per repo, plus the app render, joined by one end-to-end contract run (r
   - the offer counts and `first_daily_at`;
   - `/v1/me` `contact_url` equals the env value and carries the generic prefill;
   - watch delete hides the watch's Notices at once and leaves `client_watches`; a re-enrolment with a new `watch_id` has status `none`, and a late DELETE of the old id leaves the new watch's link alone;
-  - two tenants never see each other's Notices.
+  - two tenants never see each other's Notices;
+  - `taken_down` order, the cap of 6, the tie-break, null for other statuses; `preview_leak` choice and null;
+  - `test_tracker_offer_video.py`: each part's fixed file and type, one Range answered 206, a bad or multiple range 416, an absent part 404, another key's tenant answered the same generic take, `video` null in `/v1/me` with no captions file, and `cues` equal for two tenants.
 - **End-to-end contract** — `app/tests/test_tracker_notices_e2e.py` in the Removal service repo, skipped unless `LEAK_TOOLS_REPO` and `LEAK_TOOLS_CLI` are set. It starts the real local server on a temporary tracker DB, runs the real exporter (`notices push`, with its ledger paths pointed at the laptop tools' fictional fixture ledgers and its base URL at the local server), links the sources and one watch with the mapping CLI, then reads `/v1/me`, the creator read and the leak read with a Tracker key. It asserts the expected counts and Notice lines, runs the exporter again and asserts nothing changed, and writes the three responses to `$LEAK_CONTRACT_OUT` for the CRM Relay test.
 - **Laptop leak tools** — `tests/test_noticepush.py` (pytest) over fictional fixture ledgers. Cases:
   - each channel-table row's keep and drop rule, including `ok` with no message id, a form mark, a registrar recipient, a filed URL whose notice has no receipt or no report id, a `partial` notice dropped whole, imported versus hand stamps, and each stamp form's channel (and `bing` dropped);
@@ -286,7 +341,7 @@ PY=${PY:-$ROOT/venv/bin/python}
 export LEAK_TOOLS_REPO LEAK_TOOLS_CLI
 export LEAK_CONTRACT_OUT=$(mktemp -d)/contract.json
 (cd "$LEAK_TOOLS_REPO" && nice -n 10 uv run pytest -q tests/test_noticepush.py)
-(cd "$REMOVAL_REPO" && nice -n 10 python3 -m pytest -q app/tests/test_tracker_notices.py && nice -n 10 python3 -m pytest -q app/tests)
+(cd "$REMOVAL_REPO" && nice -n 10 python3 -m pytest -q app/tests/test_tracker_notices.py app/tests/test_tracker_offer_video.py && nice -n 10 python3 -m pytest -q app/tests)
 (cd "$REMOVAL_REPO" && nice -n 10 python3 -m pytest -q app/tests/test_tracker_notices_e2e.py)
 test -s "$LEAK_CONTRACT_OUT"
 grep -q '"notices_updated_at"' "$LEAK_CONTRACT_OUT"
@@ -294,12 +349,13 @@ LEAK_CONTRACT=$LEAK_CONTRACT_OUT nice -n 10 $PY service/tests/test_leak_removal_
 nice -n 10 $PY service/tests/test_settings_api.py
 grep -q '"hide_removal_offers"' service/settings_schema.py
 grep -q 'offer_snoozed_until' service/db/models.py
-(cd app && nice -n 10 pnpm exec vitest run components/leaks/RemovalArea.test.tsx components/settings/PreferencesTab.test.tsx)
+(cd app && nice -n 10 pnpm exec vitest run components/leaks/RemovalArea.test.tsx components/leaks/StartRemovalPopup.test.tsx components/leaks/popupOverlay.test.ts components/leaks/removalSlider.test.ts components/settings/PreferencesTab.test.tsx)
 nice -n 10 $PY -m pytest -q demo/tests
 nice -n 10 scripts/run-tests.sh
 # manual: owner runs `notices push --dry-run` on the real ledgers and reconciles 10 recent filings they remember against its per-ledger counts (kept, dropped by reason, null src_client); material gaps park the feed before any Agency sees counts
 # manual: owner installs the launchd agent with the tools' installer flag, confirms one 13:00 run, then on the service: `sources` lists every source client, `withheld` is empty after linking, `/v1/me` notices_updated_at is today
-# manual: owner maps 1-2 AE Creators (one active, one none) and checks on AE: active drill-in shows the track with "Notices updated", none shows the offer to Owner only, "Message" opens the chat with no handle in the URL, "Not now" hides it for 7 days
+# manual: owner maps 1-2 AE Creators (one active, one none) and checks on AE: active drill-in shows the track with "Notices updated", none shows the offer to Owner only, "Contact us to start removal" opens the Start removal popup and its contact button opens the chat with no handle in the URL, and no CRM control turns removal on, "Not now" hides it for 7 days
+# manual: verify-app on a local stack with a fixture Tracker serving a synthetic captioned clip: open the popup on desktop and phone, play and seek (206 responses), keyboard through the slider and to the contact button, overlays following a seek on desktop and sitting below the video on phone, reduced motion on, screenshots of the trigger and the settled popup, plus the popup read's response
 ```
 
 ## Depends on
@@ -314,6 +370,8 @@ nice -n 10 scripts/run-tests.sh
 ## Out of Scope
 - Filing Notices from the CRM: takedown stays in the owner's tools (map out of scope).
 - An in-app removal request (`POST /v1/removal-requests`): 06 chose a chat link.
+- Framing the service's personalised video page, overlays burned into the video by the service, and a transcript (wayfinder ticket 13).
+- Per-Kind or per-site after panels, an ambient slider sweep, and a gallery past 6 (wayfinder ticket 12).
 - A Bing channel: there is no ledger for it (09).
 - Recovering history that self-overwriting ledgers already lost: it cannot be recovered; the import starts at its first run (09).
 - Backups, tenant offboarding and key revoke: Phase 4. The watch purge clock: Phase 1. Retention of linked sources' Notices: the owner's own (ticket 10).
@@ -325,12 +383,12 @@ nice -n 10 scripts/run-tests.sh
 - The demo's Removal area and offer states: Phase 4, with the Demo tracker.
 - An export of Notices: the CSV export was cut from v1 (10 amended).
 - Price, revenue loss and competitor prices on the card: banned by 06.
-- Running the exporter more than once a day, or pulling from the laptop: ADR-0072.
+- Running the exporter more than once a day, or pulling from the laptop: ADR-0077.
 - Public-sync leak-check rules for this Phase's copy: Phase 1 adds the rules and Phase 4 verifies them. This Phase adds no brand to git.
 - Slop run: this Phase sends nothing in bulk and has no concurrency path; the owner rule says no slop by default.
 
 ## Further Notes
-ASSUMPTION: Notice entries of the Leak event log are served by a read-time join through the current Removal client mapping, not copied into per-Leak rows (rung 4: a wrong mapping disappears at the next read, and pre-discovery attach needs no job). Overturned if ADR-0070 is read as requiring physical copies; then an attach job copies them, and a mapping fix needs compensating events.
+ASSUMPTION: Notice entries of the Leak event log are served by a read-time join through the current Removal client mapping, not copied into per-Leak rows (rung 4: a wrong mapping disappears at the next read, and pre-discovery attach needs no job). Overturned if ADR-0075 is read as requiring physical copies; then an attach job copies them, and a mapping fix needs compensating events.
 ASSUMPTION: a self-overwriting ledger's "diff" is the content-addressed id (rung 5: no exporter state, and a full replay heals). An outcome that changes A→B→A does not append A again. Overturned if the owner needs every flip.
 ASSUMPTION: `src` values are generic (`mailer`, `form_ext`, `google_filer`, `stamp`) so that no private tool name enters the public contract (rung 4). Overturned if the owner wants the tools' own names, which would have to stay out of docs/.
 ASSUMPTION: the feed counts as updated only on a complete run (every seq once, counts summing to `total`), and rejected and withheld rows count toward completeness (rung 4: one bad or unmapped row must not keep the feed stale forever; the exporter still exits non-zero on a rejection). Overturned if the owner wants any rejected row to block freshness.
@@ -363,6 +421,18 @@ ASSUMPTION: `first_daily_at` counts a `partial` Daily scan as a first daily scan
 
 ASSUMPTION: the Ingest key lives as a sha256 in the service env, with one key for the owner (rung 5). Overturned when a second ingest source appears.
 
+ASSUMPTION: the CTA opens the Start removal popup instead of the link (rung 2: "the new popup of contact team to start"). Overturned if the owner wants the link one click away; then the card gets both.
+
+ASSUMPTION: overlay scenes read `forum` as source `site_search` off X and `x` as Leak site `x.com` or `twitter.com` (rung 5: no new Leak kind). Overturned if the service gains a forum Kind; then the mapping reads it.
+
+ASSUMPTION: the video is Owner and Admin only, like the offer (rung 3). Overturned if Team Leaders should watch it.
+
+ASSUMPTION: captions are required for the player, with no transcript (rung 3: the service turns captions on by default; rung 5). Overturned by an accessibility review asking for a transcript.
+
+ASSUMPTION: the Taken down gallery stops at 6 and sits beside the Notice lines (rung 2: "beautiful sliders"; rung 5 for 6). Overturned if the owner finds it duplicates the Notice lines; then only the dated row stays.
+
+ASSUMPTION: one generic after panel (rung 4: a look-alike of a real site's removal page is a trademark and honesty risk). Overturned if the owner wants per-Kind looks.
+
 ## Review
 
 Reviewer: codex, 2026-11-27. Blind call (B) before the spec, draft call (D) on it.
@@ -387,7 +457,7 @@ Reviewer: codex, 2026-11-27. Blind call (B) before the spec, draft call (D) on i
 - D4 accept: URL-keyed ledgers have no client field; source client resolves by url key to exactly one client in the tools' findings, else withheld; host = the extension's registrar check (new ASSUMPTIONs).
 - D5 partial: file-mtime fallback for filing time is banned (null instead); the former cutoff keeps the conservative rule and also excludes undated events first seen after `status_since`.
 - D6 accept: a late DELETE could unlink a re-enrolled watch, and Phase 4 needs the mapping at purge; `client_watches` is keyed by `watch_id`, untouched by delete, removed by the Phase 4 purge.
-- D7 partial: ADR-0070's append-only log is kept by making ignore non-destructive (events stay, never served) and serving notice/notice_outcome in `events`; the read-time join stays rather than writing derived rows.
+- D7 partial: ADR-0075's append-only log is kept by making ignore non-destructive (events stay, never served) and serving notice/notice_outcome in `events`; the read-time join stays rather than writing derived rows.
 - D8 accept: gone-after-notice attribution fixed (D8 = B8) and Phase 2's Mega `deleted` counts as gone; the "link-only never gone" rule removed.
 - D9 accept: came_back with visible 0 now picks `clean` first whenever visible is 0 (Offer).
 - D10 accept: first-daily input added (`first_daily_at`); brand, contact_url and cached are taken from Phase 1, the Today strip from Phase 2 (Depends on).
@@ -408,15 +478,22 @@ Cross-Phase lines above, applied in the plan review: the `dead_since` line is no
 ### Six hats
 One six-hats pass over the four specs, 2026-11-27. Bullets touching this Phase:
 - 6 (Phase 4 says Phase 3 drops `client_watches` at delete; Phase 3 keeps it for the purge) — **accept**: the row stays until Phase 1's purge removes it through `WATCH_TABLES`. It no longer needs reading first, because Notices are kept by linked source, not by watch.
-- 7 (nobody owns "Notices for non-clients are not kept" or withheld/ignored retention) — **accept**: this Phase owns it. Withheld events are counted, not stored; ignoring deletes a source's stored events; linked sources' Notices are the owner's case records. This overturns D7's non-destructive ignore: ticket 10 is rung 2, ADR-0070's append-only rule covers the Leak event log, and the notice store is a replayable copy of the owner's ledgers.
+- 7 (nobody owns "Notices for non-clients are not kept" or withheld/ignored retention) — **accept**: this Phase owns it. Withheld events are counted, not stored; ignoring deletes a source's stored events; linked sources' Notices are the owner's case records. This overturns D7's non-destructive ignore: ticket 10 is rung 2, ADR-0075's append-only rule covers the Leak event log, and the notice store is a replayable copy of the owner's ledgers.
 - 10 (`dead_since` into Phase 1) — **accept**: Owns, Depends on and the `dead_since` ASSUMPTION now read Phase 1's field.
 - 13 (`first_daily_at` counts only `ok`) — **accept**: it counts `ok` or `partial` (Tracker API additions, new ASSUMPTION).
 - 16 (the Cell-routing ask on Phase 1 is moot) — **accept**: moved under Phase 4's cell-mode ASSUMPTION.
 Counts: 5 accept, 0 partial, 0 reject.
 
 
+### Owner answers (2026-11-27)
+- Wayfinder ticket 08, D2: removal is never self-serve. The offer's only CTA is "Contact us to start removal" (`contact_url`), and the service owner personally links the client with the mapping CLI, which alone makes `service_status` `active`. Applied in Solution, stories 24, 25, 41, 43, 50 and the new 51, Copy, payloads, the Relay seam and Acceptance. The roster's columns became the Creator column entry's chip and line (D1).
+
 ### Fable round 3 (2026-11-27)
 - C1 (e2e skip convention differs between Phases) — **accept**: the contract-test ASSUMPTION now refers to Phase 1's convention (Seam 6): skip without the other checkout, write the output file when run, and Acceptance requires the file, which this block already does.
 - Sizing (Demo tracker leaves Phase 1) — **accept**: the Demo section, stories 49–50, the `demo/` Owns line, the demo seam and Depends on now say Phase 4 builds the demo states on its Demo tracker; this Phase keeps Phase 1's tracker-off test green.
 - Cut 5 (Hide setting and snooze Undo) — **partial**: Hide stays (ticket 06 states it) and the 7-day agency-wide snooze stays (06); Undo is cut and parked because 06 does not state it (story 44, Snooze route `{snoozed: true}` only, card copy, both tests, Out of Scope; the Undo ASSUMPTION is removed).
 - C2, C3, C4, cuts 1–4 and 6 — not this Phase's.
+
+### Owner answers (2026-11-27, visuals)
+- Owner: "beautiful sliders left right … video … with the model results on the new popup of contact team to start". Wayfinder tickets 12, 13 and 14 decided it, with a codex adversary per ticket (12: 13 accept, 1 partial, 0 reject; 13: 9 accept, 5 partial, 0 reject; 14: 7 accept, 6 partial, 1 reject). Applied in Solution, story 43 (amends ticket 08 D2: the CTA opens the popup, the link inside is unchanged), stories 52-63 (62-63, the popup overlays, restored on review: rung 2 "video showing video with the model results" overrules the rung-5 cut), Owns, the Tracker API additions (`video`, `taken_down`, `preview_leak`, `/v1/offer-video/{part}`), the popup read and offer-video routes, the popup and slider sections, Copy, Demo, the Relay, app and service seams, Acceptance, Out of Scope and six ASSUMPTIONs.
+- Preview images inside the popup and sliders follow Phase 2's previews switch, which stays off until the owner's legal go (ticket 14); while off, the sliders show the Kind icon.

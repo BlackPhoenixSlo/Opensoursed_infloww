@@ -404,7 +404,7 @@ def case_older_control_restore_keeps_owner_rows_and_denies_access() -> None:
         epoch = restart("s01", lambda: _restore_control(db["s01"], old))
         _wait(lambda: _q(db["s02"], "SELECT copy_epoch FROM cell_meta")[0][0] == epoch, 30)
         assert _q(db["s01"], "SELECT 1 FROM users WHERE id = ?", (owner,)) == [], "restore kept the owner"
-        assert _q(db["s02"], "SELECT username FROM users WHERE id = ?", (owner,)) == [("lateowner",)]
+        assert _q(db["s02"], "SELECT 1 FROM users WHERE id = ?", (owner,)) == [(1,)]
         assert _q(db["s02"], "SELECT text FROM agency_notifications WHERE agency_user_id = ?", (owner,)) == [
             ("Nova expired",)], "Cell-local CASCADE child deleted by the older copy"
         assert _q(db["s02"], "SELECT user_id FROM agency_copy_missing_owners") == [(owner,)]

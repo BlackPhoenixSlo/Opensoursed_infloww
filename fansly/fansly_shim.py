@@ -45,6 +45,10 @@ _RAISE = object()
 class FanslyUnsupported(FanslyAPIError):
     status_code = 501
 
+    def __init__(self, message: str, *, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+
 
 class FanslyBlocked(FanslyAPIError):
     status_code = 501
@@ -351,6 +355,10 @@ def _iso(epoch_seconds: Any) -> str | None:
         return datetime.fromtimestamp(float(epoch_seconds), tz=timezone.utc).isoformat()
     except (TypeError, ValueError, OSError):
         return None
+
+
+def _subscriber_id(v: Any) -> bool:
+    return (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, str) and v.isascii() and v.isdigit())
 
 
 def _avatar_url(account: dict) -> str | None:
@@ -746,6 +754,7 @@ class PurchaseFeed(TypedDict):
 class FanslyShimClient(VaultMixin, FanslyClient):
     SEND_REFUSALS = {"tagged_users": "platform_lacks:tagged_users",
                      "locked_text": "platform_lacks:locked_text"}
+    platform_list_page = 50
 
     @classmethod
     def send_refusal(cls, asked: Mapping[str, Any]) -> str | None:
@@ -1429,6 +1438,9 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         return self._request("GET", "/subscribers", params=params) or {}
 
     _SUB_STATUS_ACTIVE = 3
+    _SUB_STATUS_EXPIRED = 5
+    _SUB_ROSTERS = {"active": _SUB_STATUS_ACTIVE, "expired": _SUB_STATUS_EXPIRED}
+    ROSTER_INCOMPLETE = "platform_lacks:subscribers:incomplete"
 
     def _of_subscriber(self, row: dict, users: dict) -> dict:
         sid = str(row.get("subscriberId") or "")
@@ -1440,8 +1452,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
             "subscribedBy": row.get("status") == self._SUB_STATUS_ACTIVE,
             "subscribedByExpireDate": ms(row.get("endsAt")),
             "subscribedOnData": {"subscribeAt": ms(row.get("createdAt")),
-                                 "expiredAt": ms(row.get("endsAt")),
-                                 "renew": bool(row.get("autoRenew"))},
+                                 "expiredAt": ms(row.get("endsAt"))},
             "subscribePrice": (renew or 0) / 1000.0,
             "currentSubscribePrice": (row.get("price") or 0) / 1000.0,
             "fanslySubscription": {k: row.get(k) for k in (
@@ -1450,33 +1461,44 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         })
         return fan
 
-    def subscribers(self, *, type: str = "active", limit: int = 10,
-                    offset: int = 0, online: bool = False,
-                    **_ignored: Any) -> dict:
+    def _roster(self, type: str, online: bool) -> tuple[list[dict], bool]:
         payload = self._subscribers_payload()
         rows = [r for r in (payload.get("subscriptions") or []) if isinstance(r, dict)]
         want = str(type or "active").lower()
-        if want == "active":
-            rows = [r for r in rows if r.get("status") == self._SUB_STATUS_ACTIVE]
-        elif want == "expired":
-            rows = [r for r in rows if r.get("status") != self._SUB_STATUS_ACTIVE]
-        ids = sorted({str(r.get("subscriberId") or "") for r in rows} - {""})
+        status = self._SUB_ROSTERS.get(want)
+        odd = any(r.get("status") not in self._SUB_ROSTERS.values() for r in rows)
+        rows = [r for r in rows if r.get("status") == status
+                or (status is None and r.get("status") in self._SUB_ROSTERS.values())]
+        total = (payload.get("stats") or {}).get("totalActive")
+        ids = {str(sid) for r in rows if _subscriber_id(sid := r.get("subscriberId"))}
+        complete = (want == "active" and not odd and isinstance(total, int) and not isinstance(total, bool)
+                    and len(ids) == total)
         users: dict = {}
         if ids:
             try:
-                users = self.list_users(ids) or {}
+                users = self.list_users(sorted(ids)) or {}
             except FanslyAPIError:
                 log.warning("subscribers: profile hydration failed", exc_info=True)
         fans = [self._of_subscriber(r, users) for r in rows]
         if online:
             fans = [f for f in fans if f.get("isOnline")]
+        return fans, not complete
+
+    def subscribers(self, *, type: str = "active", limit: int = 10,
+                    offset: int = 0, online: bool = False,
+                    **_ignored: Any) -> dict:
+        fans, incomplete = self._roster(type, online)
         page = fans[offset:offset + limit] if limit else fans
-        return {"list": page, "hasMore": offset + len(page) < len(fans)}
+        return {"list": page, "hasMore": incomplete or offset + len(page) < len(fans)}
 
     def iter_online_subscribers(self, *, type: str = "active",
                                 page_size: int = 20, max_fans: int = 1000,
                                 **_ignored: Any) -> list[dict]:
-        return self.subscribers(type=type, limit=max_fans, online=True)["list"]
+        fans, incomplete = self._roster(type, True)
+        if incomplete:
+            raise FanslyUnsupported(f"iter_online_subscribers: {self.ROSTER_INCOMPLETE}",
+                                    reason=self.ROSTER_INCOMPLETE)
+        return fans[:max_fans] if max_fans else fans
 
     def subscription_counts(self, **_ignored: Any) -> dict:
         stats = (self._subscribers_payload().get("stats") or {})
@@ -1816,9 +1838,13 @@ class FanslyShimClient(VaultMixin, FanslyClient):
     def remove_user_from_list(self, list_id: str | int, user_id: str | int,
                               **_ignored: Any) -> dict:
         # Add and remove take DIFFERENT payloads: the add shape sent for a remove is accepted and silently does nothing
-        self._request("POST", "/lists/commands", json_body={"listCommands": [
-            {"type": 2, "listId": str(list_id),
-             "itemIds": [str(user_id)]}]})
+        lid, uid = str(list_id), str(user_id)
+        echoed = self._request("POST", "/lists/commands", json_body={"listCommands": [
+            {"type": 2, "listId": lid, "itemIds": [uid]}]})
+        if not isinstance(echoed, list) or not any(
+                isinstance(c, dict) and c.get("type") == 2 and str(c.get("listId")) == lid
+                and uid in [str(i) for i in c.get("itemIds") or []] for c in echoed):
+            raise FanslyAPIError(f"POST /lists/commands echoed no remove of {uid} from list {lid}")
         return {"success": True}
 
     def create_list(self, name: str, description: str = "",
@@ -1836,6 +1862,55 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         return {"list": [{"id": str(r.get("id")), "name": r.get("label") or ""}
                          for r in rows if isinstance(r, dict) and r.get("id")],
                 "hasMore": False}
+
+    def list_users_in(self, list_id: str | int, limit: int = 50, offset: int = 0,
+                      query: str | None = None) -> dict:
+        lid = str(list_id)
+        if not lid.isdigit() or limit != self.platform_list_page or offset or query is not None:
+            raise FanslyUnsupported(f"list_users_in({list_id!r}, limit={limit}, offset={offset}, query={query!r}): "
+                                    "only one 50-row first page of a created list was observed",
+                                    reason="platform_lacks:list_users_in")
+        lists = self._request("GET", "/lists/account", params={"itemId": ""})
+        if not isinstance(lists, list):
+            raise FanslyAPIError(f"GET /lists/account answered {lists!r}, not the account's lists")
+        if lid not in {str(r.get("id")) for r in lists if isinstance(r, dict)}:
+            raise FanslyUnsupported(f"list {lid} is not on Fansly", reason="platform_lacks:list_users_in:unknown_list")
+        rows = self._request("GET", "/lists/itemsnew", params={"listId": lid, "limit": "50", "sortMode": "3"})
+        if not isinstance(rows, list) or not all(
+                isinstance(r, dict) and r.get("type") == 1 and isinstance(r.get("id"), str) and r["id"].isdigit()
+                for r in rows):
+            raise FanslyAPIError(f"GET /lists/itemsnew for list {lid} answered a row that is not a member")
+        return {"list": [{"id": r["id"]} for r in rows], "hasMore": len(rows) >= self.platform_list_page}
+
+    def rename_list(self, list_id: str | int, label: str) -> dict:
+        lid = str(list_id)
+        if not lid.isdigit():
+            raise FanslyUnsupported(f"rename_list({list_id!r}): only a created list's numeric id was observed",
+                                    reason="platform_lacks:rename_list")
+        echo = self._request("POST", "/lists/edit", json_body={
+            "id": lid, "accountId": self.user_id, "pos": None, "type": 1, "label": label})
+        if not (isinstance(echo, dict) and str(echo.get("id")) == lid and echo.get("label") == label):
+            raise FanslyAPIError(f"POST /lists/edit echoed {echo!r}, not list {lid} labelled {label!r}")
+        return {"id": lid, "name": label}
+
+    @platform_live_check("list delete runs only under a <aid>:delete_list:list=<id> Live-check grant")
+    def delete_list(self, list_id: str | int, **_ignored: Any) -> dict:
+        out = self._request("POST", "/lists/remove", json_body={"listId": str(list_id)})
+        if out is not None:
+            raise FanslyAPIError(f"POST /lists/remove answered {type(out).__name__}, not null")
+        return {"success": True}
+
+    @platform_live_check("block runs only under a <aid>:block_user:fan=<id> Live-check grant")
+    def block_user(self, user_id: str | int, **_ignored: Any) -> dict:
+        uid = str(user_id)
+        state = self._request("GET", "/ignore", params={"noAggregation": "true"})
+        if state != {"ignoring": [], "accounts": []}:
+            raise FanslyUnsupported(f"block_user: GET /ignore answered an unobserved block state {state!r}",
+                                    reason="platform_lacks:block_user")
+        echo = self._request("POST", "/account/ignore", json_body={"ignoredId": uid, "ignoreFlags": 2})
+        if not (isinstance(echo, dict) and str(echo.get("ignoredId")) == uid and echo.get("ignoreFlags") == 2):
+            raise FanslyAPIError(f"POST /account/ignore echoed {echo!r}, not a block of {uid}")
+        return {"success": True}
 
 
     @platform_unsupported("Fansly has no message pinning")
@@ -1966,7 +2041,16 @@ class FanslyShimClient(VaultMixin, FanslyClient):
 
     def create_promo(self, *, subscribe_counts: int = 1, subscribe_days: int = 30,
                      discount: int | None = None, message: str = "",
-                     **_ignored: Any) -> dict:
+                     type: str | list[str] = "new", price: float | None = None,
+                     finish_days: int | None = None) -> dict:
+        if type != "new":
+            raise FanslyUnsupported(f"create_promo: platform_lacks:promotion_type (type={type!r}); "
+                                    "a Fansly gift code is for new subscribers only",
+                                    reason="platform_lacks:promotion_type")
+        if finish_days is not None:
+            raise FanslyUnsupported("create_promo: finish_days is not on a Fansly gift code")
+        if int(subscribe_counts) == 0:
+            raise FanslyUnsupported("create_promo: unlimited claims (subscribe_counts=0) are not on a Fansly gift code")
         if discount is None:
             raise ValueError("create_promo requires discount (integer percent 1-100)")
         pct = max(1, min(int(discount), 100))
@@ -2067,10 +2151,6 @@ _NO_STORY_WRITE = (_UNSUPPORTED, "Fansly stories cannot be created from the web 
 _OF_UPLOAD = (_UNSUPPORTED, "OnlyFans upload-claim pipeline; Fansly uploads through upload_media")
 
 UNBUILT: dict[str, tuple[str, str]] = {
-    "list_users_in": (_BLOCKED, "list members read not captured"),
-    "rename_list": (_BLOCKED, "list rename not captured"),
-    "delete_list": (_BLOCKED, "list delete not captured (its row menu needs a trusted event)"),
-    "block_user": (_BLOCKED, "block not captured"),
     "unblock_user": (_BLOCKED, "unblock not captured"),
     "search_users": (_BLOCKED, "username search not captured"),
     "engagement_messages": (_BLOCKED, "mass-message stats feed not captured"),

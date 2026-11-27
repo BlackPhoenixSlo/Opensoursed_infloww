@@ -88,6 +88,8 @@ class FakeOF:
         self.route_s: dict[str, float] = {}
         self.route_jitter = 0.0
         self._rng = random.Random(0)
+        self.hold_response: dict[tuple[str, str], tuple[threading.Event, threading.Event]] = {}
+        self.hold_timeouts: list[tuple[str, str]] = []
         self.hold: dict[tuple[str, str], list[float]] = {}
         self.chats: dict[str, list[dict]] = {}
         self.vault_lists: dict[str, list[dict]] = {}
@@ -536,6 +538,15 @@ class FakeOF:
                                        "route": route, "path": urlsplit(self.path).path,
                                        "query": urlsplit(self.path).query, "status": status,
                                        "cookie": bool(self.headers.get("Cookie"))})
+                    uid_path = (uid, urlsplit(self.path).path)
+                    held = fake.hold_response.get(uid_path) if status == 200 else None
+                if held:
+                    accepted, release = held
+                    accepted.set()
+                    if not release.wait(45):
+                        with fake.lock:
+                            fake.hold_timeouts.append(uid_path)
+                        return self._send(504, {"error": "held response timed out"}, ctype, headers)
                 self._send(status, body, ctype, headers)
 
             def do_GET(self):  # noqa: N802

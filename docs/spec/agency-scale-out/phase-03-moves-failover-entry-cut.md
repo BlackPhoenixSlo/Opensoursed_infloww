@@ -75,6 +75,7 @@
   4. *Control cell.* A full clone through `oi-cell-stage --role control` with `OI_ACCOUNTS` empty: every session folder and root `session_*.json` quarantined, `.migrated` kept, `active.json` removed, every proxy binding dropped. Its compose is Phase 1's Control template (`${OI_ACCOUNTS?}`); the drill boots it. Control-only tables (ticket 07 item 1) are live only here.
   5. *Data cells.* A full clone through `oi-cell-stage --role data`, with write-block triggers installed and non-allowlisted login fields blanked at stage. Agency-copy section shas cover allowlisted fields only and come from the same frozen DB, so the first apply is a no-op. Non-owned rows stay, closed by `cell_owned()` and Cell scope; no prune in Release 1.
   6. *Backfills, offline, before any boot.* One `active` reservation per placed account; eager mirror Employees and roles (ticket 07 item 9); grant generation 1; agency-copy versions. Owner epoch e1 with its Cell instance (Box + data dir) goes to the bucket per Cell (ADR 0063, R9); `data_gen` 0.
+     `data_gen` 0 here means `cell_meta`'s initial value, which is 1 (`service/cell_mode.py` `install_meta`); verify asserts 1. No service change.
   7. *Verify:* story 25, plus `own_data.checksum` per account equal between the step-3 source value and the owning Cell. Then the **rollback boundary**. After it, forward only.
   8. *Open.* Per Cell: epoch write, boot egress-closed, `oi-cell-open` only with the step-3 FenceResult confirmed, Readiness, `live`, clear the Cell hold. The old data dir stays frozen (renamed aside) until every Cell passes a restore test.
   9. *Grey* is timed from source stop to the last Cell `live` as the Front door sees it.
@@ -116,9 +117,9 @@
 ```sh
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
-uvx --python venv/bin/python pytest -q deploy/fleet/tests/test_fleet.py deploy/fleet/tests/test_failover.py \
+venv/bin/python -m pytest -q deploy/fleet/tests/test_fleet.py deploy/fleet/tests/test_failover.py \
   deploy/fleet/tests/test_move.py deploy/fleet/tests/test_entry_cut.py deploy/fleet/tests/test_witness.py \
-  deploy/fleet/tests/test_cell_deploy.py
+  deploy/fleet/tests/test_entry_cut_checks.py deploy/fleet/tests/test_cell_stage.py deploy/fleet/tests/test_cell_deploy.py
 for t in test_own_data test_cell_owned test_send_ops_reconcile test_lossy_restore_marks test_send_once; do
   venv/bin/python scripts/run_tests_parallel.py service/tests "$t" -j 8
 done
@@ -127,7 +128,7 @@ nice -n 10 deploy/fleet/tests/backup-restore-local.sh "${OI_BR_BIN:?dir with lit
 for d in move failover control witness entry-cut upgrade; do
   nice -n 10 deploy/fleet/tests/cell-recovery-in-containers.sh --drill "$d"
 done
-for m in session-files-only no-executor-filter no-read-intersect no-source-fence no-move-aside open-before-fence no-reservations no-root-session-check no-field-allowlist; do
+for m in session-files-only no-executor-filter no-read-intersect no-source-fence no-move-aside open-before-fence no-reservations no-root-session-check no-field-allowlist canary-folder-left; do
   nice -n 10 deploy/fleet/tests/cell-recovery-in-containers.sh --drill entry-cut --break "$m"
 done
 nice -n 10 deploy/fleet/tests/cell-recovery-in-containers.sh --drill upgrade --break control-first

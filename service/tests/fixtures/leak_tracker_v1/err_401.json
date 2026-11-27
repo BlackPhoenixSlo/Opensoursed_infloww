@@ -1,0 +1,9 @@
+{
+  "method": "GET",
+  "path": "/v1/me",
+  "request": null,
+  "response": {
+    "error": "unauthorized"
+  },
+  "status": 401
+}

@@ -18,6 +18,7 @@ import account_health
 import link_metrics
 import notifications_api
 import of_pacing
+import platforms
 import runtime_switches
 from automations._knobs import bool_knob
 from db.engine import get_session
@@ -235,6 +236,11 @@ async def _recheck(s, res: Reservation, want: Mapping[str, Any], now: datetime) 
     return None
 
 
+def promotion_type_refusal(account_id: str) -> str | None:
+    lack = platforms.Lack.PROMOTION_TYPE
+    return platforms.lack_reason(lack) if lack in platforms.for_account(str(account_id)).lacks else None
+
+
 async def reserve(account_id: str, campaign_id: int | None, source: str, terms: dict,
                   expect: Mapping[str, Any], pre_ids: Sequence[int] | None,
                   decision_read_at: datetime | None, *, replaced_of_promo_id: int | None = None,
@@ -243,6 +249,8 @@ async def reserve(account_id: str, campaign_id: int | None, source: str, terms: 
                   expect_kept: Any = NO_EXPECT, timed_end: datetime | None = None,
                   unless_landed: int | None = None) -> Reservation | Refused:
     aid = str(account_id)
+    if why := promotion_type_refusal(aid):
+        return Refused(why)
     ids = None if pre_ids is None else tuple(sorted({int(i) for i in pre_ids}))
     R = PromoCreateReservation
     try:

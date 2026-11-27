@@ -124,7 +124,8 @@ _UNPUMPED: set = set()
 
 
 @contextlib.contextmanager
-def _world(wire: _Wire, tabs=frozenset({A}), knob: str | None = None, unread: bool = True, real_live: bool = False):
+def _world(wire: _Wire, tabs=frozenset({A}), knob: str | None = None, unread: bool = True, real_live: bool = False,
+           seeded: bool = True):
     saved_env = {k: os.environ.get(k) for k in ("SHARED_REFRESHER", "UNREAD_TOTAL", "BADGE_READS")}
     os.environ["SHARED_REFRESHER"] = "1"
     for k, v in (("UNREAD_TOTAL", "1" if unread else None), ("BADGE_READS", knob)):
@@ -145,6 +146,8 @@ def _world(wire: _Wire, tabs=frozenset({A}), knob: str | None = None, unread: bo
     logging.getLogger("of-relay.badge_reads").addHandler(cap)
     for m in (shared_refresher, unread_total, badge_reads):
         importlib.reload(m)
+    if seeded:
+        badge_reads._seeded.update(_CREATORS)
     client = _client(A, wire)
     orig = (server._load_client, events.open_tab_accounts, events.publish, badge_reads._clock, of_ws.connected_since)
     server._load_client = lambda *_a, **_k: client
@@ -1393,6 +1396,31 @@ async def case_reply_echo_explains_its_frame():
             await _frame(0)
             await _tick_at(clock, clock.t + 1500)
             assert wire.calls == [], (echo_first, "the reply's echo explains its frame", wire.calls)
+
+async def case_socket_up_r_unknown_reads_once():
+    wire = _Wire(unread=[_row(F)])
+    with _world(wire, seeded=False) as (clock, _pub, lines):
+        t = clock.t
+        await _tick_at(clock, t)
+        assert len(wire.calls) == 1 and lines[0].startswith(f"badge_read account={A} kind=frame "), lines
+        assert not unread_total.restricted_unknown(A), "the read published R"
+        for s in range(1000, 60_001, 1000):
+            await _tick_at(clock, t + s)
+        assert len(wire.calls) == 1, ("R known: no more reads", wire.calls)
+    wire = _Wire(unread=[_row(F)])
+    wire.fail = (500, {"error": "boom"})
+    with _world(wire, seeded=False) as (clock, _pub, _lines):
+        t = clock.t
+        for s in range(0, 60_001, 1000):
+            await _tick_at(clock, t + s)
+        assert len(wire.calls) == 1 and unread_total.restricted_unknown(A), ("one ask per lifetime", wire.calls)
+    wire = _Wire(unread=[_row(F)])
+    with _world(wire, seeded=False) as (clock, _pub, lines):
+        _DOWN.add(A)
+        t = clock.t
+        for s in range(0, 15_001, 1000):
+            await _tick_at(clock, t + s)
+        assert [x - t for x in _starts(wire)] == [15000] and _polls(lines) == 1, ("socket down: poll only", lines)
 
 
 _harness.run()

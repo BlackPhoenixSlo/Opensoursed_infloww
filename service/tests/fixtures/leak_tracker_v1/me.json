@@ -1,0 +1,14 @@
+{
+  "method": "GET",
+  "path": "/v1/me",
+  "request": null,
+  "response": {
+    "brand": "Example Removal",
+    "contact_url": "https://removal.example/contact",
+    "creators_max": 5,
+    "creators_used": 2,
+    "label": "Example Agency",
+    "tenant_id": "tn_example0001"
+  },
+  "status": 200
+}

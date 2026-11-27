@@ -23,6 +23,7 @@ from db.models import Account, Chatter, ChatterUser, User, UserAccount  # noqa: 
 
 _harness.make_client()
 import server  # noqa: E402
+import automation_executor as ax  # noqa: E402
 import events  # noqa: E402
 import events_decide as ed  # noqa: E402
 import of_ws  # noqa: E402
@@ -151,10 +152,10 @@ def _world(wire: _Wire):
     client = _client(A, wire)
     live = _live(_UP_LONG_AGO)
     live.__enter__()
-    orig = (server._get_client, server._resolve_account_id, s4s_api.ax._make_client, events.publish)
+    orig = (server._get_client, server._resolve_account_id, ax._make_client, events.publish)
     server._get_client = lambda *_a: client
     server._resolve_account_id = lambda *_a: A
-    s4s_api.ax._make_client = lambda _aid: client
+    ax._make_client = lambda _aid: client
     events.publish = published.append
     relay_cache.invalidate("users_me", A)
     shared_refresher._relay_loop = asyncio.get_running_loop()
@@ -163,7 +164,7 @@ def _world(wire: _Wire):
     try:
         yield published
     finally:
-        server._get_client, server._resolve_account_id, s4s_api.ax._make_client, events.publish = orig
+        server._get_client, server._resolve_account_id, ax._make_client, events.publish = orig
         relay_cache.invalidate("users_me", A)
         live.__exit__(None, None, None)
 

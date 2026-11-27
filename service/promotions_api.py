@@ -26,6 +26,7 @@ from of_promos import fetch_of_promos, promo_type_body, promo_type_store
 from permissions import require_opt_in_kind
 from promo_create_guard import NO_EXPECT, PREEMPT_SWITCH, Reservation
 from promo_keep_decide import BUDGET_DAY, BUDGET_HOUR, create_hold, preempt_applies
+from side_effect_gate import PLATFORM_LACKS_PREFIX, raise_if_refused
 
 log = logging.getLogger("of-relay.promotions_api")
 
@@ -205,6 +206,8 @@ async def _reservation(rid: int | None) -> PromoCreateReservation | None:
 
 
 async def _refused(account_id: str, got: promo_create_guard.Refused) -> None:
+    if got.reason.startswith(PLATFORM_LACKS_PREFIX):
+        raise_if_refused(got.reason, "promotions")
     if got.reason == "keep_running_moved":
         raise await _moved_now(account_id)
     if got.reason == "create_landed":
@@ -350,6 +353,7 @@ class _CreateBody(BaseModel):
 @router.post("/admin/promotions")
 async def create_promotion(body: _CreateBody = Body(...)) -> dict[str, Any]:
     assert_account_owned(body.account_id)
+    raise_if_refused(promo_create_guard.promotion_type_refusal(body.account_id), "promotions")
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(422, "name is required")

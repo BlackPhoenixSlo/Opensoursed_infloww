@@ -25,7 +25,8 @@ COPIED = frozenset({
 })
 CONTROL = frozenset({
     "clock_events", "chatters_invites", "ultra_plans", "grok_user_daily_cost",
-    "push_sent", "accounts", "proxies",
+    "push_sent", "accounts", "proxies", "leak_tracker_tenant", "leak_watch",
+    "leak_watch_tombstone",
 })
 CONTROL_PREFIX = "bio_"
 CELL_MODE_ONLY_JOBS = frozenset({"agency-copy-poll", "grant-age-watch", "reservation-activation-retry"})
@@ -104,6 +105,7 @@ def registered_jobs(server) -> set[str]:
 async def _observe_jobs(server) -> set[str]:
     from unittest.mock import patch
     import badge_reads
+    import leak_tracker
     import push_send
     import runtime_switches
     import shared_refresher
@@ -144,6 +146,7 @@ async def _observe_jobs(server) -> set[str]:
             (server.account_registry, "list_accounts", lambda: []),
             (_common, "test_mode", lambda: False),
             (vault_collect, "ENABLED", True),
+            (leak_tracker, "jobs_on", lambda: True),
             (badge_reads, "ENABLED", True),
             (badge_reads, "_task", None),
             (shared_refresher, "ENABLED", True),

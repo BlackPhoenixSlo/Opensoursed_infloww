@@ -48,7 +48,7 @@ PROMPT = "Fixture translator prompt, never shown to a chatter"
 ALL_OPT_IN = ["/growth/auto-funnel", "/growth/auto-mass", "/growth/auto-post", "/growth/auto-reply",
               "/growth/auto-story", "/growth/gen-info"]
 
-FLAGS_OFF = {"fansly_manager": False}
+FLAGS_OFF = {"fansly_manager": False, "leak_tracker": False}
 NO_LAYOUT = {"creator_cols": None}
 
 DEFAULTS = {
@@ -269,13 +269,13 @@ def case_a_stored_invalid_field_reads_as_its_default():
 def case_a_flag_stored_on_reads_on_for_the_agencys_owner_and_chatters_only():
     _put(OWNER_A, "flags", {"fansly_manager": True})
     try:
-        assert _applied(OWNER_A)["flags"] == {"fansly_manager": True}
-        assert _applied(CHATTER_A)["flags"] == {"fansly_manager": True}
-        assert _applied(CHATTER_AB, "creator_a")["flags"] == {"fansly_manager": True}
+        assert _applied(OWNER_A)["flags"] == {**FLAGS_OFF, "fansly_manager": True}
+        assert _applied(CHATTER_A)["flags"] == {**FLAGS_OFF, "fansly_manager": True}
+        assert _applied(CHATTER_AB, "creator_a")["flags"] == {**FLAGS_OFF, "fansly_manager": True}
         assert _applied(OWNER_B)["flags"] == FLAGS_OFF
         assert _applied(CHATTER_AB)["flags"] == FLAGS_OFF
         _put(OWNER_B, "flags", {"fansly_manager": True})
-        assert _applied(CHATTER_AB)["flags"] == {"fansly_manager": True}
+        assert _applied(CHATTER_AB)["flags"] == {**FLAGS_OFF, "fansly_manager": True}
     finally:
         _put(OWNER_A, "flags", {})
         _put(OWNER_B, "flags", {})

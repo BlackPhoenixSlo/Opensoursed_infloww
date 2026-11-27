@@ -13,7 +13,7 @@ import { usePrincipalId } from "@/hooks/useEmployeeKey";
 import { zoneOffsetNow } from "@/lib/creatorClock";
 import { browserTimeZone, type WeekStart } from "@/lib/shifts";
 
-export type FeatureFlag = "fansly_manager";
+export type FeatureFlag = "fansly_manager" | "leak_tracker";
 export type FeatureFlags = Record<FeatureFlag, boolean>;
 
 export interface AppliedSettings {

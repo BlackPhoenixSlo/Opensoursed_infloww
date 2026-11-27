@@ -19,6 +19,7 @@ import of_pacing
 import of_paging
 from send_tripwire import CellHeld
 from fans import _NON_REVENUE_STATUSES
+from side_effect_gate import PLATFORM_LACKS_PREFIX
 
 log = logging.getLogger("of-relay.audiences")
 
@@ -252,6 +253,20 @@ THRESHOLD_IDS_MAX = 1000
 class AudienceUnknown(ValueError):
     # Refused: sending to every qualifying fan instead would widen the audience.
     pass
+
+
+class AudienceRefusal(AudienceUnknown):
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"This platform can't read that audience in full ({reason}). Nothing was sent.")
+
+
+def audience_refusal(account_id: str, user_lists, excluded) -> str | None:
+    names = {str(n).strip().lower() for g in (user_lists, excluded) for n in (g or ())}
+    if "following" not in names:
+        return None
+    import platforms
+    return f"{PLATFORM_LACKS_PREFIX}following" if platforms.refusal_for_account(account_id, "following") else None
 
 
 async def _read_list_members(client, names: list[str], what: str) -> set[int]:
@@ -509,11 +524,28 @@ _page_all = of_paging.page_all
 _ids_from_pages = of_paging.ids_from_pages
 
 
-def _crawl_until_cut(crawls) -> tuple[list[set[int]], list[str]]:
+LIST_INCOMPLETE = f"{PLATFORM_LACKS_PREFIX}list_users_in:incomplete"
+
+
+def lacks_reason(e: Exception) -> str | None:
+    reason = getattr(e, "reason", None)
+    return reason if isinstance(reason, str) and reason.startswith(PLATFORM_LACKS_PREFIX) else None
+
+
+def _crawl_until_cut(crawls, one_page: bool) -> tuple[list[set[int]], list[str]]:
     got: list[set[int]] = []
-    for label, crawl in crawls:
-        ids, cut = crawl()
+    for label, crawl, why in crawls:
+        try:
+            ids, cut = crawl()
+        except Exception as e:
+            if reason := lacks_reason(e):
+                raise AudienceRefusal(reason) from e
+            if one_page:
+                raise AudienceRefusal(why) from e
+            raise
         if cut:
+            if one_page:
+                raise AudienceRefusal(why)
             return got, [label]
         got.append(ids)
     return got, []
@@ -537,17 +569,19 @@ def roster_audience_blocking(
         for raw in (user_lists or []):
             name = str(raw).strip().lower()
             if name == "fans":
-                crawls.append((repr(raw), roster(client.subscribers)))
+                crawls.append((repr(raw), roster(client.subscribers),
+                               f"{PLATFORM_LACKS_PREFIX}subscribers:incomplete"))
             elif name == "following":
-                crawls.append((repr(raw), roster(client.following)))
+                crawls.append((repr(raw), roster(client.following), f"{PLATFORM_LACKS_PREFIX}following"))
             elif name.isdigit():
-                crawls.append((repr(raw), custom(int(name))))
+                crawls.append((repr(raw), custom(int(name)), LIST_INCOMPLETE))
             else:
                 log.warning("roster_audience: unknown user_list %r", raw)
                 return None
         n_inc = len(crawls)
-        crawls += [(f"exclude list {lid!r}", custom(lid)) for lid in (excluded_user_lists or [])]
-        sets, cut = _crawl_until_cut(crawls)
+        crawls += [(f"exclude list {lid!r}", custom(lid), LIST_INCOMPLETE)
+                   for lid in (excluded_user_lists or [])]
+        sets, cut = _crawl_until_cut(crawls, bool(getattr(client, "platform_list_page", None)))
 
         ids = set().union(*sets[:n_inc])
         out = final_audience(sorted(ids), sets[n_inc:], truncated=cut)
@@ -555,6 +589,9 @@ def roster_audience_blocking(
             log.warning("roster_audience: crawl hit the paging backstop (%s)", out.reason)
             return None
         return out.included
+    except AudienceRefusal as e:
+        log.warning("roster_audience refused — %s", e.reason, exc_info=e.__cause__)
+        raise
     except Exception:
         log.warning("roster_audience failed — audience unknown", exc_info=True)
         return None
@@ -655,6 +692,7 @@ class _ResumableLists:
     def __init__(self, client):
         self._c = client
         self.pages = 0
+        self.platform_list_page = getattr(client, "platform_list_page", None)
 
     def list_users_in(self, list_id, **kw):
         for i in range(AE_PAGE_TRIES):

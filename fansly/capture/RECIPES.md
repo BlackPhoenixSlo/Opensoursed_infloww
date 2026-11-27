@@ -15,6 +15,67 @@ Content-Type:         application/json
 
 ---
 
+## On-open writes — the Capture gate's fake table
+
+Writes Fansly sends only because a page or State opened. During a Mirror capture the gate
+(`gate.py`, `ON_OPEN`) answers each one locally — status 200, `application/json` — only for a
+POST to `https://apiv3.fansly.com` at exactly that `/api/v1/` path; it never leaves the machine.
+This table is the gate's, so it carries unverified rows: the provenance column says which shapes
+were taken off a live request. An `unverified` fake firing is an audit warning, never a failure.
+
+| POST path | Fake reply | Provenance | Source |
+|---|---|---|---|
+| `/api/v1/message/ack` | `{"success":true}` | recorded | this file, `POST /api/v1/message/ack` (run-20260901-1940) |
+| `/api/v1/status` | `{"success":true,"response":{"accountId","statusId":1,"lastSeenAt","updatedAt"}}` | recorded | this file, `POST /api/v1/status` |
+| `/api/v1/it/pis` | `{"success":true}` | unverified | fired on the live tracer (session 20261127T044001-0d12, page messages/thread); page rendered normally; reply shape not copied, the recording that holds it also holds live tokens |
+| `/api/v1/notifications/ack` | `{"success":true}` | unverified | bundle-derived (BUNDLE_DERIVED.md, "Mark notifications read"); fires only with unread rows |
+| `/api/v1/mediastory/view` | `{"success":true}` | unverified | candidate: bundle endpoint list (CAPTURE_LOG.md, §3.8 run) |
+
+A telemetry write that halts the tracer is added here and to the gate with a local `204` only after
+the halted session names it.
+
+### Telemetry fakes (`gate.py`, `TELEMETRY`)
+
+POST, `https` only, exact host + path → local `204`, empty body. Any other method or path on these
+hosts still halts.
+
+| Host | Path | Halted in session |
+|---|---|---|
+| `api-iam.intercom.io` | `/messenger/web/ping` | 20261127T043655-fabb |
+| `g2ytx5gg.messenger.intercom-chat.com` | `/messenger/web/ping` | same Intercom ping, second host (fake added with it) |
+| `metrics.fansly.com` | `/event/track/v1/` | 20261127T043915-a3f4 |
+
+AWS WAF `mp_verify` / `telemetry` POSTs continue (`waf` verdict), as before.
+
+## Tracer facts (measured 2026-11-27, session 20261127T044001-0d12)
+
+Names only. Read by the mirror generator and the app.
+
+- `dark_marker`: root class. Light = `html.bright-theme`; dark = `html:not(.bright-theme)` (selector
+  seen in the inlined critical CSS). Element toggles `.bright-theme-only` / `.dark-theme-only`. Theme
+  is client-side: the `/settings/display` button `[class*=setting] [class*=btn]` flips it with zero
+  writes.
+- `banner_field`: not present. The test creator has no banner or avatar set, and the `/account/me`
+  shape carries neither key; the profile renders `.default-banner` / `.default-avatar`.
+  ASSUMPTION: the field is `banner` / `avatar` with a `locations[]` list, as on Fansly account
+  objects; overturned by `/account/me` on an account with a banner.
+- `class_hooks`: avatar `.user-avatar` / `.creator-avatar` / `.default-avatar` (inside
+  `.avatar-container`); banner `.profile-banner`, `.profile-banner-image`, `.default-banner`; rails
+  `.left-side`, `.middle-side`, `.right-side`, `.side-bar-wrapper`; message `.message-text`
+  (in `.message`, `.my-message` for own); post `.feed-item-description` (in `.feed-item`); note
+  `.notes-icon`, `.has-notes`; bio and list name not seen on the tracer pages. Angular adds
+  `_ngcontent-ng-c<N>` attributes; key styles on the class, not the attribute.
+- `opener_forms`: trusted-click (`tclick`) on Angular CDK openers. Avatar menu
+  `[class*=right] app-account-avatar`; thread menu `.message-content-header .more-dropdown`, open
+  marker `.more-dropdown.dropdown-open`. Escape and Tab do not close Fansly dropdowns; reset by a
+  second `tclick` on the opener (`save --reset-click`).
+- `telemetry_halts`: Intercom `/messenger/web/ping` (two hosts), `metrics.fansly.com`
+  `/event/track/v1/`; each now faked with `204` (table above).
+- Redirects: own profile `/<username>` settles client-side on `/<username>/posts`; `nav` waits for
+  `location.href` to hold still 2 s (cap 10 s) before saving.
+
+---
+
 ## Realtime socket — `wss://wsv3.fansly.com/?v=3`
 
 Origin `https://fansly.com`. No auth headers on the handshake; auth is in-band.
@@ -1092,3 +1153,76 @@ from a gift code. Fixture: `fansly/fixtures/subscribers_expired.json`.
 - `GET /account/settings` → `{accountId, categories:[{name, inputs:[{type,name,data}]}]}`;
   `GET /settings?categoryIds=…` → `[{accountId,categoryId,keyId,value,metadata}]`.
 - Saved replies / message templates: none in the web bundle.
+
+## Paid flow up to 3DS (2026-11-26, run `fansly-fan-1126b`)
+
+All measured on the fan side unless marked. The card-entry request itself was
+not recorded (recorder stopped while card data was typed, by design).
+
+**Add card (UI, measured):** the form wants first/last name, street, city, zip,
+a Country `<select>` (236 options) and a State `<select>` that repopulates per
+country, then card/CVC/expiry. Saving runs a verification charge of ≤ $0.10.
+
+**Set default wallet:** `POST /payments/wallets/default {"walletId"}` → the
+wallet `{id,accountId,providerId:"1000",type:0,flags,status:3,
+metadata:"{\"lastDigits\",\"cardType\"}",version,createdAt,deletedAt}`;
+`flags` 2 = default, 0 = not. Socket: `serviceId:16 type:11 {wallet}`, one
+frame per wallet whose flags changed.
+
+**Subscribe (promo plan), step 1:** `POST /productorders`
+```
+{"items":[{"productType":15001,"productPrice":3000,"productId":"<planId>",
+  "metadata":"{\"id\":\"\",\"accountId\":\"<creator>\",\"subscriberId\":\"\",
+   \"subscriptionTierId\":\"<tier>\",\"planId\":\"<plan>\",\"promoId\":\"<promo>\",…}"}]}
+→ {id,correlationId,type:1,accountId:<fan>,status:0,version,
+   items:[{id,orderId,orderCorrelationId,productId,productType,productPrice,
+           quantity:1,metadata,taxes:[]}],
+   billingAddress:{countryCode,stateCode,zipCode,city,address:null,orderId}}
+```
+`productPrice` is 1/1000 $ and already carries the promo price (3000 on a 5000
+plan); the promo rides as `promoId` inside the metadata string.
+
+**Step 2 (Pay):** `POST /orders` tops the wallet up by exactly the order total,
+same pattern as the PPV buy:
+```
+{"id":"","correlationId":"<productorder id>","type":1,
+ "items":[{"productId":"2","productName":"$0.01 Tipping Balance",
+   "customProductName":"Wallet Balance","quantity":300,"price":10,"categoryId":"1"}],
+ "walletId":"<wallet>","paymentProviderId":"",
+ "paymentProviderMetadata":"{\"billingAddress\":{\"name\":\"…\"}}"}
+→ {…, items:[{productId:"2",quantity,orderId,price,…}], id, status:2}
+```
+`quantity` = cents, `price` 10 = $0.01 in 1/1000 $.
+
+**Socket after Pay:**
+- `16/1 {transaction:{id,type:14000,amount:3000,amountInclTax,walletId,
+  providerId:"1000",correlationId,threeDSecure:1,status:7}}` at once;
+- ~30 s later `16/2` with the full row (`processingProviderId:"10"`,
+  `walletProviderTransactionId`, `rebill:0`, `subscriptionId:null`,
+  `status:4`, `version:5`), and the UI says "Transaction Canceled, try again
+  later."
+- Status 4 = cancelled (measured, matched to the UI). Status 7 = waiting for 3DS
+  (inferred: `threeDSecure:1`, no challenge window opened in the page, so the
+  bank pushed an app approval nobody answered).
+- Creator socket: nothing at all for a cancelled payment (measured, run
+  `fansly-creator-1126b`).
+
+No relay code sends money, so none of this is wired; it is reference only.
+
+### Later, from real traffic
+
+The open paid rows (CAPTURE_TODO 1.10 tip half, 3.4 `resubscribe_user`, 3.5,
+6.7–6.9) close passively, without spending, once a real fan pays a recorded
+creator:
+
+1. Keep `record.py` attached to the creator profile while it has paying fans.
+2. Filter the run for socket `serviceId 2` (orders), `6` (wallet tx), `9`
+   (notifications), `15` (subscriptions) and REST `/account/wallets/earnings/*`.
+   Print shapes only (CAPTURE rules).
+3. What each row needs:
+   - **6.8 paid sub:** the notification code (15006 vs 15016) and its price key.
+   - **6.9 tip:** 7001's price key, and the unit of a message's `totalTipAmount`.
+   - **6.7 chat PPV:** whether 2007 still carries `accountMediaPrice`, plus net
+     and fee from the wallet frame.
+   - **3.5:** with any active subscriber, `/subscribers` plus `lastSeenAt`.
+   - **3.4:** a lapsed paid sub (status 5) gives `resubscribe_user`.

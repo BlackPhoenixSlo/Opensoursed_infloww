@@ -279,6 +279,9 @@ no route row changes; diff = the sha.
 Golden refresh (2026-11-23, vault picker bought badges): adds POST /admin/vault/fan-history/sync right after
 GET /admin/vault/fan-history; POST /admin/vault/sends/backfill items gain optional `sent_at` and its doc says
 bought rows flip; no other row moves.
+Golden refresh (2026-11-27, support chat): adds the 4 /admin/support/* rows (support_api.py, in the schema)
+and the 11 /support* hub rows (support_hub.py, out of the schema) right after /admin/assistant/history; no
+other row moves.
 """
 from __future__ import annotations
 

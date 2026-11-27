@@ -32,6 +32,9 @@ _AUDIT_SKIP_PREFIXES = (
     "/push",
     "/t/",
     "/admin/view-lease",
+    # A chatter's note to the product team must not land in the agency's own audit log; the hub login body is a password.
+    "/admin/support/",
+    "/support/",
 )
 # Exact paths skipped (not prefixes: a new route under one stays audited). The MCP host route
 # (mcp_api.PATH): its body may carry tool args with secrets under any name, which `_safe_snapshot`

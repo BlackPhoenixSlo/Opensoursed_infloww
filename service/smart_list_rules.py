@@ -5,6 +5,8 @@ from typing import Any, Iterable
 from fastapi import HTTPException
 
 from attribution_backfill import PPV_KINDS, TIP_KINDS
+from platforms import Lack, Platform, lack_reason
+from side_effect_gate import PLATFORM_LACKS_PREFIX
 
 
 SUB_KINDS = ("subscription", "rebill")
@@ -246,3 +248,38 @@ def uses_subscription_facts(rules_obj: dict) -> bool:
     return any(r.get("field") in ("status", "renew", "sub_start", "expires_at", "resubscribed_at",
                                   "idle_days")
                for r in (rules_obj.get("rules") or []))
+
+
+_RULE_LACKS = {
+    **dict.fromkeys(_LEDGER_MONEY | {"lifetime_spend", "recent_spend", "last_purchase_at", "idle_days"},
+                    Lack.TIP_LEDGER),
+    "renew": Lack.RENEWAL_STATE,
+    "expires_at": Lack.RENEWAL_STATE,
+    "resubscribed_at": Lack.RETURN_DETECTION,
+    "status": Lack.LAPSE_DETECTION,
+}
+_CHAT_FIELDS = frozenset({"tag", "last_active_days", "last_message_sent_at"})
+PAID_START = f"{PLATFORM_LACKS_PREFIX}subscribers:paid_start"
+_ANY_LACK_REASONS = {"sub_start": PAID_START}
+UNKNOWN_FIELD = f"{PLATFORM_LACKS_PREFIX}rules:unknown_field"
+RULE_REFUSALS = frozenset({*_ANY_LACK_REASONS.values(), UNKNOWN_FIELD})
+
+
+def _rule_refusal(lacks: frozenset[Lack], rule: dict) -> str | None:
+    field = rule.get("field")
+    if field in _CHAT_FIELDS:
+        return None
+    if field == "status" and rule.get("op") == "==" and str(rule.get("value") or "").lower() == "active":
+        return None
+    if field in _RULE_LACKS:
+        return lack_reason(_RULE_LACKS[field]) if _RULE_LACKS[field] in lacks else None
+    if not lacks:
+        return None
+    return _ANY_LACK_REASONS.get(field, UNKNOWN_FIELD)
+
+
+def rules_refusal(platform: Platform, rules_obj: dict | None) -> str | None:
+    for rule in (rules_obj or {}).get("rules") or []:
+        if reason := _rule_refusal(platform.lacks, rule):
+            return reason
+    return None

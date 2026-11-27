@@ -173,7 +173,8 @@ def case_newer_epoch_beats_higher_version() -> None:
     doc = _doc(ctl)
     ac.apply(cell, {**doc, "version": doc["version"] + 50})
     old_epoch = doc["epoch"]
-    assert not ac.apply(cell, {**doc, "version": doc["version"] + 10})["applied"]
+    stale = ac.apply(cell, {**doc, "version": doc["version"] + 10})
+    assert not stale["applied"] and stale["root_ok"] is None
     new_epoch = ac.bump_epoch(ctl)
     assert new_epoch > old_epoch
     fresh = _doc(ctl)
@@ -436,17 +437,198 @@ def case_format2_tampered_section_repairs_from_full_copy() -> None:
         db.execute("DELETE FROM chatter_account_access WHERE chatter_id = 'c2'")
         db.execute("UPDATE agency_copy_gate SET open = 0")
         db.execute("UPDATE agency_copy_sections SET sha256 = 'x' WHERE name = 'grants/chatter:c2'")
+    prior = ac.meta_at(cell)
     same = _doc2(snap0, snap0["shas2"])
     assert not ac.confirm(cell, same), "root mismatch confirmed"
     with contextlib.closing(_db(ctl)) as db:
         db.execute("UPDATE employees SET display_name = 'Anna' WHERE id = 7")
     snap1 = ac.read_snapshot(ctl)
     res = ac.apply(cell, _doc2(snap1, snap0["shas2"]))
-    assert res["applied"] and res["root_ok"] is False, res
+    assert not res["applied"] and res["root_ok"] is None, res
+    assert ac.meta_at(cell) == (prior | {"repair_needed": True})
     res = ac.apply(cell, _doc2(snap1), repair=True)
     assert res["root_ok"], res
     _synced(ctl, cell)
     assert ac.confirm(cell, _doc2(snap1, snap1["shas2"]))
+    assert ac.apply(cell, _doc(ctl), repair=True)["root_ok"]
+    assert _wire_rows(cell) == _wire_rows(ctl)
+
+
+async def case_poll_repairs_rejected_delta_after_format1_fallback() -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    import httpx
+
+    ctl, cell = _people_control("ctl-poll-fallback"), _fresh("cell-poll-fallback", "data")
+    before = ac.read_snapshot(ctl)
+    ac.apply(cell, _doc2(before))
+    with contextlib.closing(_db(cell)) as db:
+        db.execute("UPDATE agency_copy_sections SET sha256 = 'x' WHERE name = 'grants/chatter:c1'")
+    prior = ac.meta_at(cell)
+    with contextlib.closing(_db(ctl)) as db:
+        db.execute("DELETE FROM chatter_account_access WHERE chatter_id = 'c2'")
+        db.execute("UPDATE employees SET display_name = 'Anna' WHERE id = 7")
+    after = ac.read_snapshot(ctl)
+    requests = []
+    held = []
+    done = asyncio.Event()
+
+    async def get(_self, url, *, params):
+        requests.append(params)
+        held.append(ac.meta_at(cell))
+        if len(requests) == 1:
+            body = ac.answer2(after, before["shas2"])
+        elif len(requests) == 2:
+            body = ac.answer(after, ac._parse_have(params["have"]))
+        else:
+            done.set()
+            await asyncio.Future()
+        return httpx.Response(200, content=body, request=httpx.Request("GET", url))
+
+    with (patch.dict(os.environ, {"OI_CELL_CONTROL_URL": "http://127.0.0.1:1"}),
+          patch.object(httpx.AsyncClient, "get", get)):
+        task = asyncio.create_task(ac.poll_forever(cell))
+        try:
+            await asyncio.wait_for(done.wait(), 3)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert held[1] == (prior | {"repair_needed": True}), "rejected delta advanced the copy"
+    assert requests[1]["since"] == "0.0" and requests[1]["have"] == ""
+    assert ac.meta_at(cell)["version"] == after["version"]
+    assert _wire_rows(cell) == _wire_rows(ctl)
+
+
+async def case_poll_repairs_same_cursor_after_restart() -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    import httpx
+
+    ctl, cell = _people_control("ctl-restart"), _fresh("cell-restart", "data")
+    snap = ac.read_snapshot(ctl)
+    ac.apply(cell, _doc2(snap))
+    with contextlib.closing(_db(cell)) as db:
+        db.execute("UPDATE agency_copy_sections SET sha256 = 'x' WHERE name = 'grants/chatter:c1'")
+        db.execute("UPDATE cell_meta SET confirmed_at = '2000-01-01'")
+    assert not ac.confirm(cell, _doc2(snap, snap["shas2"]))
+    ac.install(f"sqlite:///{cell}", "data")
+    ac.load_confirmed(cell)
+    fallback = {"format": ac.FORMAT, **{k: snap[k] for k in ("epoch", "version", "grant_gen")}, "sections": {}}
+    assert not ac.confirm(cell, fallback), "format-1 fallback confirmed after restart"
+    assert ac.meta_at(cell)["confirmed_at"] == "2000-01-01"
+
+    requests = []
+    done = asyncio.Event()
+
+    async def get(_self, url, *, params):
+        requests.append(params)
+        if len(requests) > 1:
+            done.set()
+            await asyncio.Future()
+        body = ac.answer(snap, {}) if params["since"] == "0.0" else json.dumps(fallback)
+        return httpx.Response(200, content=body, request=httpx.Request("GET", url))
+
+    with (patch.dict(os.environ, {"OI_CELL_CONTROL_URL": "http://127.0.0.1:1"}),
+          patch.object(httpx.AsyncClient, "get", get)):
+        task = asyncio.create_task(ac.poll_forever(cell))
+        try:
+            await asyncio.wait_for(done.wait(), 3)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert requests[0].get("full") == 1 and "full" not in requests[1]
+    assert ac.meta_at(cell)["confirmed_at"] != "2000-01-01"
+    assert ac.confirm(cell, fallback)
+    assert _wire_rows(cell) == _wire_rows(ctl)
+
+
+async def case_poll_backs_off_full_apply_errors() -> None:
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import httpx
+
+    ctl, cell = _people_control("ctl-full-backoff"), _fresh("cell-full-backoff", "data")
+    snap = ac.read_snapshot(ctl)
+    ac.apply(cell, _doc2(snap))
+    with contextlib.closing(_db(cell)) as db:
+        db.execute("UPDATE agency_copy_sections SET sha256 = 'x' WHERE name = 'grants/chatter:c1'")
+        db.execute("CREATE TRIGGER fail_repair BEFORE UPDATE ON agency_copy_gate"
+                   " BEGIN SELECT RAISE(ABORT, 'test write failure'); END")
+    full_delays = []
+    requests = []
+    done = asyncio.Event()
+
+    async def sleep(delay):
+        full_delays.append(delay)
+
+    async def get(_self, url, *, params):
+        requests.append(bool(params.get("full")))
+        if len(requests) == 14:
+            with contextlib.closing(_db(cell)) as db:
+                db.execute("DROP TRIGGER fail_repair")
+        elif len(requests) == 15:
+            done.set()
+            await asyncio.Future()
+        body = ac.answer2(snap, None if params.get("full") else snap["shas2"])
+        return httpx.Response(200, content=body, request=httpx.Request("GET", url))
+
+    clock = SimpleNamespace(sleep=sleep, to_thread=asyncio.to_thread, CancelledError=asyncio.CancelledError)
+    with (patch.dict(os.environ, {"OI_CELL_CONTROL_URL": "http://127.0.0.1:1"}),
+          patch.object(ac, "asyncio", clock),
+          patch.object(httpx.AsyncClient, "get", get)):
+        task = asyncio.create_task(ac.poll_forever(cell))
+        try:
+            await asyncio.wait_for(done.wait(), 3)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert requests == [False] + [True] * 13 + [False]
+    assert full_delays == [0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300], full_delays
+    _synced(ctl, cell)
+
+
+async def case_poll_limits_full_requests_during_lasting_root_mismatch() -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    import httpx
+
+    ctl, cell = _people_control("ctl-poll-mismatch"), _fresh("cell-poll-mismatch", "data")
+    before = ac.read_snapshot(ctl)
+    ac.apply(cell, _doc2(before))
+    prior = ac.meta_at(cell)
+    with contextlib.closing(_db(ctl)) as db:
+        db.execute("UPDATE employees SET display_name = 'Anna' WHERE id = 7")
+    snap = ac.read_snapshot(ctl)
+    history = {f"{d['epoch']}.{d['version']}": d["shas2"] for d in (before, snap)}
+    rejected_at = f"{snap['epoch']}.{snap['version']}"
+    requests = []
+    done = asyncio.Event()
+
+    async def get(_self, url, *, params):
+        requests.append(params)
+        if len(requests) == 5:
+            done.set()
+            await asyncio.Future()
+        body = json.loads(ac.answer2(snap, history.get(params["since"])))
+        body["root_sha"] = "0" * 64
+        return httpx.Response(200, json=body, request=httpx.Request("GET", url))
+
+    with (patch.dict(os.environ, {"OI_CELL_CONTROL_URL": "http://127.0.0.1:1"}),
+          patch.object(httpx.AsyncClient, "get", get)):
+        task = asyncio.create_task(ac.poll_forever(cell))
+        try:
+            await asyncio.wait_for(done.wait(), 20)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert [bool(p.get("full")) for p in requests] == [False, True, False, False, False]
+    assert all(p["since"] == rejected_at for p in requests[2:])
+    assert ac.meta_at(cell) == (prior | {"repair_needed": True})
 
 
 def case_format2_from_format1_and_back() -> None:
@@ -480,9 +662,18 @@ def case_format2_unknown_table_kept_by_sha_only() -> None:
     doc["root_sha"] = ac.root_of({n: x["sha256"] for n, x in doc["sections"].items()})
     res = ac.apply(cell, doc)
     assert res["root_ok"] and "future_table" not in res["tables"], res
-    assert ac.meta_at(cell)["section_sha"]["future_table"] == "f" * 64
     with contextlib.closing(_db(cell)) as db:
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name = 'future_table'").fetchone()
+        db.execute("CREATE TABLE future_table (id INTEGER PRIMARY KEY)")
+    from unittest.mock import patch
+
+    same = {**doc, "sections": {}}
+    with patch.dict(ac.FIELDS, future_table=("id",)), patch.object(ac, "COPIED", (*ac.COPIED, "future_table")):
+        assert not ac.confirm(cell, same), "upgraded Cell confirmed an unmaterialized section"
+        repaired = ac.apply(cell, doc, repair=True)
+        assert repaired["root_ok"] and "future_table" in repaired["tables"], repaired
+    with contextlib.closing(_db(cell)) as db:
+        assert db.execute("SELECT id FROM future_table").fetchall() == [(1,)]
 
 
 def case_format1_answer_unchanged_and_format2_waits_for_every_cell() -> None:
@@ -543,7 +734,6 @@ def case_older_control_keeps_missing_owner_and_its_cell_rows() -> None:
         res = ac.apply(cell, doc)
         assert res["applied"] and res["owners_missing"] == ["u2"] and ("users", "u2") in res["revoked"], res
         with contextlib.closing(_db(cell)) as db:
-            assert db.execute("SELECT username FROM users WHERE id = 'u2'").fetchall() == [("late",)], fmt
             assert db.execute("SELECT text FROM agency_notifications WHERE agency_user_id = 'u2'"
                               ).fetchall() == [("Nova expired",)], "Cell-local CASCADE child deleted"
             assert db.execute("SELECT 1 FROM user_accounts WHERE user_id = 'u2'").fetchall() == []
@@ -561,18 +751,35 @@ def case_older_control_keeps_missing_owner_and_its_cell_rows() -> None:
         finally:
             ac.log.removeHandler(handler)
         assert again["applied"] and again["owners_missing"] == [], again
-        assert lines == [f"agency_copy_owner_missing owner=u2 copy={doc['epoch']}.{doc['version']}: Control no"
-                         " longer lists this owner; kept its rows, access denied until a copy lists it again"], lines
+        assert len(lines) == 1 and lines[0].startswith("agency_copy_owner_missing owner=u2 "), lines
+        with contextlib.closing(_db(cell)) as db:
+            db.execute("UPDATE agency_copy_gate SET open = 1")
+            db.execute("UPDATE users SET username = 'late' WHERE id = 'u2'")
+            db.execute("UPDATE agency_copy_gate SET open = 0")
+        for _ in range(2):
+            ac.install(f"sqlite:///{cell}", "data")
+            with contextlib.closing(_db(cell)) as db:
+                assert db.execute("SELECT username FROM users WHERE id = 'u2'").fetchone() == ("#missing:u2",)
         with contextlib.closing(_db(ctl)) as db:
+            db.execute("INSERT INTO users (id, username, password, created_at, last_seen_at, is_admin) VALUES"
+                       " ('a-new', 'late', 'p', '2026-01-01', '2026-01-01', 0)")
+        reused = ac.apply(cell, snap())
+        assert reused["applied"] and _missing(cell) == [("u2",)], reused
+        with contextlib.closing(_db(cell)) as db:
+            assert db.execute("SELECT id FROM users WHERE username = 'late'").fetchall() == [("a-new",)]
+        with contextlib.closing(_db(ctl)) as db:
+            db.execute("DELETE FROM users WHERE id = 'a-new'")
             db.execute("INSERT INTO users (id, username, password, created_at, last_seen_at, is_admin) VALUES"
                        " ('u2', 'late', 'p', '2026-01-01', '2026-01-01', 0)")
         back = ac.apply(cell, snap())
-        assert back["applied"] and back["owners_missing"] == [] and _missing(cell) == [], back
+        assert back["applied"] and back["owners_missing"] == ["a-new"] and _missing(cell) == [("a-new",)], back
         with contextlib.closing(_db(cell)) as db:
+            assert db.execute("SELECT id FROM users WHERE username = 'late'").fetchall() == [("u2",)]
             assert db.execute("SELECT COUNT(*) FROM agency_notifications WHERE agency_user_id = 'u2'"
                               ).fetchone() == (1,)
         if fmt == 2:
-            _synced(ctl, cell)
+            with contextlib.closing(_db(cell)) as db:
+                assert ac.root_ok(db, ac.read_snapshot(ctl)["root"])
 
 
 def case_installer_moves_section_sha_into_its_table() -> None:

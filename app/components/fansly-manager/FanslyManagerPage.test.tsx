@@ -4,6 +4,7 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { jsonRes, renderWithProviders } from "@/test-utils";
 import { BODIES, FanslyManagerPage } from "@/components/fansly-manager/FanslyManagerPage";
 import { FANSLY_NAV, findNavLink, isDivider, isGroup } from "@/lib/nav";
+import { fanslyRouteOf } from "@/lib/fansly-mirror-route";
 import type { FeatureFlags } from "@/lib/appliedSettings";
 
 let flags: FeatureFlags | undefined;
@@ -20,7 +21,7 @@ vi.mock("@/hooks/useAccounts", () => ({
 
 let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
-  flags = { fansly_manager: true };
+  flags = { fansly_manager: true, leak_tracker: false };
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (url === "/api/of/v2/users/notifications/count") return jsonRes({ all: 3, tips: 1 });
@@ -48,16 +49,16 @@ afterEach(() => {
 const header = (call: unknown[], name: string) => new Headers((call[1] as RequestInit | undefined)?.headers).get(name);
 
 describe("FanslyManagerPage", () => {
-  it("has a body for every /fansly-manager/* nav href", () => {
+  it("has a body for every Built href", () => {
     const hrefs = FANSLY_NAV.flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]))
       .map((l) => l.href)
-      .filter((h) => h.startsWith("/fansly-manager/"));
-    expect(hrefs.length).toBeGreaterThan(0);
+      .filter((h) => fanslyRouteOf(h.split("/")[2] ?? "", [], null, {})?.kind === "built");
+    expect(hrefs).toEqual(["/fansly-manager/scheduled", "/fansly-manager/lists", "/fansly-manager/notifications", "/fansly-manager/earning-statistics"]);
     expect(hrefs.filter((h) => !(h in BODIES))).toEqual([]);
   });
 
   it("with the flag off a direct visit is not available and reads nothing", () => {
-    flags = { fansly_manager: false };
+    flags = { fansly_manager: false, leak_tracker: false };
     renderWithProviders(<FanslyManagerPage link={findNavLink("/fansly-manager/notifications")!} />);
     expect(screen.getByText("Notifications is not available.")).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();

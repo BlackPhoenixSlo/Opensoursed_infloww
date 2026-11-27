@@ -4,14 +4,14 @@ Draft. Not signed yet.
 
 Release 1 splits the agency's Creators across several Relays (Cells).
 Most of the app works as today.
-19 parts are switched off and 9 work with a gap.
+20 parts are switched off and 9 work with a gap.
 
-## Switched off (19)
+## Switched off (20)
 
 **Agency calls without a front-door route**
 Some agency tools require a front-door route before they can work in cell mode.
 
-66 app call sites are marked off.
+65 app call sites are marked off.
 
 **Public tracking links (/t/...)**
 Fans who tap a tracking link get an error page. Links need an agency-wide id first.
@@ -55,6 +55,9 @@ Logging a Creator in from the app is off until it is checked (Phase 1).
 **Translate**
 Translating a message is off until it is checked (Phase 1).
 
+**Leak tracker**
+The Leak tracker is off in cell mode: its pages and routes answer as if it did not exist.
+
 **Copy or import saved replies**
 Copying replies to other Creators and importing them from a file are off.
 
@@ -96,7 +99,7 @@ Fansly session import is refused in Cell mode because the platform is not admitt
 **Relay health and housekeeping**
 Per-Relay tools. Perf log upload names several Creators: a down Cell's Creators are marked missing.
 
-## Works as today (26)
+## Works as today (27)
 
 - Sign-in and security
 - Team and access
@@ -122,6 +125,7 @@ Per-Relay tools. Perf log upload names several Creators: a down Cell's Creators 
 - Sales ingest
 - Creator settings
 - AI assistant
+- Support chat
 - OF profile, fans and streams
 - Live updates
 
@@ -129,7 +133,7 @@ Per-Relay tools. Perf log upload names several Creators: a down Cell's Creators 
 
 Say "yes, Release 1 features signed" in the build chat.
 We record your name, the date and the table's fingerprint
-(short form: `d4a4e783ab28053b`).
+(short form: `755d4a26b840c275`).
 Any change to the table needs a new yes.
 
 ## What is in each part
@@ -300,6 +304,21 @@ Generated from `service/cell_features.json` by
 <details><summary>Translate (off; 1 route)</summary>
 
 - `POST /admin/translate`
+
+</details>
+
+<details><summary>Leak tracker (off; 8 routes, 2 jobs)</summary>
+
+- `DELETE /admin/leaks/watches/{account_id}`
+- `GET /admin/leaks/all`
+- `GET /admin/leaks/roster`
+- `GET /admin/leaks/setup`
+- `GET /admin/leaks/watches/{account_id}`
+- `POST /admin/leaks/watches/{account_id}/tracking`
+- `PUT /admin/leaks/key`
+- `PUT /admin/leaks/watches/{account_id}`
+- `leak-watch-sync`
+- `leak-watch-tombstones`
 
 </details>
 
@@ -803,10 +822,11 @@ Generated from `service/cell_features.json` by
 
 </details>
 
-<details><summary>Automation rules (works; 10 routes, 6 jobs)</summary>
+<details><summary>Automation rules (works; 12 routes, 6 jobs)</summary>
 
 - `DELETE /admin/automation-rules/{rule_id}`
 - `GET /admin/automation-rules`
+- `GET /admin/cell/restore-gap`
 - `GET /admin/system/automations`
 - `GET /admin/system/runs`
 - `PATCH /admin/automation-rules/{rule_id}`
@@ -815,6 +835,7 @@ Generated from `service/cell_features.json` by
 - `POST /admin/automation-rules/{rule_id}/run-now`
 - `POST /admin/automation/enqueue`
 - `POST /admin/cell-holds/release`
+- `POST /admin/cell/restore-gap/confirm`
 - `automation-exec`
 - `automation:apply_profiles`
 - `automation:gen_info`
@@ -1109,6 +1130,26 @@ Generated from `service/cell_features.json` by
 - `POST /admin/ultra/plans/{plan_id}/cancel`
 - `POST /admin/ultra/plans/{plan_id}/ok`
 - `POST /admin/ultra/plans/{plan_id}/pick`
+
+</details>
+
+<details><summary>Support chat (works; 15 routes)</summary>
+
+- `GET /admin/support/thread`
+- `GET /admin/support/unread`
+- `GET /support`
+- `GET /support/api/instance/thread`
+- `GET /support/api/instance/unread`
+- `GET /support/api/threads`
+- `GET /support/api/threads/{thread_id}`
+- `POST /admin/support/messages`
+- `POST /admin/support/read`
+- `POST /support/api/instance/messages`
+- `POST /support/api/instance/read`
+- `POST /support/api/login`
+- `POST /support/api/logout`
+- `POST /support/api/summarise`
+- `POST /support/api/threads/{thread_id}/reply`
 
 </details>
 

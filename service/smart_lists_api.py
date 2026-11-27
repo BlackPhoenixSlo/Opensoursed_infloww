@@ -18,10 +18,11 @@ from db.models import (
     User, UserAccount,
 )
 from isotime import iso_plain
-from side_effect_gate import refuse_if_platform_lacks
+import platforms
+from side_effect_gate import delete_list_ungranted, raise_if_refused
 from smart_list_rules import (  # noqa: F401
     _LEDGER_MONEY, _SUM_FIELDS, _validate_rules, _windows_in_rules, resolve,
-    uses_subscription_facts,
+    rules_refusal, uses_subscription_facts,
 )
 
 log = logging.getLogger("of-relay.smart_lists_api")
@@ -291,6 +292,16 @@ async def _owned_row(s, list_id: int) -> SmartList:
 
 
 
+def _refuse_rules(account_id: str, rules: dict) -> None:
+    raise_if_refused(rules_refusal(platforms.for_account(str(account_id)), rules), "smart list rules")
+
+
+def _refuse_sync(account_id: str, rules: dict) -> None:
+    from automations.smart_list_sync import sync_refusal
+    _refuse_rules(account_id, rules)
+    raise_if_refused(sync_refusal(str(account_id)), "smart list sync")
+
+
 async def _queue_sync(s, account_id: str) -> None:
     from automation_executor import enqueue_job
     pending = (await s.execute(
@@ -335,6 +346,7 @@ async def create_smart_list(body: _CreateBody = Body(...)) -> dict[str, Any]:
     if not name:
         raise HTTPException(422, "name is required")
     rules = _validate_rules(body.rules)
+    _refuse_sync(body.account_id, rules)
     now = datetime.utcnow()
     async with get_session() as s:
         await _assert_name_free(s, body.account_id, name)
@@ -359,8 +371,6 @@ class _UpdateBody(BaseModel):
 async def update_smart_list(list_id: int, body: _UpdateBody = Body(...)) -> dict[str, Any]:
     async with get_session() as s:
         row = await _owned_row(s, list_id)
-        if row.is_active:
-            refuse_if_platform_lacks(row.account_id, "list_users_in", "smart list sync")
         values: dict[str, Any] = {"updated_at": datetime.utcnow()}
         if body.name is not None:
             nm = body.name.strip()
@@ -369,8 +379,13 @@ async def update_smart_list(list_id: int, body: _UpdateBody = Body(...)) -> dict
             if nm != row.name:
                 await _assert_name_free(s, row.account_id, nm, exclude_id=row.id)
             values["name"] = nm
+        rules = _rules_of(row) if body.rules is None else _validate_rules(body.rules)
+        if row.is_active:
+            _refuse_sync(row.account_id, rules)
+        else:
+            _refuse_rules(row.account_id, rules)
         if body.rules is not None:
-            values["rules_json"] = json.dumps(_validate_rules(body.rules))
+            values["rules_json"] = json.dumps(rules)
         res = await s.execute(
             update(SmartList).where(SmartList.id == list_id, _NOT_SYNCING).values(**values))
         if res.rowcount != 1:
@@ -395,7 +410,7 @@ async def delete_smart_list(list_id: int, delete_of_list: bool = Query(False)) -
         account_id, of_list_id = row.account_id, row.of_list_id
         queued = bool(delete_of_list and of_list_id)
         if queued:
-            refuse_if_platform_lacks(account_id, "list_users_in", "smart list sync")
+            raise_if_refused(delete_list_ungranted(account_id, of_list_id), "delete list")
             stmt = (update(SmartList).where(SmartList.id == list_id, _NOT_SYNCING)
                     .values(sync_state=DELETING, is_active=False,
                             name=f"{row.name} (deleting #{list_id})"))
@@ -418,7 +433,7 @@ async def activate_smart_list(list_id: int) -> dict[str, Any]:
     from automation_rules_api import ensure_kind_rule
     async with get_session() as s:
         row = await _owned_row(s, list_id)
-        refuse_if_platform_lacks(row.account_id, "list_users_in", "smart list sync")
+        _refuse_sync(row.account_id, _rules_of(row))
         if not row.is_active:
             cap = _max_active()
             active = (select(func.count()).select_from(SmartList)
@@ -473,6 +488,7 @@ async def preview_smart_list(body: _PreviewBody = Body(...)) -> dict[str, Any]:
     counter."""
     assert_account_owned(body.account_id)
     rules = _validate_rules(body.rules)
+    _refuse_rules(body.account_id, rules)
     fans = await _load_normalised_fans(body.account_id, rules)
     matched_ids = set(resolve(rules, fans))
     sample = []
@@ -500,6 +516,7 @@ async def resolve_smart_list(list_id: int) -> dict[str, Any]:
         row = await _owned_row(s, list_id)
         account_id = row.account_id
         rules = _rules_of(row)
+    _refuse_rules(account_id, rules)
     fans = await _load_normalised_fans(account_id, rules)
     fan_ids = resolve(rules, fans)
     return {"list_id": list_id, "account_id": account_id,

@@ -31,7 +31,7 @@ def _egress_ip(page) -> str:
 
 
 def main() -> int:
-    print("[*] egress: Browserbase managed proxies")
+    print("[*] egress: Browserbase's own network, no proxy")
     try:
         session = rl._bb_create_session()
     except RuntimeError as e:

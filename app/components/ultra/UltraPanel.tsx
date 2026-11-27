@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useState, type ReactNode } from "react";
 import { ArrowUp, X } from "lucide-react";
 
 import { errText } from "@/lib/errText";
@@ -54,13 +54,14 @@ function follow(p: Promise<PlanView>, send: (a: PanelAction) => void) {
 
 const BTN = "h-10 min-w-[7.5rem] flex-1 rounded-full px-4 text-[14px] font-medium transition-colors disabled:opacity-40";
 
-export function UltraPanel({ frame, column, composerPad, inputText, onClose, onOff }: {
+export function UltraPanel({ frame, column, composerPad, inputText, onClose, onOff, headerAction }: {
   frame: string;
   column: string;
   composerPad: string;
   inputText: string;
   onClose?: () => void;
   onOff: () => void;
+  headerAction?: ReactNode;
 }) {
   const [s, send] = useReducer(ultraPanelReducer, INITIAL_PANEL);
   const runDispatch = useCallback((action: RunAction, planId: string) => send({ type: "run", planId, action }), []);
@@ -97,9 +98,10 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
         <div className={cn("flex h-8 items-center gap-2 px-5", column)}>
           <span className={styles.title}>ULTRA</span>
           {isRunning(s) && <span className={styles.dot} data-ultra-dot role="img" aria-label="Running" />}
+          {headerAction && <span className="ml-auto text-fg">{headerAction}</span>}
           {onClose && (
             <button type="button" onClick={onClose} aria-label="Close help" title="Close"
-              className="-mr-2 ml-auto grid h-8 w-8 place-items-center rounded-md text-fg hover:bg-white/10">
+              className={cn("-mr-2 grid h-8 w-8 place-items-center rounded-md text-fg hover:bg-white/10", !headerAction && "ml-auto")}>
               <X className="h-5 w-5" aria-hidden />
             </button>
           )}

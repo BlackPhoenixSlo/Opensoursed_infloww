@@ -54,6 +54,8 @@ export function CreatorColumn(props: {
   className?: string;
   variant?: "s4s";
   marks?: Record<string, S4SMark>;
+  notes?: Record<string, string>;
+  chips?: Record<string, string>;
 }) {
   usePageCreator(props.onChange ? props.value ?? (props.all ? null : undefined) : undefined);
   return props.onChange ? <ColumnBody {...props} onChange={props.onChange} /> : <ScopedColumn {...props} />;
@@ -78,7 +80,7 @@ function ScopedColumn({ accounts, onPicked, className }: {
   );
 }
 
-function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManager = false, className, variant, marks }: {
+function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManager = false, className, variant, marks, notes, chips }: {
   accounts: AccountMeta[];
   value?: string | null;
   onChange: (accountId: string) => void;
@@ -89,6 +91,8 @@ function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManage
   className?: string;
   variant?: "s4s";
   marks?: Record<string, S4SMark>;
+  notes?: Record<string, string>;
+  chips?: Record<string, string>;
 }) {
   const s4s = variant === "s4s";
   const rosterCounts = useRosterCounts();
@@ -272,6 +276,8 @@ function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManage
               account={a}
               active={value === a.id}
               unread={rosterCounts[a.id]?.unread ?? 0}
+              note={notes?.[a.id]}
+              chip={chips?.[a.id]}
               onPick={() => onChange(a.id)}
               collapsed={collapsed}
               prefetch={ofManager}
@@ -313,10 +319,12 @@ function AllCreatorsTile({ small = false }: { small?: boolean }) {
   );
 }
 
-function CreatorRow({ account, active, unread, onPick, collapsed = false, prefetch = false, leaseRef }: {
+function CreatorRow({ account, active, unread, note, chip, onPick, collapsed = false, prefetch = false, leaseRef }: {
   account: AccountMeta;
   active: boolean;
   unread: number;
+  note?: string;
+  chip?: string;
   onPick: () => void;
   collapsed?: boolean;
   prefetch?: boolean;
@@ -364,8 +372,10 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
       </span>
       {!collapsed && <span className="min-w-0 flex flex-col gap-1">
         <span className="text-sm font-medium truncate">{name}</span>
-        {watcher && <WatcherBadge />}
+        {watcher && <RowBadge>watcher</RowBadge>}
         {!online && <span className="text-xs text-err truncate">{LOGGED_OUT}</span>}
+        {note && <span data-testid="of-creator-note" className="text-xs text-[var(--ofm-fg2)] truncate">{note}</span>}
+        {chip && <RowBadge testId="of-creator-chip">{chip}</RowBadge>}
         {(count > 0 || unread > 0) && (
           <span className="self-start flex items-center gap-1">
             {count > 0 && (
@@ -404,16 +414,16 @@ function WatcherRow({ watcher, collapsed }: { watcher: WatcherAccount; collapsed
       </span>
       {!collapsed && <span className="min-w-0 flex flex-col gap-1">
         <span className="text-sm font-medium truncate">{name}</span>
-        <WatcherBadge />
+        <RowBadge>watcher</RowBadge>
       </span>}
     </button>
   );
 }
 
-function WatcherBadge() {
+function RowBadge({ children, testId }: { children: React.ReactNode; testId?: string }) {
   return (
-    <span className="self-start px-1 py-px rounded border border-[var(--ofm-line)] text-[10px] leading-none text-[var(--ofm-fg2)]">
-      watcher
+    <span data-testid={testId} className="self-start px-1 py-px rounded border border-[var(--ofm-line)] text-[10px] leading-none text-[var(--ofm-fg2)]">
+      {children}
     </span>
   );
 }

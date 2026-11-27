@@ -12,10 +12,11 @@ from of_client import OFClient
 
 SERVICE = Path(__file__).resolve().parents[1]
 
-CLIENT_ATTR = re.compile(r"\bclient\.(\w+)")
+CLIENT_ATTR = re.compile(r"\b(?:client|c)\.(\w+)")
 ROUTE_ATTR = re.compile(r"\b_get_client\(\)\.(\w+)")
 CLIENT_LITERAL = re.compile(r"\b(?:getattr|hasattr)\(\s*(?:[\w.]*\bclient|_get_client\(\))\s*,\s*[\"'](\w+)[\"']")
 ROUTE_LITERAL = re.compile(r"\b(?:getattr|hasattr)\(\s*_get_client\(\)\s*,\s*[\"'](\w+)[\"']")
+ROUTE_CALL = re.compile(r"\b_platform_call\(\s*[\"'](\w+)[\"']")
 
 UNREACHED: dict[str, dict[str, str]] = {
     "fansly_backend": {
@@ -25,6 +26,8 @@ UNREACHED: dict[str, dict[str, str]] = {
         "post": "httpx client (llm_client), not a Platform client",
         "get_json": "OnlyFans purchases poll; Backend accounts take revenue_tick first (purchase_poll, transaction_ingest)",
         "session_path": "set on a fresh OFClient inside OFClient.from_account",
+        "request": "httpx client (toolbox relay calls), not a Platform client",
+        "unread_chat_fan_ids": "audiences.resolve_mass_audience only, whose callers are mass sends Fansly refuses first (02f)",
     },
 }
 
@@ -37,10 +40,10 @@ def scan(root: Path = SERVICE) -> tuple[dict[str, set[str]], set[str]]:
             continue
         text = path.read_text()
         rel = str(path.relative_to(root))
-        for rx in (CLIENT_ATTR, ROUTE_ATTR, CLIENT_LITERAL):
+        for rx in (CLIENT_ATTR, ROUTE_ATTR, CLIENT_LITERAL, ROUTE_CALL):
             for name in rx.findall(text):
                 where.setdefault(name, set()).add(rel)
-        routes |= set(ROUTE_ATTR.findall(text)) | set(ROUTE_LITERAL.findall(text))
+        routes |= set(ROUTE_ATTR.findall(text)) | set(ROUTE_LITERAL.findall(text)) | set(ROUTE_CALL.findall(text))
     kept = {n: files for n, files in where.items() if hasattr(OFClient, n)}
     return kept, routes & set(kept)
 
@@ -75,6 +78,10 @@ def failures(backends, surface: dict[str, set[str]], routes: set[str],
     return out
 
 
+def live_checks(shim, surface) -> set[str]:
+    return {n for n in surface if verdict(shim, n) == "live_check"} | LIVE_CHECK_LANES
+
+
 def case_every_backend_shim_holds_the_surface():
     backends = platforms.backends()
     surface, routes = scan()
@@ -85,7 +92,7 @@ def case_every_backend_shim_holds_the_surface():
             kinds.setdefault(verdict(shim, name), []).append(name)
         route_misses = [n for n in kinds.get("missing", []) if n in routes]
         other_misses = [n for n in kinds.get("missing", []) if n not in routes]
-        live = set(kinds.get("live_check", [])) | LIVE_CHECK_LANES
+        live = live_checks(shim, surface)
         print(f"{module.__name__}: {len(surface)} names, {len(routes)} route-reached; "
               + ", ".join(f"{k} {len(v)}" for k, v in sorted(kinds.items()) if k != "live_check")
               + f"; live_check {len(live)}"
@@ -145,11 +152,23 @@ def case_scan_reads_bound_and_route_forms():
         (root / "tests").mkdir()
         (root / "a.py").write_text(
             "run.client.list_chats\nx = _get_client().me()\nhasattr(client, 'subscribers')\n"
-            "getattr(_get_client(), 'vault_media', None)\nof_client.add_social_button\n")
+            "getattr(_get_client(), 'vault_media', None)\nof_client.add_social_button\n"
+            "c = client()\ngot = c.create_promo(**kw)\nabc.finish_promo\n"
+            "_platform_call(\"search_chat\", \"search chat\")(x)\nmy_platform_call('pin_message', 'pin')\n")
         (root / "tests" / "t.py").write_text("client.add_users_link\n")
         surface, routes = scan(root)
-    assert set(surface) == {"list_chats", "me", "subscribers", "vault_media"}, surface
-    assert routes == {"me", "vault_media"}, routes
+    assert set(surface) == {"create_promo", "list_chats", "me", "search_chat", "subscribers", "vault_media"}, surface
+    assert routes == {"me", "search_chat", "vault_media"}, routes
+
+
+def case_fansly_counts_hold_the_lists_phase_verdicts():
+    surface, routes = scan()
+    shim = platforms.FANSLY.backend.Shim
+    live = live_checks(shim, surface)
+    assert live == {"delete_list", "block_user", "priority_mass"}, live
+    assert {n: verdict(shim, n) for n in ("list_users_in", "rename_list", "unblock_user")} == {
+        "list_users_in": "built", "rename_list": "built", "unblock_user": "blocked"}
+    assert {"list_users_in", "rename_list", "block_user", "unblock_user"} <= routes, routes
 
 
 if __name__ == "__main__":

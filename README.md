@@ -55,6 +55,25 @@ Optional variables for `.env`: `ADMIN_PASSWORD` (without it, founder-only
 actions return 503) and the LLM keys `DEEPSEEK_API_KEY`,
 `DEEPINFRA_API_KEY`, `ZAI_API_KEY` (the dashboard works without them).
 
+**Leak tracker (off by default).** Creators › Leak tracker lists where a
+Creator's content is leaked, through a removal service you sign up with. It
+ships off: no install connects anywhere until you opt in. To opt in:
+
+1. Get the service's URL and a Tracker key for your agency from the removal service.
+2. Add `LEAK_TRACKER_URL=<its https URL>` and `LEAK_TRACKER_ENABLED=1` to `.env`,
+   then `docker compose up -d openinflowwww-relay`.
+3. As the agency owner, set `leak_tracker: true` in the agency's flags
+   (`PUT /admin/settings/flags`, keeping the other flags `GET` returns).
+4. Open Creators › Leak tracker and paste the key in the Tracker key card.
+   The service's name and contact link come from it at runtime.
+
+What it sends: the key, and for each Creator you enrol (after ticking consent)
+the account id, platform, username (and whether it is verified), display name,
+aliases, optional Instagram and X handles, and whether tracking is paused. The
+consent record (who, when) stays in your DB. To turn it off, unset
+`LEAK_TRACKER_ENABLED` and recreate the relay, or force it off in Settings ›
+System.
+
 The app shows Infloww's screens plus "My Automations". The older automation
 pages (`/automations` and the Settings > Legacy tabs) are gone; an old
 `/automations` link lands on My Automations.

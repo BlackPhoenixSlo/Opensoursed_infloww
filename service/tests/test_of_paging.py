@@ -152,6 +152,184 @@ def case_list_members_tail_only():
     assert not bad, "\n".join(bad)
 
 
+class _OnePage:
+    platform_list_page = 50
+
+    def __init__(self, replies):
+        self.replies, self.gets, self.sizes = replies, [], 0
+
+    def list_users_in(self, lid, limit, offset):
+        self.gets.append((lid, limit, offset))
+        r = self.replies[lid]
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    def get_list(self, lid):
+        self.sizes += 1
+        return {"id": lid, "usersCount": 2}
+
+
+def _rows(*ids):
+    return [{"id": i} for i in ids]
+
+
+def case_one_page_list_table():
+    full = _rows(*(str(i) for i in range(1, 51)))
+    rows = [
+        ("hasMore false, all ids valid -> complete",
+         {"list": _rows("11", "12"), "hasMore": False}, {11, 12}, False),
+        ("empty, hasMore false -> complete", {"list": [], "hasMore": False}, set(), False),
+        ("hasMore true -> incomplete", {"list": full, "hasMore": True}, set(range(1, 51)), True),
+        ("one malformed id dropped -> incomplete",
+         {"list": _rows("11", "abc"), "hasMore": False}, {11}, True),
+        ("a non-ASCII digit id -> incomplete", {"list": _rows("11", "²"), "hasMore": False}, {11}, True),
+        ("a row with no id -> incomplete",
+         {"list": [{"id": "11"}, {"name": "x"}], "hasMore": False}, {11}, True),
+        ("a non-dict row -> incomplete", {"list": [{"id": "11"}, "x"], "hasMore": False}, {11}, True),
+        ("no hasMore key -> incomplete", {"list": _rows("11")}, {11}, True),
+        ("bare list reply -> incomplete", _rows("11"), {11}, True),
+    ]
+    bad = []
+    for name, reply, want_ids, want_inc in rows:
+        c = _OnePage({7: reply})
+        got = of_paging.list_member_ids(c, 7)
+        if (got, c.gets, c.sizes) != ((want_ids, want_inc), [(7, 50, 0)], 0):
+            bad.append(f"{name}: {(got, c.gets, c.sizes)!r}")
+    assert not bad, "\n".join(bad)
+
+
+def case_resumable_lists_forwards_list_page():
+    c = _OnePage({7: {"list": _rows("11"), "hasMore": False}})
+    lists = audiences._ResumableLists(c)
+    assert lists.platform_list_page == 50
+    assert of_paging.list_member_ids(lists, 7, max_pages=3) == ({11}, False)
+    assert c.gets == [(7, 50, 0)] and lists.pages == 1, (c.gets, lists.pages)
+
+    class OF:
+        def list_users_in(self, lid, limit, offset):
+            return []
+    assert audiences._ResumableLists(OF()).platform_list_page is None
+
+
+def _on_platform(key):
+    import accounts
+    from unittest.mock import patch
+    return patch.object(accounts, "get_platform", lambda aid: key)
+
+
+def case_audience_refusal_table():
+    lacks = "platform_lacks:following"
+    rows = [
+        ("following on Fansly", "fansly", ["following"], None, lacks),
+        ("following on Fansly, any case and spaces", "fansly", [" Following "], [], lacks),
+        ("following as an exclude on Fansly", "fansly", ["fans"], ["following"], lacks),
+        ("fans and custom lists on Fansly", "fansly", ["fans", "123"], [456], None),
+        ("following on OnlyFans", "onlyfans", ["following", "fans"], None, None),
+        ("custom list on OnlyFans", "onlyfans", ["123"], [456], None),
+        ("empty", "fansly", [], [], None),
+        ("None lists", "fansly", None, None, None),
+        ("following on an Unknown platform", "myspace", ["following"], None, lacks),
+        ("custom list on an Unknown platform", "myspace", ["123"], None, None),
+    ]
+    bad = []
+    for name, key, inc, exc, want in rows:
+        with _on_platform(key):
+            got = audiences.audience_refusal("a1", inc, exc)
+        if got != want:
+            bad.append(f"{name}: {got!r} != {want!r}")
+    assert not bad, "\n".join(bad)
+
+
+def case_audience_refusal_is_audience_unknown():
+    e = audiences.AudienceRefusal("platform_lacks:following")
+    assert isinstance(e, audiences.AudienceUnknown) and isinstance(e, ValueError)
+    assert e.reason == "platform_lacks:following"
+    assert "platform_lacks:following" in str(e)
+    try:
+        raise e
+    except audiences.AudienceUnknown as caught:
+        assert caught is e
+
+    import asyncio
+    c = _OnePage({9: {"list": _rows("1"), "hasMore": True}})
+    try:
+        asyncio.run(audiences.drop_exclude_list_members(c, [1, 2], [9]))
+    except audiences.AudienceUnknown as caught:
+        assert isinstance(caught, audiences.AudienceRefusal), caught
+        assert caught.reason == "platform_lacks:list_users_in:incomplete", caught.reason
+    else:
+        raise AssertionError("an incomplete one-page exclude read must refuse")
+
+
+class _LacksError(RuntimeError):
+    reason = "platform_lacks:list_users_in:unknown_list"
+
+
+class _Mixed(_OnePage):
+    def subscribers(self, *, type, limit, offset):
+        return {"list": _rows(1, 2, 3) if offset == 0 else [], "hasMore": offset == 0}
+
+    def following(self, **kw):
+        raise RuntimeError("Fansly following read not captured")
+
+
+def case_roster_audience_blocking_platform_causes():
+    done = {"list": _rows("2"), "hasMore": False}
+    more = {"list": _rows("2"), "hasMore": True}
+    inc = "platform_lacks:list_users_in:incomplete"
+    rows = [
+        ("one page: complete include minus complete exclude",
+         {7: {"list": _rows("1", "2"), "hasMore": False}, 9: done}, ["7"], [9], [1]),
+        ("one page: incomplete include", {7: more}, ["7"], [], inc),
+        ("one page: incomplete exclude", {7: done, 9: more}, ["7"], [9], inc),
+        ("one page: malformed include member", {7: {"list": _rows("x"), "hasMore": False}},
+         ["7"], [], inc),
+        ("one page: read raises", {7: RuntimeError("502")}, ["7"], [], inc),
+        ("one page: following read raises", {}, ["following"], [], "platform_lacks:following"),
+        ("one page: fans roster", {}, ["fans"], [], [1, 2, 3]),
+        ("client error carries a platform_lacks reason", {7: _LacksError("gone")}, ["7"], [],
+         "platform_lacks:list_users_in:unknown_list"),
+        ("unknown list name", {}, ["vips"], [], None),
+    ]
+    bad = []
+    for name, replies, inc_lists, exc_lists, want in rows:
+        try:
+            got = audiences.roster_audience_blocking(
+                _Mixed(replies), user_lists=inc_lists, excluded_user_lists=exc_lists)
+        except audiences.AudienceRefusal as e:
+            got = e.reason
+        if got != want:
+            bad.append(f"{name}: {got!r} != {want!r}")
+    assert not bad, "\n".join(bad)
+
+
+def case_roster_audience_blocking_onlyfans_backstop():
+    class OF:
+        def __init__(self, reply):
+            self.reply = reply
+
+        def list_users_in(self, lid, limit, offset):
+            if isinstance(self.reply, Exception):
+                raise self.reply
+            return self.reply
+
+        def subscribers(self, *, type, limit, offset):
+            return {"list": [{"id": 10_000 + offset}], "hasMore": True}
+    full = _rows(*range(1, 101))
+    for name, reply, lists in (("tail repeat with no count", full, ["7"]),
+                               ("read raises", RuntimeError("502"), ["7"]),
+                               ("endless roster", [], ["fans"])):
+        got = audiences.roster_audience_blocking(OF(reply), user_lists=lists)
+        assert got is None, (name, got)
+    try:
+        audiences.roster_audience_blocking(OF(_LacksError("x")), user_lists=["7"])
+    except audiences.AudienceRefusal as e:
+        assert e.reason == "platform_lacks:list_users_in:unknown_list", e.reason
+    else:
+        raise AssertionError("a platform_lacks client error must refuse on any client")
+
+
 def case_find_list_id():
     page1 = [{"id": i, "name": f"n{i}"} for i in range(1, 101)]
 

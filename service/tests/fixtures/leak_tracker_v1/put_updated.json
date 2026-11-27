@@ -1,0 +1,23 @@
+{
+  "method": "PUT",
+  "path": "/v1/watches/w_miavale_0001",
+  "request": {
+    "account_id": "acc-1001",
+    "aliases": [
+      "mia.vale.x"
+    ],
+    "display_name": "Mia V.",
+    "instagram": "miavale",
+    "paused": false,
+    "platform": "onlyfans",
+    "username": "miavale",
+    "verified": true,
+    "x": "miavale"
+  },
+  "response": {
+    "created": false,
+    "seeded": false,
+    "watch_id": "w_miavale_0001"
+  },
+  "status": 200
+}

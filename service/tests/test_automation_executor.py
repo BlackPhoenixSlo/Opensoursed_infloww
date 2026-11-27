@@ -2026,6 +2026,21 @@ async def case_unknown_kind_consumes_ghost_job():
     assert not pending, pending
 
 
+async def case_plugin_stats_never_replace_the_run_and_job_ids():
+    from automation_registry import register
+    aid, kind = "acc_stats_ids", "stats_ids_probe_kind"
+    await _seed_account(aid)
+
+    @register(kind)
+    async def _shadowing(account_id, payload, *, run_id):
+        return {"run_id": 999_999, "job_id": 888_888, "sent": 1}
+
+    job_id = await enqueue_job(aid, kind, payload={})
+    res = await run_once(aid, kind)
+    async with get_session() as s:
+        run = (await s.execute(select(AutomationRun).where(AutomationRun.account_id == aid))).scalar_one()
+    assert (res["status"], res["run_id"], res["job_id"], res["sent"]) == ("ok", run.id, job_id, 1), res
+
 async def case_a_failed_run_retries_unless_its_rule_went_off_mid_run():
     from automation_registry import register
     from run_decide import JOB_RETRY_BACKOFF_S
@@ -2708,6 +2723,7 @@ _harness.run(
     case_client_pool_reuses_and_evicts,
     case_unknown_kind_errors,
     case_unknown_kind_consumes_ghost_job,
+    case_plugin_stats_never_replace_the_run_and_job_ids,
     case_a_failed_run_retries_unless_its_rule_went_off_mid_run,
     case_a_refused_one_shot_waits_out_the_proxy_unless_a_write_may_have_landed,
     case_orphaned_one_shot_parks_sweep_requeues,

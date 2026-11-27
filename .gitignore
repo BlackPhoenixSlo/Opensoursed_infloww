@@ -37,6 +37,8 @@ service/chatterly.db.devbak*
 service/data/
 *.devbak.*
 service/sessions/
+# fleet.py entry-cut moves the canaries' session folders here (aside, restored on abort)
+/data.entry-cut-aside/
 service/storyboard_cache/
 service/vault_thumbs/
 service/vault_posters/
@@ -90,6 +92,7 @@ OF_AUTOMATIONV1/
 !.claude/skills/thermo-nuclear-code-quality-review/
 !.claude/skills/ui-explore/
 !.claude/skills/verify-app/
+!.claude/skills/testbox/
 
 # graphify output — regenerable, and it distills private design docs + carries
 # absolute laptop paths, so it must never be committed (it reached the PUBLIC
@@ -169,8 +172,9 @@ convo_review.html
 kvm8-shadow-test.html
 kvm8-shadow-test.html.tmp
 
-# Fansly mirror generator's build stage; swapped into app/public/fansly-mirror.
+# Fansly mirror generator's build stage and a killed swap's old tree.
 app/public/fansly-mirror.tmp/
+app/public/fansly-mirror.old/
 
 # Per-machine container limit overrides (and any other local compose tweak).
 # Compose merges this automatically. It is per-machine by definition, so it
@@ -237,3 +241,5 @@ scripts/assistant_draft_eval/results/
 .scratch/ui-explore/
 # scripts/verify-app/drive.py runs: evidence + logs, never commit
 .scratch/verify-app/
+# scripts/fansly-mirror-check runs: derived fixture, screenshots, request logs
+.scratch/fansly-mirror-check/

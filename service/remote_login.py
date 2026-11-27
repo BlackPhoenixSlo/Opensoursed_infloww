@@ -55,7 +55,7 @@ STATE_ERROR = "error"
 STATE_CANCELLED = "cancelled"
 _TERMINAL = {STATE_DONE, STATE_ERROR, STATE_CANCELLED}
 
-# Sites render the login form via JS after domcontentloaded (often late on BB proxies): wait for the fields, never look up once.
+# Sites render the login form via JS after domcontentloaded (often late in a Browserbase session): wait for the fields, never look up once.
 FORM_WAIT_S = 30
 FIELD_TIMEOUT_MS = 5_000
 FILL_ATTEMPTS = 3
@@ -321,6 +321,7 @@ def _run_login(job: RemoteLoginJob, password: str) -> None:
 
 def _serve(job: RemoteLoginJob, *, secrets: tuple[str | None, ...],
            body: Callable[[Any, Any], None]) -> None:
+    log.info("remote login %s started platform=%s", job.id, job.platform)
     try:
         with _browserbase_backend(job) as (context, page):
             body(page, context)
@@ -328,7 +329,7 @@ def _serve(job: RemoteLoginJob, *, secrets: tuple[str | None, ...],
         job.set_state(STATE_CANCELLED, "cancelled")
     except Exception as e:  # noqa: BLE001
         msg = scrub(f"{type(e).__name__}: {e}", *secrets, *job.secrets())
-        log.warning("remote login %s failed: %s", job.id, msg)
+        log.warning("remote login %s failed platform=%s: %s", job.id, job.platform, msg)
         job.fail(msg)
     finally:
         if not job.is_terminal():
@@ -398,10 +399,9 @@ def bb_env() -> tuple[str, str]:
 
 
 def _bb_session_payload(project_id: str) -> dict[str, Any]:
-    # Browserbase managed proxies (ours is never sent, bound to the account afterwards); captcha solving OFF (defaults on); laptop viewport so the live view reads on a phone.
+    # No proxy: the session runs on Browserbase's own network (ours is never sent, bound to the account after login); captcha solving OFF (defaults on); laptop viewport so the live view reads on a phone.
     return {
         "projectId": project_id,
-        "proxies": True,
         "browserSettings": {"solveCaptchas": False, "viewport": dict(BB_VIEWPORT)},
     }
 
@@ -430,7 +430,7 @@ def _bb_create_session() -> dict[str, Any]:
     try:
         session = _bb_request("/sessions", "POST", _bb_session_payload(project_id))
     except RuntimeError as e:
-        raise RuntimeError(f"couldn't start a Browserbase session on its managed proxies: {e}") from None
+        raise RuntimeError(f"couldn't start a Browserbase session: {e}") from None
     if not session.get("connectUrl") or not session.get("id"):
         raise RuntimeError("Browserbase session-create returned no id/connectUrl")
     return session

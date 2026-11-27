@@ -277,6 +277,14 @@ phone locked.
   drag it partly past the left or right edge to tuck it away behind its tab. On a
   computer it is the round button in the bottom-right corner. **Help center**
   (pinned at the bottom of the sidebar) shows the same chat as a full page.
+- **Support tab: message the team behind the product.** When the install has
+  Support switched on, the help chat shows a life-buoy button at the top. Tap it
+  to write to the product team about anything missing, broken or annoying —
+  the team reads every message and replies there. A red dot on the help
+  launcher or on that button means a new reply. Owners, admins and chatters
+  each get their own thread; nobody in your agency sees another person's.
+  Back (the arrow) returns to the help chat. No button means Support is not
+  switched on for this install.
 
 # Setting up
 

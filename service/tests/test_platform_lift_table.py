@@ -2,11 +2,13 @@
 import _harness
 
 import ast
+import inspect
 import re
 from pathlib import Path
 from types import SimpleNamespace
 
 import platforms
+import smart_list_rules
 from side_effect_gate import LIVE_CHECK_LANES, PLATFORM_LACKS_PREFIX, PLATFORM_UNKNOWN_PREFIX, classify
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +20,7 @@ UNKNOWN_ROW = f"{PLATFORM_UNKNOWN_PREFIX}<key>"
 
 _COUNTED = re.compile(r":\d+$")
 _TICKED = re.compile(r"`([^`]+)`")
+_RAISED = re.compile(rf'reason="({PLATFORM_LACKS_PREFIX}[^"{{]+)"')
 
 
 def normalise(reason: str) -> str:
@@ -57,15 +60,26 @@ def table_reasons(rows: list[list[str]]) -> list[str]:
     return [normalise(r) for row in rows[2:] for r in _TICKED.findall(row[0])]
 
 
-def expected_reasons(registry, lacks, verdicts: dict, lanes=LIVE_CHECK_LANES) -> set[str]:
+def raised_reasons(shim: type) -> set[str]:
+    out: set[str] = set()
+    for cls in shim.__mro__:
+        try:
+            out |= set(_RAISED.findall(inspect.getsource(cls)))
+        except (OSError, TypeError):
+            continue
+    return out
+
+
+def expected_reasons(registry, lacks, verdicts: dict, lanes=LIVE_CHECK_LANES,
+                     rules=smart_list_rules.RULE_REFUSALS) -> set[str]:
     out = {platforms.lack_reason(lack) for lack in lacks} | {UNKNOWN_ROW}
-    out |= {f"{PLATFORM_LACKS_PREFIX}{n}" for n in lanes}
+    out |= {f"{PLATFORM_LACKS_PREFIX}{n}" for n in lanes} | set(rules)
     for p in registry:
         if p.backend is None:
             continue
         shim = p.backend.Shim
         out |= {f"{PLATFORM_LACKS_PREFIX}{n}" for n in dir(shim) if classify(shim, n)[0] not in ("built", "missing")}
-        out |= set(shim.SEND_REFUSALS.values())
+        out |= set(shim.SEND_REFUSALS.values()) | raised_reasons(shim)
     for kinds in verdicts.values():
         for branches in kinds.values():
             for verdict in branches.values():
@@ -130,7 +144,7 @@ _FULL = (("platform_lacks:referrals",), ("platform_lacks:pin", "platform_lacks:t
 
 def _fake_failures(text: str, registry=None, lacks=_LACKS, verdicts=None, lanes=frozenset()) -> list[str]:
     return failures(table_rows(text), expected_reasons(registry or _fake_registry(pin="blocked"), lacks,
-                                                       verdicts or _VERDICTS, lanes))
+                                                       verdicts or _VERDICTS, lanes, frozenset()))
 
 
 def case_full_fake_table_passes():
@@ -155,6 +169,21 @@ def case_new_lane_without_row_fails():
 def case_new_lack_without_row_fails():
     got = _fake_failures(_doc(*_FULL), lacks=(platforms.Lack.REFERRALS, platforms.Lack.TIP_LEDGER))
     assert got == ["refusal without a Lift row: platform_lacks:tip_ledger"], got
+
+
+class _RaisingShim:
+    SEND_REFUSALS = {"tagged_users": "platform_lacks:tagged_users"}
+
+    def read(self):
+        return dict(reason="platform_lacks:raised_only")
+
+
+def case_new_raised_reason_without_row_fails():
+    registry = (SimpleNamespace(key="fake", backend=SimpleNamespace(Shim=_RaisingShim)),)
+    got = _fake_failures(_doc(*_FULL), registry=registry)
+    assert got == ["refusal without a Lift row: platform_lacks:raised_only",
+                   "Lift row for no refusal: platform_lacks:pin"], got
+    assert raised_reasons(type("Shim", (), {})) == set()
 
 
 def case_new_gated_reason_without_row_fails():

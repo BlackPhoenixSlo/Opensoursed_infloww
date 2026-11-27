@@ -12,6 +12,8 @@ import platforms
 from automation_registry import register
 from db.engine import get_session
 from db.models import Fan, FollowLog, FollowPingState, Message
+from side_effect_gate import PLATFORM_LACKS_PREFIX
+from smart_list_rules import rules_refusal
 from ._knobs import bool_knob
 from ._skiplist import load_hard_skip_ids
 
@@ -24,6 +26,7 @@ _DEFAULT_PING_GAP_DAYS = 14
 _HEADROOM_FACTOR = 5
 _NOTIFY_OUTCOMES = ("followed", "refollowed", "pinged")
 _EXAMINED_OUTCOMES = ("already_following", "paid_profile", "no_price")
+_EXPIRED_REFUSAL = f"{PLATFORM_LACKS_PREFIX}recent_expired_subscribers"
 
 
 def _headroom(cap: int) -> int:
@@ -115,17 +118,29 @@ async def _recent_expired_fan_ids(client) -> list[int]:
     return out
 
 
-async def _resolve_smart_list(smart_list_id: int, account_id: str) -> list[int]:
-    from smart_lists_api import _load_normalised_fans, _rules_of, live_row, resolve
+async def _owned_rules(smart_list_id, account_id: str) -> dict | None:
+    from smart_lists_api import _rules_of, live_row
+    try:
+        sid = int(smart_list_id)
+    except (TypeError, ValueError):
+        log.warning("auto_follow smart_list=%r is not an id — ignoring", smart_list_id)
+        return None
     async with get_session() as s:
-        row = await live_row(s, int(smart_list_id))
+        row = await live_row(s, sid)
         if row is None:
-            return []
+            return None
         if str(row.account_id) != str(account_id):
             log.warning("auto_follow smart_list=%s belongs to account=%s, not %s — ignoring",
-                        smart_list_id, row.account_id, account_id)
-            return []
-        rules = _rules_of(row)
+                        sid, row.account_id, account_id)
+            return None
+        return _rules_of(row)
+
+
+async def _resolve_smart_list(smart_list_id, account_id: str) -> list[int]:
+    from smart_lists_api import _load_normalised_fans, resolve
+    rules = await _owned_rules(smart_list_id, account_id)
+    if rules is None:
+        return []
     fans = await _load_normalised_fans(account_id, rules)
     return resolve(rules, fans)
 
@@ -140,7 +155,7 @@ async def _resolve_targets(account_id: str, targets: dict, cap: int) -> list[int
         sid = targets.get("smart_list_id")
         if sid is None:
             return []
-        return (await _resolve_smart_list(int(sid), account_id))[:cap]
+        return (await _resolve_smart_list(sid, account_id))[:cap]
     days = int(targets.get("days") or _DEFAULT_RECENT_DAYS)
     return await _recent_active_fan_ids(account_id, days, cap)
 
@@ -385,8 +400,25 @@ def select_follow_pool(merged: list[int], *, hard_skip: set[int],
     return [f for f in merged if f not in hard_skip][:headroom]
 
 
+async def _source_refusal(account_id: str, sources: list[str], targets: dict) -> str | None:
+    if "expired" in sources and platforms.refusal_for_account(str(account_id), "recent_expired_subscribers"):
+        return _EXPIRED_REFUSAL
+    if "smart_list" not in sources or targets.get("smart_list_id") is None:
+        return None
+    rules = await _owned_rules(targets["smart_list_id"], account_id)
+    return None if rules is None else rules_refusal(platforms.for_account(str(account_id)), rules)
+
+
+def _refused(dry_run: bool, sources: list[str], reason: str) -> dict:
+    return {"action": "follow", "dry_run": dry_run, "source": ",".join(sources),
+            "status": "skipped", "reason": reason, "candidates": 0}
+
+
 async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool,
                       targets: dict, hard_skip: set) -> dict:
+    sources = _source_list(targets)
+    if reason := await _source_refusal(account_id, sources, targets):
+        return _refused(dry_run, sources, reason)
     client = (await _client_or_none(account_id) if dry_run
               else await asyncio.to_thread(ax._make_client, account_id))
     if client is None:
@@ -395,7 +427,6 @@ async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool
     # bool_knob, not bool(payload.get(k, True)): a stored null would resolve to gate OFF and buy priced profiles.
     money_gate = bool_knob(payload, "money_gate", True)
     headroom = _headroom(cap)
-    sources = _source_list(targets)
     # hi=365: SQLite raises past 32766 bound params, and a huge gap would bind the whole ledger.
     gap_days = _int_knob(payload, "min_days_between_pings", _DEFAULT_PING_GAP_DAYS,
                          lo=1, hi=365, zero_default=True)

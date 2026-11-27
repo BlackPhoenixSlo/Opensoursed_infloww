@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Any
 
+import admission
+import relay_cache
 from of_coerce import cents_or_none
 
 log = logging.getLogger("of-relay.account-page")
@@ -12,6 +15,7 @@ PAID_PAGE_SKIP = "paid_page"
 
 _TTL_KNOWN_S = 6 * 3600
 _TTL_UNKNOWN_S = 300
+OF_IDENTITY_TIMEOUT_S = 8.0
 
 _cache: dict[str, tuple[float, int | None]] = {}
 _locks: dict[str, asyncio.Lock] = {}
@@ -40,6 +44,29 @@ def prime(account_id: str, profile: object) -> None:
 
 def invalidate(account_id: str) -> None:
     _cache.pop(str(account_id), None)
+
+
+async def of_me(account_id: str) -> dict[str, Any] | None:
+    import automation_executor as ax
+
+    async def fetch():
+        held = asyncio.Event()
+
+        async def call():
+            async with admission.OF_ME_READ:
+                held.set()
+                return await asyncio.to_thread(lambda: ax._make_client(account_id).me())
+        # The slot stays held until the thread returns, also past the timeout: a hung proxy must not admit more calls beside the ones still running.
+        task = asyncio.ensure_future(call())
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        await held.wait()
+        return await asyncio.wait_for(asyncio.shield(task), OF_IDENTITY_TIMEOUT_S)
+    try:
+        me = await relay_cache.get_or_fetch("users_me", account_id, ("users_me",), 60, fetch)
+    except Exception:  # noqa: BLE001 — any failure keeps the stored copy
+        log.info("account_page: /users/me of %s unreadable", account_id, exc_info=True)
+        return None
+    return me if isinstance(me, dict) else None
 
 
 # `subscribePrice` on /users/me is the only paid-page flag; `paidFeed` disagrees across paid pages.

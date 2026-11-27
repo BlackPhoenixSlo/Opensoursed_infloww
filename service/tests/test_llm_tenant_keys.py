@@ -166,6 +166,18 @@ async def case_orphan_account_falls_back_to_the_house_key():
     assert await _bearer_for("acct_orphan") == _house_key()
 
 
+async def case_an_explicit_api_key_beats_the_house_key():
+    _KeyCapturingClient.last_bearer = ""
+    orig = llm_client.httpx.AsyncClient
+    llm_client.httpx.AsyncClient = _KeyCapturingClient
+    try:
+        await chat(model=MODEL, messages=[{"role": "user", "content": "hi"}],
+                   purpose="support_summary", account_id=None, api_key="hub-only-key")
+    finally:
+        llm_client.httpx.AsyncClient = orig
+    assert _KeyCapturingClient.last_bearer == "hub-only-key" != _house_key()
+
+
 async def case_blank_account_id_falls_back_to_the_house_key():
     prov = llm_providers.PROVIDERS[HOUSE_PROVIDER]
     assert await llm_client._tenant_api_key("", prov) == _house_key()
@@ -448,6 +460,45 @@ def case_a_non_master_cannot_touch_another_agencys_keys():
         "admin_password": os.environ["ADMIN_PASSWORD"],
         "providers": {HOUSE_PROVIDER: "sk-hijack"}})
     assert r.status_code == 403, f"{r.status_code} {r.text}"
+
+
+TRACKER_KEY = "ltk_" + "z" * 40
+
+
+def case_the_llm_key_writes_refuse_the_tracker_provider():
+    owner = _harness.make_client()
+    assert owner.post("/auth/login", json={"username": "agency_ui", "password": "secretpw"}).status_code == 200
+    r = owner.put("/admin/my-llm-keys", json={"leak_tracker": TRACKER_KEY})
+    assert r.status_code == 400, f"{r.status_code} {r.text}"
+    master = _harness.make_client()
+    assert master.post("/auth/login", json={"username": "master_manager", "password": "secretpw"}).status_code == 200
+    r = master.put(f"/admin/users/{_MANAGED['agency']}/llm-keys", json={
+        "admin_password": os.environ["ADMIN_PASSWORD"], "providers": {"leak_tracker": TRACKER_KEY}})
+    assert r.status_code == 400, f"{r.status_code} {r.text}"
+    for uid in (_UI["owner"], _MANAGED["agency"]):
+        assert asyncio.run(tenant_keys.get_key(uid, "leak_tracker")) == ""
+
+
+def case_the_key_overview_never_lists_the_tracker_key():
+    uid = _MANAGED["agency"]
+    asyncio.run(tenant_keys.set_keys(uid, {"leak_tracker": TRACKER_KEY}, known=tenant_keys.NON_LLM_PROVIDERS))
+    try:
+        assert asyncio.run(tenant_keys.get_key(uid, "leak_tracker")) == TRACKER_KEY
+        assert "leak_tracker" not in asyncio.run(tenant_keys.status(uid))
+        master = _harness.make_client()
+        assert master.post("/auth/login", json={"username": "master_manager", "password": "secretpw"}).status_code == 200
+        roster = master.get("/admin/users/llm-key-status")
+        assert roster.status_code == 200, roster.text
+        row = next(a for a in roster.json()["agencies"] if a["user_id"] == uid)
+        assert row["providers_set"] == [HOUSE_PROVIDER], row
+        one = master.get(f"/admin/users/{uid}/llm-keys")
+        assert "leak_tracker" not in one.json()["providers"] and TRACKER_KEY not in one.text
+        own = _harness.make_client()
+        assert own.post("/auth/login", json={"username": "agency_managed", "password": "secretpw"}).status_code == 200
+        mine = own.get("/admin/my-llm-keys")
+        assert "leak_tracker" not in mine.json()["providers"] and TRACKER_KEY not in mine.text
+    finally:
+        asyncio.run(tenant_keys.set_keys(uid, {"leak_tracker": ""}, known=tenant_keys.NON_LLM_PROVIDERS))
 
 
 def case_key_status_roster_ranks_agencies_with_a_live_model_first():

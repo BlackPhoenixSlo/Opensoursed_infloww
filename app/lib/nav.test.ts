@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { Users } from "lucide-react";
 
 vi.mock("@/lib/plugins.generated.register", () => ({ PLUGINS: [] }));
 
@@ -234,6 +235,98 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
   });
 });
 
+describe("session sidebars (Owner, Team Leader, Chatter)", () => {
+  const CHATTING = [
+    "/messages-pro", "/of-manager/messages", "/of-manager/notifications", "/growth/scripts", "/growth/get-to-know-fans",
+  ];
+  const TEAM_LEADER = [
+    "/", ...CHATTING, "/growth/smart-messages", "/of-manager/home", "/of-manager/vault", "/creators",
+    "/creators/proxy", "/creators/leaks", "/employees", "/employees/shifts", "/analytics/creator-reports",
+    "/analytics/employee-reports", "/analytics/message-dashboard", "/analytics/sales-records",
+  ];
+  const employee = (pages: string[]) => ({ chatterOnly: true, grantedPages: sessionGrantedPages(true, { pages }) });
+  const drawn = (platform: "onlyfans" | "fansly", f: Parameters<typeof drawnSidebar>[1]) =>
+    outline(drawnSidebar(sidebarFor(platform), f));
+
+  it("an Owner sees every group, Creators and Employees included", () => {
+    expect(drawn("onlyfans", OWNER).slice(-3)).toEqual([
+      "—",
+      "Creators: Manage creators / Custom proxy",
+      "Employees: Manage employees / Shift schedule",
+    ]);
+    expect(drawn("fansly", OWNER)).toEqual([
+      "Scripts",
+      "Message pro",
+      "Vault pro",
+      "—",
+      "Creators: Manage creators / Custom proxy",
+      "Employees: Manage employees / Shift schedule",
+    ]);
+  });
+
+  it("a Team Leader sees neither Creators nor Employees, though its role grants their pages", () => {
+    expect(drawn("onlyfans", employee(TEAM_LEADER))).toEqual([
+      "Dashboard",
+      "OF Manager: Home / Notifications / Messages Basic / Vault",
+      "Analytics: Creator reports / Employee reports / Message dashboard",
+      "Messages Pro",
+      "Growth: Smart Messages / Scripts",
+      "—",
+    ]);
+    expect(drawn("fansly", employee(TEAM_LEADER))).toEqual(["Scripts", "Message pro", "—"]);
+  });
+
+  it("a Chatter sees its chatting pages only", () => {
+    expect(drawn("onlyfans", employee(["/", ...CHATTING]))).toEqual([
+      "Dashboard",
+      "OF Manager: Notifications / Messages Basic",
+      "Messages Pro",
+      "Growth: Scripts",
+      "—",
+    ]);
+    expect(drawn("fansly", employee(["/", ...CHATTING]))).toEqual(["Scripts", "Message pro", "—"]);
+  });
+
+  it("does not draw a group whose children are all hidden", () => {
+    const nodes: NavNode[] = [
+      { label: "Kept", href: "/kept" },
+      { label: "Group", icon: Users, children: [{ label: "A", href: "/a", chatterHidden: true }, { label: "B", href: "/b", chatterHidden: true }] },
+    ];
+    expect(outline(drawnSidebar(nodes, { chatterOnly: true, grantedPages: null }))).toEqual(["Kept"]);
+    expect(outline(drawnSidebar(nodes, OWNER))).toEqual(["Kept", "Group: A / B"]);
+  });
+});
+
+describe("Leak tracker item (leak-tracker phase-01, story 8)", () => {
+  const LEAKS = { leak_tracker: true, fansly_manager: false };
+  const employee = (pages: string[] | null, flags = LEAKS) =>
+    ({ chatterOnly: true, grantedPages: sessionGrantedPages(true, { pages }), flags });
+  const creators = (f: Parameters<typeof drawnSidebar>[1]) =>
+    outline(drawnSidebar(sidebarFor("onlyfans"), f)).filter((l) => l.startsWith("Creators"));
+
+  it("sits under Creators after Custom proxy and shows only on the applied flag", () => {
+    expect(findNavLink("/creators/leaks")).toMatchObject({ label: "Leak tracker", flag: "leak_tracker" });
+    expect(findNavLink("/creators/leaks")?.chatterHidden).toBeUndefined();
+    expect(PERMISSION_PAGES.has("/creators/leaks")).toBe(true);
+    expect(creators({ ...OWNER, flags: LEAKS })).toEqual(["Creators: Manage creators / Custom proxy / Leak tracker"]);
+    expect(creators(OWNER)).toEqual(["Creators: Manage creators / Custom proxy"]);
+    expect(creators({ ...OWNER, flags: { ...LEAKS, leak_tracker: false } })).toEqual(["Creators: Manage creators / Custom proxy"]);
+  });
+
+  it("an employee session sees only the Leak tracker under Creators, whatever its pages say", () => {
+    expect(creators(employee(["/", "/creators/leaks"]))).toEqual(["Creators: Leak tracker"]);
+    expect(creators(employee(["/"]))).toEqual(["Creators: Leak tracker"]);
+    expect(creators(employee(null))).toEqual(["Creators: Leak tracker"]);
+    expect(creators(employee(["/", "/creators/leaks"], { ...LEAKS, leak_tracker: false }))).toEqual([]);
+    expect(creators(employee(null, { ...LEAKS, leak_tracker: false }))).toEqual([]);
+  });
+
+  it("never denies its page on pages; the page checks the flag itself", () => {
+    expect(deniedPage("/creators/leaks", new Set(["/"]))).toBeNull();
+    expect(deniedPage("/creators/proxy", new Set(["/"]))).toBe("/creators/proxy");
+  });
+});
+
 describe("granted pages (spec phase-04, stories 33-34)", () => {
   const sidebarHrefs = (granted: Set<string> | null) =>
     visibleSidebar(SIDEBAR, { chatterOnly: false, grantedPages: granted }).flatMap((n) =>
@@ -287,47 +380,86 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
     ]);
   });
 
-  it("with fansly_manager on, the Fansly Manager group is its four built pages, in Infloww's order", () => {
-    expect(outline(visibleSidebar(sidebarFor("fansly"), { ...OWNER, flags: { fansly_manager: true } }))[0]).toBe(
-      "Fansly Manager: Scheduled Posts / Lists / Notifications / Earning Statistics",
+  const FANSLY_MANAGER: [string, string, string][] = [
+    ["Homepage", "/fansly-manager/home", "/of-manager/home"],
+    ["Profile", "/fansly-manager/profile", "/of-manager/profile"],
+    ["Subscriptions", "/fansly-manager/subscriptions", "/of-manager/collections"],
+    ["Media Vault", "/fansly-manager/vault", "/of-manager/vault"],
+    ["Scheduled Posts", "/fansly-manager/scheduled", "/of-manager/queue"],
+    ["Lists", "/fansly-manager/lists", "/of-manager/collections"],
+    ["Bookmarks", "/fansly-manager/bookmarks", "/of-manager/collections/bookmarks/all"],
+    ["Messages", "/fansly-manager/messages", "/of-manager/messages"],
+    ["Notifications", "/fansly-manager/notifications", "/of-manager/notifications"],
+    ["Creator Dashboard", "/fansly-manager/creator", "/of-manager/statistics"],
+    ["Earning Statistics", "/fansly-manager/earning-statistics", "/analytics/creator-reports"],
+    ["Profile Statistics", "/fansly-manager/statistics", "/of-manager/statistics"],
+    ["Tracking Links", "/fansly-manager/tracking-links", "/of-manager/statistics"],
+    ["Settings", "/fansly-manager/settings", "/of-manager/settings"],
+  ];
+  const on = { fansly_manager: true, leak_tracker: false };
+  const managerLabels = (f: Parameters<typeof visibleSidebar>[1]) => {
+    const group = visibleSidebar(sidebarFor("fansly"), f).find((n) => isGroup(n) && n.label === "Fansly Manager");
+    return group && isGroup(group) ? group.children.map((c) => c.label) : [];
+  };
+
+  it("with fansly_manager on, the Fansly Manager group is Infloww's 14 entries, in its order", () => {
+    expect(outline(visibleSidebar(sidebarFor("fansly"), { ...OWNER, flags: on }))[0]).toBe(
+      "Fansly Manager: Homepage / Profile / Subscriptions / Media Vault / Scheduled Posts / Lists / Bookmarks / Messages / Notifications / Creator Dashboard / Earning Statistics / Profile Statistics / Tracking Links / Settings",
     );
   });
 
-  it("each flagged Fansly Manager page answers to its OnlyFans counterpart's Permission page, in the rail and by URL", () => {
-    const pages: [string, string][] = [
-      ["/fansly-manager/scheduled", "/of-manager/queue"],
-      ["/fansly-manager/lists", "/of-manager/collections"],
-      ["/fansly-manager/notifications", "/of-manager/notifications"],
-      ["/fansly-manager/earning-statistics", "/analytics/creator-reports"],
-    ];
-    const on = { fansly_manager: true };
-    for (const [href, permission] of pages) {
-      expect(findNavLink(href)?.permission).toBe(permission);
+  it("with Role enforcement off, an Owner or the Master, all 14 Fansly Manager entries show with the flag on", () => {
+    expect(managerLabels({ chatterOnly: false, grantedPages: null, flags: on })).toEqual(FANSLY_MANAGER.map(([label]) => label));
+    expect(managerLabels({ chatterOnly: false, grantedPages: null, master: true, flags: on })).toHaveLength(14);
+  });
+
+  it("each Fansly Manager entry answers to its OnlyFans counterpart's Permission page, in the rail and by URL, on its route and below it", () => {
+    for (const [label, href, permission] of FANSLY_MANAGER) {
+      expect(findNavLink(href)).toMatchObject({ label, flag: "fansly_manager", permission });
       expect(PERMISSION_PAGES.has(permission)).toBe(true);
       const granted = new Set([...PERMISSION_PAGES].filter((p) => p !== permission));
-      const chatter = { chatterOnly: true, grantedPages: granted, flags: on };
-      expect(outline(visibleSidebar(sidebarFor("fansly"), chatter))[0]).not.toContain(findNavLink(href)!.label);
-      expect(deniedPage(href, granted)).toBe(permission);
-      expect(deniedPage(href, new Set([permission]))).toBeNull();
-      expect(deniedPage(href, null)).toBeNull();
+      expect(managerLabels({ chatterOnly: true, grantedPages: granted, flags: on })).not.toContain(label);
+      for (const path of [href, `${href}/x`]) {
+        expect(deniedPage(path, granted)).toBe(permission);
+        expect(deniedPage(path, new Set([permission]))).toBeNull();
+        expect(deniedPage(path, null)).toBeNull();
+      }
     }
+    const noCollections = new Set([...PERMISSION_PAGES].filter((p) => p !== "/of-manager/collections"));
+    expect(deniedPage("/fansly-manager/lists/list", noCollections)).toBe("/of-manager/collections");
     const noTracking = new Set([...PERMISSION_PAGES].filter((p) => p !== "/growth/tracking-links"));
     for (const href of ["/growth/redirect-links", "/growth/bio-pages", "/growth/bio-pages/p00000000000001"]) {
       expect(deniedPage(href, noTracking)).toBe("/growth/tracking-links");
       expect(deniedPage(href, new Set(["/growth/tracking-links"]))).toBeNull();
     }
     expect(deniedPage("/growth/bio-pagesx", noTracking)).toBeNull();
-    const mp = { chatterOnly: true, grantedPages: new Set(["/messages-pro"]), flags: on };
-    expect(outline(visibleSidebar(sidebarFor("fansly"), mp))[0]).not.toMatch(/Scheduled Posts|Lists|Notifications|Earning Statistics/);
+    expect(managerLabels({ chatterOnly: true, grantedPages: new Set(["/messages-pro"]), flags: on })).toEqual([]);
   });
 
-  it("Fansly's links are exactly the four flagged Fansly Manager pages plus OnlyFans' Scripts, Message pro and Vault pro", () => {
+  it("Statistics without Creator reports opens Creator Dashboard, Profile and Tracking Links but not Earning Statistics; the reverse opens only Earning Statistics", () => {
+    const stats = new Set(["/of-manager/statistics"]);
+    expect(managerLabels({ chatterOnly: true, grantedPages: stats, flags: on })).toEqual(["Creator Dashboard", "Profile Statistics", "Tracking Links"]);
+    expect(deniedPage("/fansly-manager/earning-statistics", stats)).toBe("/analytics/creator-reports");
+    for (const path of ["/fansly-manager/creator", "/fansly-manager/statistics", "/fansly-manager/statistics/x", "/fansly-manager/tracking-links"])
+      expect(deniedPage(path, stats)).toBeNull();
+    const reports = new Set(["/analytics/creator-reports"]);
+    expect(managerLabels({ chatterOnly: true, grantedPages: reports, flags: on })).toEqual(["Earning Statistics"]);
+    expect(deniedPage("/fansly-manager/earning-statistics", reports)).toBeNull();
+    expect(deniedPage("/fansly-manager/statistics", reports)).toBe("/of-manager/statistics");
+    expect(deniedPage("/fansly-manager/statistics/x", reports)).toBe("/of-manager/statistics");
+  });
+
+  it("Bookmarks answers to OnlyFans' Bookmarks grant, not Collections", () => {
+    const collections = new Set(["/of-manager/collections"]);
+    expect(managerLabels({ chatterOnly: true, grantedPages: collections, flags: on })).toEqual(["Subscriptions", "Lists"]);
+    expect(deniedPage("/fansly-manager/bookmarks", collections)).toBe("/of-manager/collections/bookmarks/all");
+    expect(deniedPage("/fansly-manager/bookmarks", new Set(["/of-manager/collections/bookmarks/all"]))).toBeNull();
+  });
+
+  it("Fansly's links are the 14 flagged Fansly Manager entries plus OnlyFans' Scripts, Message pro and Vault pro", () => {
     const links = FANSLY_NAV.flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]));
     expect(links.map((l) => [l.href, l.flag])).toEqual([
-      ["/fansly-manager/scheduled", "fansly_manager"],
-      ["/fansly-manager/lists", "fansly_manager"],
-      ["/fansly-manager/notifications", "fansly_manager"],
-      ["/fansly-manager/earning-statistics", "fansly_manager"],
+      ...FANSLY_MANAGER.map(([, href]) => [href, "fansly_manager"]),
       ["/growth/scripts", undefined],
       ["/messages-pro", undefined],
       ["/growth/vault-pro", undefined],
@@ -346,7 +478,7 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
     expect(platformOfPath("/analytics/fan-reports")).toBe("onlyfans");
     expect(platformOfPath("/of-manager/home")).toBe("onlyfans");
     expect(platformOfPath("/fansly-manager/lists")).toBe("fansly");
-    expect(platformOfPath("/fansly-manager/home")).toBeNull();
+    expect(platformOfPath("/fansly-manager/home")).toBe("fansly");
     // Shared by both platforms, or common.
     expect(platformOfPath("/growth/scripts")).toBeNull();
     expect(platformOfPath("/growth/vault-pro")).toBeNull();
@@ -370,8 +502,8 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
       { label: "Lit", href: "/lit" },
     ];
     expect(outline(visibleSidebar(nodes, OWNER))).toEqual(["Lit"]);
-    expect(outline(visibleSidebar(nodes, { ...OWNER, flags: { fansly_manager: false } }))).toEqual(["Lit"]);
-    expect(outline(visibleSidebar(nodes, { ...OWNER, flags: { fansly_manager: true } }))).toEqual([
+    expect(outline(visibleSidebar(nodes, { ...OWNER, flags: { fansly_manager: false, leak_tracker: false } }))).toEqual(["Lit"]);
+    expect(outline(visibleSidebar(nodes, { ...OWNER, flags: { fansly_manager: true, leak_tracker: false } }))).toEqual([
       "Dark", "Group: Dark child", "Lit",
     ]);
   });

@@ -45,7 +45,7 @@ const enforced = (pages: string[] | null): { data: AppliedSettings } => ({
     preferences: { tz: null, report_tz: null, week_start: "monday" },
     messaging: { ai_translation: true },
     permissions: { enforced: true, pages, scope: "self" },
-    flags: { fansly_manager: false },
+    flags: { fansly_manager: false, leak_tracker: false },
   },
 });
 

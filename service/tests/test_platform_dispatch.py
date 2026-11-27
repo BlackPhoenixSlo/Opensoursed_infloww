@@ -9,8 +9,6 @@ import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
-import sqlite3  # noqa: E402
-import sys  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
 import uuid  # noqa: E402
@@ -27,14 +25,10 @@ from fansly_revenue import TickResult  # noqa: E402
 import of_ws  # noqa: E402
 import platforms  # noqa: E402
 import purchase_poll  # noqa: E402
-import side_effect_gate  # noqa: E402
 import transaction_ingest  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, AutomationRun, ScheduledJob, User, UserAccount  # noqa: E402
 from of_client import OFClient  # noqa: E402
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "proxy-health"))
-import watch as wt  # noqa: E402
 
 http = _harness.make_client()
 import server  # noqa: E402
@@ -134,6 +128,23 @@ def case_unknown_platform_client_loads_refuse_and_build_nothing():
     assert AID not in client_pool._POOL
 
 
+def case_warm_client_refuses_an_account_changed_to_an_unknown_platform():
+    client = types.SimpleNamespace(user_id=AID, x_of_rev="test")
+    with _sessions_tree(), patch.object(OFClient, "from_account", return_value=client):
+        accounts.save_meta(AID, {"platform": "onlyfans"})
+        try:
+            assert client_pool.get(AID) is client
+            accounts.save_meta(AID, UNKNOWN)
+            try:
+                client_pool.get(AID)
+            except platforms.UnknownPlatformKey as exc:
+                assert exc.reason == "platform_unknown:myspace"
+            else:
+                raise AssertionError("warm pool returned a client for an Unknown platform account")
+        finally:
+            client_pool._POOL.pop(AID, None)
+
+
 def case_unknown_platform_route_answers_501():
     _login()
     with _unknown_account():
@@ -158,19 +169,13 @@ async def case_unknown_platform_job_is_skipped_without_running_the_kind():
     async with get_session() as s:
         run = await s.get(AutomationRun, result["run_id"])
         job = await s.get(ScheduledJob, job_id)
+        in_window = await s.scalar(text(
+            "SELECT 1 FROM automation_runs WHERE id = :id"
+            " AND started_at >= datetime(CURRENT_TIMESTAMP, :since)"
+        ), {"id": result["run_id"], "since": "-1 hours"})
     assert (run.status, json.loads(run.stats_json)["reason"]) == ("skipped", "platform_unknown:myspace"), run.stats_json
+    assert in_window == 1, run.started_at
     assert job.status == "done", job.status
-    ro = sqlite3.connect(f"file:{_harness.DB_PATH}?mode=ro", uri=True)
-    try:
-        sql, params = wt.WATCH_SQL["platform_refusals"]
-        rows = ro.execute(sql, {**params, "since": "-60 minutes"}).fetchall()
-    finally:
-        ro.close()
-    assert (wt.PLATFORM_UNKNOWN, wt.PLATFORM_LACKS) == (side_effect_gate.PLATFORM_UNKNOWN_PREFIX,
-                                                        side_effect_gate.PLATFORM_LACKS_PREFIX)
-    assert rows == [("platform_unknown:myspace", UNKNOWN_AID, 1)], rows
-    verdict = wt.WATCH_CHECKS["platform_refusals"].fn(types.SimpleNamespace(rows=lambda key: rows))
-    assert verdict == ("alert", f"platform_unknown 1 (myspace): {UNKNOWN_AID}, 0 platform_lacks"), verdict
 
 
 class _Stop(asyncio.CancelledError):
@@ -380,7 +385,7 @@ def case_backend_api_error_with_status_code_answers_it():
     assert r.json() == {"ok": False, "error": "fansly", "detail": "Fansly has no unsend"}, r.json()
 
 
-from sqlalchemy import func, select  # noqa: E402
+from sqlalchemy import func, select, text  # noqa: E402
 
 import account_health  # noqa: E402
 import events  # noqa: E402
@@ -546,7 +551,7 @@ PROBES = {
     Lack.SERVER_SCHEDULE: _server_schedule_on,
 }
 UNCONSUMED = frozenset({Lack.TIP_LEDGER, Lack.PURCHASE_LINKAGE, Lack.RENEWAL_STATE,
-                        Lack.LAPSE_DETECTION, Lack.RETURN_DETECTION})
+                        Lack.LAPSE_DETECTION, Lack.RETURN_DETECTION, Lack.PROMOTION_TYPE})
 
 
 async def _probe_all(client: _ProbeClient) -> dict:

@@ -6,6 +6,7 @@ import _harness
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
+import os  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 import tempfile  # noqa: E402
@@ -181,7 +182,7 @@ def case_table_routes_answer_501_with_their_reason():
 def case_refusal_same_on_class_and_instance():
     want = {"add_users_to_lists": None, "restrict_user": "Fansly has no restrict",
             "chat_media": "chat media gallery not captured",
-            "list_users_in": "list members read not captured",
+            "list_users_in": None, "rename_list": None,
             "no_such_method": "no_such_method is not on this platform"}
     for name, reason in want.items():
         assert refusal(FanslyShimClient, name) == refusal(_shim, name) == reason, name
@@ -371,8 +372,6 @@ def case_of_no_session_delete_chat_still_takes_a_pacer_slot():
 
 _GROUP = {"startDate": "2026-01-01 00:00:00", "endDate": "2026-02-01 00:00:00"}
 _OWNER_ROUTES = (
-    ("GET", "/api/of/v2/lists/7/users", {}, None, "list members", ("list_users_in", "7")),
-    ("PATCH", "/api/of/v2/lists/7", {}, {"name": "x"}, "rename list", ("rename_list", "7", "x")),
     ("DELETE", "/api/of/v2/lists/7", {}, None, "delete list", ("delete_list", "7")),
     ("PUT", f"/api/of/v2/subscriptions/{FAN}/discount", {}, {"discount": 10, "period": 1},
      "subscription discount", ("set_subscription_discount", FAN, 10, 1)),
@@ -632,28 +631,147 @@ def case_fansly_settings_and_templates_refuse_before_client_load():
         load.assert_not_called()
 
 
-async def _seed_smart_list_fan():
+_MONEY = {"rules": [{"field": "lifetime_spend", "op": ">=", "value": 10000}]}
+_CHAT = {"match": "all", "rules": [{"field": "tag", "op": "has", "value": "vip"},
+                                   {"field": "last_active_days", "op": "<=", "value": 30},
+                                   {"field": "last_message_sent_at", "op": "within_last", "value": 30}]}
+
+
+async def _seed_smart_list(name: str, rules: dict, aid: str = _AID) -> int:
+    import json
+    from db.models import SmartList
+
     async with get_session() as s:
-        s.add(Fan(account_id=_AID, fan_id=9189, lifetime_spend_cents=20000))
+        row = SmartList(account_id=aid, name=name, rules_json=json.dumps(rules))
+        s.add(row)
+        await s.flush()
+        return row.id
 
 
-def case_fansly_smart_list_resolves_locally_but_refuses_activation():
+async def _smart_list_rows():
+    from sqlalchemy import select
+    from db.models import AutomationRule, ScheduledJob, SmartList
+
+    async with get_session() as s:
+        lists = [tuple(getattr(r, c.name) for c in SmartList.__table__.columns)
+                 for r in (await s.execute(select(SmartList).order_by(SmartList.id))).scalars()]
+        jobs = (await s.execute(select(ScheduledJob.id))).scalars().all()
+        rules = [(r.kind, r.enabled) for r in (await s.execute(select(AutomationRule))).scalars()]
+        return lists, jobs, rules
+
+
+@contextmanager
+def _smart_list_refusals(module: str = "smart_lists_api"):
+    import importlib
+
+    seen: list[str] = []
+
+    def spy(reason, what):
+        if reason is not None:
+            seen.append(reason)
+        side_effect_gate.raise_if_refused(reason, what)
+
+    with patch.object(importlib.import_module(module), "raise_if_refused", spy):
+        yield seen
+
+
+def _no_roster_read():
+    import smart_lists_api
+
+    return patch.object(smart_lists_api, "_load_normalised_fans",
+                        side_effect=AssertionError("roster read before refusal"))
+
+
+def _smart_list_routes(money: int, chat: int, rules: dict, aid: str = _AID):
+    base = "/admin/smart-lists"
+    return (("POST", base, {"json": {"account_id": aid, "name": "New", "rules": rules}}),
+            ("PATCH", f"{base}/{chat}", {"json": {"rules": rules}}),
+            ("POST", f"{base}/{money}/activate", {"json": {}}),
+            ("POST", f"{base}/preview", {"json": {"account_id": aid, "rules": rules}}),
+            ("GET", f"{base}/{money}/resolve", {}))
+
+
+def case_fansly_smart_list_money_rule_refuses_every_route_before_storing():
     _on("fansly")
-    asyncio.run(_seed_smart_list_fan())
-    body = {"account_id": _AID, "name": "Whales",
-            "rules": {"rules": [{"field": "lifetime_spend", "op": ">=", "value": 10000}]}}
-    r = _call("POST", "/admin/smart-lists", _shim, json=body)
-    assert r.status_code == 200, r.text
-    list_id = r.json()["id"]
-    base = f"/admin/smart-lists/{list_id}"
-    r = _call("GET", f"{base}/resolve", _shim)
-    assert r.status_code == 200 and 9189 in r.json()["fan_ids"], r.text
-    before = _call("GET", "/admin/smart-lists", _shim, params={"account_id": _AID}).json()
+    money = asyncio.run(_seed_smart_list("Whales", _MONEY))
+    chat = asyncio.run(_seed_smart_list("Chatty", _CHAT))
+    before = asyncio.run(_smart_list_rows())
+    with _smart_list_refusals() as seen, _no_roster_read():
+        for method, path, kw in _smart_list_routes(money, chat, _MONEY):
+            r = _call(method, path, _shim, **kw)
+            assert r.status_code == 501, (method, path, r.status_code, r.text)
+            assert r.json()["detail"] == "smart list rules: not on this platform", (path, r.text)
+            assert asyncio.run(_smart_list_rows()) == before, (method, path)
+    assert seen == ["platform_lacks:tip_ledger"] * 5, seen
 
-    r = _call("POST", f"{base}/activate", _shim, json={})
-    assert r.status_code == 501 and r.json()["detail"], r.text
-    after = _call("GET", "/admin/smart-lists", _shim, params={"account_id": _AID}).json()
-    assert after == before, after
+
+def case_fansly_smart_list_chat_rule_routes_store_and_activate():
+    _on("fansly")
+    chat = asyncio.run(_seed_smart_list("Chat only", _CHAT))
+    base = "/admin/smart-lists"
+    jobs = asyncio.run(_smart_list_job_ids())
+    with _smart_list_refusals() as seen, _no_roster_read(), patch("automation_executor.wake_supervisor"):
+        made = _call("POST", base, _shim, json={"account_id": _AID, "name": "New chat", "rules": _CHAT})
+        on = _call("POST", f"{base}/{chat}/activate", _shim, json={})
+    assert seen == [], seen
+    assert made.status_code == 200 and made.json()["rules"]["rules"] == _CHAT["rules"], made.text
+    assert on.status_code == 200 and (on.json()["id"], on.json()["is_active"]) == (chat, True), on.text
+    assert len(asyncio.run(_smart_list_job_ids())) == len(jobs) + 1
+
+    r = _call("POST", f"{base}/preview", _shim, json={"account_id": _AID, "rules": _CHAT})
+    assert r.status_code == 200, r.text
+    r = _call("GET", f"{base}/{chat}/resolve", _shim)
+    assert r.status_code == 200 and r.json()["list_id"] == chat, r.text
+
+
+_OF_AID = "8802102"
+
+
+async def _seed_of_account() -> None:
+    from sqlalchemy import select
+
+    async with get_session() as s:
+        if await s.get(Account, _OF_AID):
+            return
+        boss = (await s.execute(select(User.id).where(User.username == "boss"))).scalar_one()
+        s.add(Account(id=_OF_AID, nickname=_OF_AID))
+        await s.flush()
+        s.add_all([UserAccount(user_id=boss, account_id=_OF_AID),
+                   Fan(account_id=_OF_AID, fan_id=9189, lifetime_spend_cents=20000),
+                   Fan(account_id=_OF_AID, fan_id=9190, lifetime_spend_cents=500)])
+
+
+def case_of_smart_list_money_rule_routes_answer_as_today():
+    asyncio.run(_seed_of_account())
+    money = asyncio.run(_seed_smart_list("OF whales", _MONEY, _OF_AID))
+    chat = asyncio.run(_seed_smart_list("OF chat", _CHAT, _OF_AID))
+    with (_smart_list_refusals() as seen,
+          patch("automation_executor.wake_supervisor")):
+        answers = [_call(m, p, _shim, **kw) for m, p, kw in _smart_list_routes(money, chat, _MONEY, _OF_AID)]
+    assert seen == [], seen
+    assert [a.status_code for a in answers] == [200] * 5, [(a.status_code, a.text) for a in answers]
+    created, patched, activated, preview, resolved = (a.json() for a in answers)
+    assert (created["name"], created["account_id"], created["rules"]["rules"]) == (
+        "New", _OF_AID, _MONEY["rules"]), created
+    assert (patched["id"], patched["rules"]["rules"]) == (chat, _MONEY["rules"]), patched
+    assert (activated["id"], activated["is_active"]) == (money, True), activated
+    assert preview == {"count": 1, "total_fans": 2, "sample": [
+        {"fan_id": 9189, "name": "9189", "lifetime_spend_cents": 20000,
+         "last_active_days": None, "status": None}]}, preview
+    assert resolved == {"list_id": money, "account_id": _OF_AID, "fan_ids": [9189], "count": 1}, resolved
+    jobs = asyncio.run(_smart_list_job_ids(_OF_AID))
+    assert len(jobs) == 1, jobs
+
+
+def case_of_smart_list_patch_checks_name_before_rules():
+    asyncio.run(_seed_of_account())
+    lid = asyncio.run(_seed_smart_list("OF order", _CHAT, _OF_AID))
+    asyncio.run(_seed_smart_list("OF taken", _CHAT, _OF_AID))
+    bad = {"match": "nope", "rules": []}
+    r = _call("PATCH", f"/admin/smart-lists/{lid}", _shim, json={"name": " ", "rules": bad})
+    assert (r.status_code, r.json()["detail"]) == (422, "name cannot be blank"), r.text
+    r = _call("PATCH", f"/admin/smart-lists/{lid}", _shim, json={"name": "OF taken", "rules": bad})
+    assert r.status_code == 409, r.text
 
 
 def case_account_gate_does_not_load_relay_server():
@@ -699,29 +817,29 @@ async def _seed_legacy_smart_lists():
         return active.id, mirrored.id
 
 
-async def _smart_list_job_ids():
+async def _smart_list_job_ids(aid: str = _AID):
     from sqlalchemy import select
     from db.models import ScheduledJob
 
     async with get_session() as s:
         return (await s.execute(select(ScheduledJob.id).where(
-            ScheduledJob.account_id == _AID, ScheduledJob.kind == "smart_list_sync"))).scalars().all()
+            ScheduledJob.account_id == aid, ScheduledJob.kind == "smart_list_sync"))).scalars().all()
 
 
-def case_fansly_smart_list_syncing_edits_and_deletes_refuse():
+def case_fansly_smart_list_syncing_edit_passes_and_an_ungranted_list_delete_refuses():
     _on("fansly")
     active, mirrored = asyncio.run(_seed_legacy_smart_lists())
     base = "/admin/smart-lists"
     before = _call("GET", base, _shim, params={"account_id": _AID}).json()
     jobs = asyncio.run(_smart_list_job_ids())
-    for method, path, kwargs in (
-        ("PATCH", f"{base}/{active}", {"json": {"name": "Changed"}}),
-        ("DELETE", f"{base}/{mirrored}", {"params": {"delete_of_list": True}}),
-    ):
-        r = _call(method, path, _shim, **kwargs)
-        assert r.status_code == 501 and r.json()["detail"], r.text
-        assert _call("GET", base, _shim, params={"account_id": _AID}).json() == before
-        assert asyncio.run(_smart_list_job_ids()) == jobs
+    r = _call("DELETE", f"{base}/{mirrored}", _shim, params={"delete_of_list": True})
+    assert r.status_code == 501 and r.json()["detail"], r.text
+    assert _call("GET", base, _shim, params={"account_id": _AID}).json() == before
+    assert asyncio.run(_smart_list_job_ids()) == jobs
+    with patch("automation_executor.wake_supervisor"):
+        r = _call("PATCH", f"{base}/{active}", _shim, json={"name": "Changed"})
+    assert r.status_code == 200 and r.json()["name"] == "Changed", r.text
+    jobs = asyncio.run(_smart_list_job_ids())
 
     r = _call("PATCH", f"{base}/{mirrored}", _shim, json={"name": "Local edit"})
     assert r.status_code == 200 and r.json()["name"] == "Local edit", r.text
@@ -742,6 +860,135 @@ def case_fansly_pin_unpin_leave_pinned_cache_untouched():
         invalidate.assert_not_called()
         bust.assert_not_called()
         load.assert_not_called()
+
+
+_PM = "/admin/priority-mass/runs"
+
+
+def _pm_body(aid: str = _AID, **kw) -> dict:
+    return {"account_id": aid, "text": "hey there", "user_lists": ["fans"], **kw}
+
+
+async def _pm_rows():
+    from sqlalchemy import select
+    from db.models import PriorityMassRecipient, PriorityMassRun, ScheduledJob
+
+    async with get_session() as s:
+        runs = [(r.id, r.account_id, r.status) for r in (await s.execute(
+            select(PriorityMassRun).order_by(PriorityMassRun.id))).scalars()]
+        recips = (await s.execute(select(PriorityMassRecipient.run_id, PriorityMassRecipient.fan_id))).all()
+        jobs = (await s.execute(select(ScheduledJob.id, ScheduledJob.account_id).where(
+            ScheduledJob.kind == "priority_mass"))).all()
+        return runs, sorted(recips), sorted(jobs)
+
+
+def _pm_grant(granted: bool):
+    return patch.dict(os.environ, {side_effect_gate.LIVE_CHECK_ENV: f"{_AID}:priority_mass:fan={FAN}" if granted else ""})
+
+
+def _pm_create_all(bodies, *, grant: bool = False):
+    import priority_mass_api
+
+    before = asyncio.run(_pm_rows())
+    with (_smart_list_refusals("priority_mass_api") as seen, _pm_grant(grant),
+          patch.object(priority_mass_api, "_sensitive_words",
+                       side_effect=AssertionError("word scan before refusal"))):
+        for body in bodies:
+            r = _call("POST", _PM, _shim, json=body)
+            assert r.status_code == 501, (body, r.status_code, r.text)
+            assert r.json()["detail"] == "priority mass: not on this platform", (body, r.text)
+            assert asyncio.run(_pm_rows()) == before, body
+    return seen
+
+
+def case_fansly_priority_mass_create_without_grant_answers_501_a_granted_one_is_admitted():
+    _on("fansly")
+    seen = _pm_create_all((_pm_body(user_lists=["4242"]), _pm_body(),
+                           _pm_body(excluded_user_lists=[77]),
+                           _pm_body(user_lists=["fans", "4242"], excluded_user_lists=[77])))
+    assert seen == ["platform_lacks:priority_mass"] * 4, seen
+    runs, _, jobs = asyncio.run(_pm_rows())
+    with _pm_grant(True), patch("automation_executor.wake_supervisor"):
+        r = _call("POST", _PM, _shim, json=_pm_body(user_lists=["4242"], text="granted"))
+    assert r.status_code == 200 and r.json()["status"] == "resolving", r.text
+    after = asyncio.run(_pm_rows())
+    assert (len(after[0]) - len(runs), len(after[2]) - len(jobs)) == (1, 1), (runs, after)
+
+
+def case_fansly_priority_mass_create_to_following_answers_501_even_with_a_grant():
+    _on("fansly")
+    seen = _pm_create_all((_pm_body(user_lists=["following"]),
+                           _pm_body(user_lists=["fans", "following"])), grant=True)
+    assert seen == ["platform_lacks:following"] * 2, seen
+
+
+def case_fansly_priority_mass_tagged_or_locked_payload_answers_501_before_any_row():
+    import media_cotag
+
+    _on("fansly")
+    seen = []
+    for cotag, body in ((True, _pm_body(media_files=[5])), (False, _pm_body(media_files=[5], price=9, locked_text=True))):
+        with patch.object(media_cotag, "would_cotag", return_value=cotag):
+            seen += _pm_create_all((body,), grant=True)
+    assert seen == ["platform_lacks:tagged_users", "platform_lacks:locked_text"], seen
+
+
+async def _seed_pm_run(aid: str, status: str, fans=()) -> int:
+    import json
+    from datetime import datetime
+    from db.models import PriorityMassRecipient, PriorityMassRun
+
+    async with get_session() as s:
+        row = PriorityMassRun(account_id=aid, status=status, text="stalled", media_json="[]",
+                              previews_json="[]", price_cents=0, locked_text=False,
+                              audience_json=json.dumps({"user_lists": ["fans"], "excluded_user_lists": []}),
+                              created_at=datetime.utcnow())
+        s.add(row)
+        await s.flush()
+        s.add_all([PriorityMassRecipient(run_id=row.id, fan_id=f, status="pending") for f in fans])
+        return int(row.id)
+
+
+def case_fansly_priority_mass_resume_refuses_ungranted_or_off_grant_runs_admits_a_granted_one():
+    from automations import priority_mass as pm
+
+    _on("fansly")
+    resolving = asyncio.run(_seed_pm_run(_AID, pm.RESOLVING))
+    running = asyncio.run(_seed_pm_run(_AID, pm.RUNNING, (FAN, FAN + 1)))
+    lone = asyncio.run(_seed_pm_run(_AID, pm.RUNNING, (FAN,)))
+    before = asyncio.run(_pm_rows())
+    with (_smart_list_refusals("priority_mass_api") as seen,
+          patch.object(pm, "ensure_leg", side_effect=AssertionError("ensure_leg before refusal"))):
+        for rid, grant in ((resolving, False), (lone, False), (running, True)):
+            with _pm_grant(grant):
+                r = _call("POST", f"{_PM}/{rid}/resume", _shim)
+            assert r.status_code == 501, (rid, r.status_code, r.text)
+            assert r.json()["detail"] == "priority mass: not on this platform", r.text
+            assert asyncio.run(_pm_rows()) == before, rid
+    assert seen == ["platform_lacks:priority_mass"] * 3, seen
+    with _pm_grant(True), patch("automation_executor.wake_supervisor"):
+        r = _call("POST", f"{_PM}/{lone}/resume", _shim)
+    assert r.status_code == 200 and not r.json()["stalled"], r.text
+    assert len(asyncio.run(_pm_rows())[2]) == len(before[2]) + 1, before
+
+
+def case_of_priority_mass_create_and_resume_answer_as_today():
+    from automations import priority_mass as pm
+
+    asyncio.run(_seed_of_account())
+    with (_smart_list_refusals("priority_mass_api") as seen,
+          patch("automation_executor.wake_supervisor")):
+        r = _call("POST", _PM, _shim, json=_pm_body(_OF_AID, text="of create", excluded_user_lists=[77]))
+        assert r.status_code == 200, r.text
+        created = r.json()
+        stalled = asyncio.run(_seed_pm_run(_OF_AID, pm.RUNNING, (9189,)))
+        r = http.post(f"{_PM}/{stalled}/resume", headers={"X-Account-Id": _OF_AID})
+        assert r.status_code == 200 and not r.json()["stalled"], r.text
+    assert seen == [], seen
+    assert (created["account_id"], created["status"], created["stalled"]) == (_OF_AID, pm.RESOLVING, False), created
+    runs, _, jobs = asyncio.run(_pm_rows())
+    assert [rid for rid, aid, _ in runs if aid == _OF_AID] == [created["id"], stalled], runs
+    assert len([j for j in jobs if j[1] == _OF_AID]) == 2, jobs
 
 
 _harness.run()

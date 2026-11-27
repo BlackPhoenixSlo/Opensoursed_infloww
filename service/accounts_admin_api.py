@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 import account_health
 import accounts as account_registry
 import client_pool
+import leak_tracker
 import live_rev
 import notifications_api
 import proxies as proxy_registry
@@ -712,6 +713,7 @@ async def admin_accounts_remove(account_id: str) -> dict[str, Any]:
     Cannot be undone."""
     if account_registry.get_account(account_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown account {account_id!r}")
+    await leak_tracker.drop_watches(account_id=account_id)
     _stop_account_pump(account_id)
     _invalidate_client(account_id)
     # Purge caches so a re-added account can't read the prior session's chats/vault; best-effort.

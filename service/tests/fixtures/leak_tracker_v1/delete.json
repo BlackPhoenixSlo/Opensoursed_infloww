@@ -1,0 +1,7 @@
+{
+  "method": "DELETE",
+  "path": "/v1/watches/w_rowanash_0002?requested_at=2026-11-27T11:00:00Z",
+  "request": null,
+  "response": null,
+  "status": 204
+}

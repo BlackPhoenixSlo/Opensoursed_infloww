@@ -17,6 +17,7 @@ from db.engine import get_session
 from db.models import PriorityMassRecipient, PriorityMassRun, ScheduledJob, SensitiveWord
 from employees import agency_contexts, json_object, resolve_outbound_employee_id
 from of_coerce import cents_or_zero
+from side_effect_gate import raise_if_refused
 
 log = logging.getLogger("of-relay.priority_mass_api")
 
@@ -155,6 +156,12 @@ async def create_run(request: Request) -> dict[str, Any]:
         if await route_creator(request) != aid:
             raise HTTPException(400, detail={"error": "account_conflict"})
     assert_account_owned(aid)
+    media_json = json.dumps(v["media"])
+    row = PriorityMassRun(
+        account_id=aid, status=pm.RESOLVING, text=v["text"], media_json=media_json,
+        previews_json=json.dumps(v["previews"]), price_cents=v["price_cents"],
+        locked_text=v["locked_text"], audience_json=json.dumps(v["audience"]))
+    raise_if_refused(await pm.refusal(row), "priority mass")
     if v["text"]:
         if sensitive_hits(v["text"], await _sensitive_words(aid)):
             raise HTTPException(422, SENSITIVE_BLOCK_MESSAGE)
@@ -163,7 +170,6 @@ async def create_run(request: Request) -> dict[str, Any]:
         if scanned is None:
             raise HTTPException(422, f"banned word: {', '.join(banned_hit_summary(hits))}")
     employee_id = await resolve_outbound_employee_id(request, aid)
-    media_json = json.dumps(v["media"])
     async with get_session() as s:
         repeat = (await s.execute(select(PriorityMassRun.id).where(
             PriorityMassRun.account_id == aid, PriorityMassRun.text == v["text"],
@@ -173,11 +179,7 @@ async def create_run(request: Request) -> dict[str, Any]:
         ).limit(1))).first()
         if repeat is not None:
             raise HTTPException(409, "this message is already being sent")
-        row = PriorityMassRun(
-            account_id=aid, created_by_employee_id=employee_id, status=pm.RESOLVING,
-            text=v["text"], media_json=media_json, previews_json=json.dumps(v["previews"]),
-            price_cents=v["price_cents"], locked_text=v["locked_text"],
-            audience_json=json.dumps(v["audience"]), created_at=datetime.utcnow())
+        row.created_by_employee_id, row.created_at = employee_id, datetime.utcnow()
         s.add(row)
         await s.flush()
         run_id = int(row.id)
@@ -221,5 +223,6 @@ async def resume_run(run_id: int, request: Request) -> dict[str, Any]:
     row = await _get_run(run_id, request)
     if row.status not in pm.LIVE:
         raise HTTPException(409, f"the run is {row.status}")
+    raise_if_refused(await pm.refusal(row), "priority mass")
     await pm.ensure_leg(row.account_id, row.id, include_running=True)
     return (await _public([row]))[0]

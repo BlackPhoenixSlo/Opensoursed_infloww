@@ -1,0 +1,9 @@
+{
+  "method": "GET",
+  "path": "/v1/creators/w_rowanash_0002",
+  "request": null,
+  "response": {
+    "error": "watch_deleted"
+  },
+  "status": 410
+}

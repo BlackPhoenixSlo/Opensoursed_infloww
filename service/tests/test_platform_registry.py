@@ -24,6 +24,7 @@ LACK_REASONS = {
     "RENEWAL_STATE": "platform_lacks:renewal_state",
     "LAPSE_DETECTION": "platform_lacks:lapse_detection",
     "RETURN_DETECTION": "platform_lacks:return_detection",
+    "PROMOTION_TYPE": "platform_lacks:promotion_type",
 }
 
 

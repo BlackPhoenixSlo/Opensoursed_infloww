@@ -191,5 +191,20 @@ async def case_grey_on_off():
         assert lines == [f"badge_grey account={A} state=on reason=dead",
                          f"badge_grey account={A} state=off reason=dead"], lines
 
+async def case_no_unread_total_platform_never_greys():
+    with _world() as (_client, _t, lines), contextlib.ExitStack() as stack:
+        stack.callback(setattr, account_registry, "get_platform", account_registry.get_platform)
+        account_registry.get_platform = lambda aid: "fansly"
+        now = int(time.time() * 1000)
+        unread_total.set_grey_cause(A, "dead")
+        unread_total.set_amber(A, 2, now)
+        unread_total.observe_counter(A, 3, now)
+        unread_total.set_restricted_unread(A, Restricted(0, False, 0), now)
+        unread_total.set_grey_cause(A, None)
+        unread_total.on_tick(A)
+        assert lines == [] and unread_total.snapshot(A) is None, lines
+        assert unread_total.badge_versions(frozenset({A})) == {}, "no badge state moved"
+        assert not unread_total.restricted_unknown(A), "no seed read for a platform without the total"
+
 
 _harness.run()

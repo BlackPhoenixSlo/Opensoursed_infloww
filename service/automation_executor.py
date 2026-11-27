@@ -702,7 +702,7 @@ async def run_once(
                     log.info("automation_run_skipped account=%s kind=%s run_id=%s job=%s "
                              "blocked word(s) %r", account_id, kind, run_id, job_id, guard.hits)
                     return {"status": "skipped", "reason": "sensitive_words",
-                            "run_id": run_id, "job_id": job_id, **stats}
+                            **stats, "run_id": run_id, "job_id": job_id}
                 log.info("automation_run_skipped account=%s kind=%s run_id=%s job=%s reason=%s",
                          account_id, kind, run_id, job_id, skip_reason)
                 return {**stats, "run_id": run_id, "job_id": job_id}
@@ -710,7 +710,7 @@ async def run_once(
                 "automation_run_ok account=%s kind=%s run_id=%s job=%s stats=%s",
                 account_id, kind, run_id, job_id, stats,
             )
-            return {"status": "ok", "run_id": run_id, "job_id": job_id, **stats}
+            return {"status": "ok", **stats, "run_id": run_id, "job_id": job_id}
         except asyncio.CancelledError:
             status, job_status, err = run_decide.outcome(
                 "cancelled", None, "cancelled", once=once, wrote=write.state)
@@ -721,7 +721,8 @@ async def run_once(
         except Exception as e:
             if ((reason := send_ops.refusal_reason(e) if _CELLS or write.state == "none" else None)
                     and (write.state == "none" or reason == _CELL_HELD)):
-                await _release_job(job_id)
+                await _release_job(job_id, defer_s=run_decide.JOB_RETRY_BACKOFF_S
+                                   if _CELLS and reason in send_ops._FAN_REFUSALS else 0)
                 await _finalize_run(run_id, "skipped", {"reason": reason}, None)
                 return {"status": "skipped", "reason": reason, "run_id": run_id, "job_id": job_id}
             err = repr(e)[:2000]

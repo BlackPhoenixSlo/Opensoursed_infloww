@@ -1,8 +1,12 @@
 import json
 import threading
 import types
+import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
+
+import pytest
 
 from slop.lib import all_models_wire, of_wire
 
@@ -109,3 +113,38 @@ def test_users_me_serves_the_counter_through_the_real_fake():
         assert body["chatMessagesCount"] == 7 and body["id"] == int(AID)
         wire.push_dm(AID, fans[20], {"id": 5, "text": "x", "fromUser": {"id": fans[20]["id"]}})
         assert me()["chatMessagesCount"] == 8
+
+
+def test_fakeof_can_hold_the_response_after_accepting():
+    accepted, release = threading.Event(), threading.Event()
+    path = "/api2/v2/chats/2/messages"
+    with of_wire.FakeOF(latency_s=0.0) as fake, ThreadPoolExecutor(1) as pool:
+        fake.hold_response["1", path] = accepted, release
+        request = urllib.request.Request(fake.origin + path, data=b'{"text":"held"}', headers={"User-ID": "1"})
+
+        def post():
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status
+
+        response = pool.submit(post)
+        try:
+            assert accepted.wait(3)
+            assert [call["status"] for call in fake.calls] == [200]
+            assert len(fake.sends["1"]) == 1 and not response.done()
+        finally:
+            release.set()
+        assert response.result(timeout=5) == 200
+
+
+def test_fakeof_records_an_accepted_send_whose_hold_times_out():
+    with of_wire.FakeOF(latency_s=0.0) as fake:
+        path = "/api2/v2/chats/2/messages"
+        accepted = threading.Event()
+        fake.hold_response["1", path] = accepted, types.SimpleNamespace(wait=lambda timeout: False)
+        request = urllib.request.Request(fake.origin + path, data=b'{"text":"held"}', headers={"User-ID": "1"})
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(request, timeout=5)
+        assert exc.value.code == 504
+        assert accepted.is_set()
+        assert len(fake.sends["1"]) == 1
+        assert fake.hold_timeouts == [("1", path)]

@@ -15,6 +15,7 @@ from db.engine import _DATA_MIGRATIONS_DDL, get_session
 from db.models import SETTINGS_EPOCH, VERSIONED_SETTINGS_TABS, Employee, SettingsVersion, UserSetting
 from employees import AgencyContext, agency_contexts, is_login
 from isotime import iso_z
+import leak_tracker
 from permissions import (
     _role, data_scope, denied_actions, denied_cards, enforced, granted_pages, narrowest_scope, opt_in_granted,
 )
@@ -273,7 +274,8 @@ async def _applied_in(s, ctx: AgencyContext) -> dict[str, Any]:
             "denied_actions": sorted(denied_actions(ctx, roles)),
             "denied_cards": sorted(denied_cards(ctx, roles)),
         },
-        "flags": {name: flags.get(name) is True for name in FLAGS},
+        "flags": {name: flags.get(name) is True for name in FLAGS}
+        | {"leak_tracker": leak_tracker.page_on(ctx, flags, roles)},
         "reports": {"creator_cols": reports.get("creator_cols")},
     }
 
@@ -295,7 +297,7 @@ def _merged(parts: list[dict[str, Any]]) -> dict[str, Any]:
             "denied_actions": sorted({k for p in parts for k in p["permissions"]["denied_actions"]}),
             "denied_cards": sorted({k for p in parts for k in p["permissions"]["denied_cards"]}),
         },
-        "flags": {name: all(p["flags"][name] for p in parts) for name in FLAGS},
+        "flags": {name: all(p["flags"][name] for p in parts) for name in FLAGS} | {"leak_tracker": False},
         "reports": parts[0]["reports"],
     }
 

@@ -143,7 +143,7 @@ def _causes(e: BaseException | None, *, include_context: bool = False):
 
 
 _RUN_REFUSALS = frozenset({"writes_paused", "cell_held", "not_owner", "claim_failed", "capability"})
-_FAN_REFUSALS = frozenset({"fan_held", "op_conflict", "op_pending", "op_uncertain"})
+_FAN_REFUSALS = frozenset({"fan_held", "op_conflict", "op_pending", "op_uncertain", "peek_failed"})
 
 
 def is_uncertain(e: BaseException) -> bool:
@@ -419,6 +419,8 @@ async def automated(account: Any, kind: str, target: Any, anchor: Any,
     if not cells():
         return await send_fn()
     platform, op, target, dig = _automated_op(str(account), kind, target, anchor, part, body)
+    import restore_reconcile
+    await asyncio.to_thread(restore_reconcile.before_send, platform, str(account), kind, target)
     sent = await adispatch(platform, str(account), op, kind, target, dig, send_fn)
     return revive(sent.result) if sent.replay and revive else sent.result
 
@@ -429,5 +431,7 @@ def automated_sync(account: Any, kind: str, target: Any, anchor: Any,
     if not cells():
         return send_fn()
     platform, op, target, dig = _automated_op(str(account), kind, target, anchor, part, body)
+    import restore_reconcile
+    restore_reconcile.before_send(platform, str(account), kind, target)
     sent = dispatch(platform, str(account), op, kind, target, dig, send_fn)
     return revive(sent.result) if sent.replay and revive else sent.result

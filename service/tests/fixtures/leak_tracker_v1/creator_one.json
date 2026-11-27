@@ -1,0 +1,95 @@
+{
+  "method": "GET",
+  "path": "/v1/creators/w_miavale_0001",
+  "request": null,
+  "response": {
+    "account_id": "acc-1001",
+    "counts": {
+      "cached": 1,
+      "came_back_30d": 1,
+      "found_on_first_scan": 3,
+      "gone": 0,
+      "listed": 1,
+      "live": 1,
+      "new_today": 1,
+      "not_checked": 1
+    },
+    "lanes": [
+      {
+        "cadence": "daily",
+        "lane": "origin_probe",
+        "last_attempt_at": "2026-11-27T04:01:00Z",
+        "last_success_at": "2026-11-27T04:01:00Z",
+        "next_attempt_on": "2026-11-28",
+        "reason": null,
+        "state": "ok",
+        "trimmed": []
+      },
+      {
+        "cadence": "daily",
+        "lane": "mega_lookup",
+        "last_attempt_at": "2026-11-27T04:02:00Z",
+        "last_success_at": "2026-11-26T04:02:00Z",
+        "next_attempt_on": "2026-11-28",
+        "reason": "lane_failed",
+        "state": "failed",
+        "trimmed": []
+      },
+      {
+        "cadence": "daily",
+        "lane": "listing_recheck",
+        "last_attempt_at": null,
+        "last_success_at": null,
+        "next_attempt_on": null,
+        "reason": null,
+        "state": "never",
+        "trimmed": []
+      },
+      {
+        "cadence": "daily",
+        "lane": "google_fresh",
+        "last_attempt_at": null,
+        "last_success_at": null,
+        "next_attempt_on": null,
+        "reason": null,
+        "state": "never",
+        "trimmed": []
+      },
+      {
+        "cadence": "weekly",
+        "lane": "google_full",
+        "last_attempt_at": null,
+        "last_success_at": null,
+        "next_attempt_on": null,
+        "reason": null,
+        "state": "never",
+        "trimmed": []
+      },
+      {
+        "cadence": "weekly",
+        "lane": "registry_crawl",
+        "last_attempt_at": null,
+        "last_success_at": null,
+        "next_attempt_on": null,
+        "reason": null,
+        "state": "never",
+        "trimmed": []
+      }
+    ],
+    "last_checked_at": "2026-11-27T04:05:00Z",
+    "next_check_at": "2026-11-28T04:00:00Z",
+    "paused": false,
+    "paused_since": null,
+    "seeded": true,
+    "today": {
+      "came_back": 0,
+      "day": "2026-11-27",
+      "first_scan": 0,
+      "gone": 0,
+      "new": 1,
+      "state": "partial"
+    },
+    "watch_id": "w_miavale_0001"
+  },
+  "status": 200
+}

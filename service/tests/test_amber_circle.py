@@ -686,6 +686,7 @@ def _qworld(wire: _QWire, knob: str | None = None, tabs=frozenset({QA})):
     logger.addHandler(cap)
     for m in (shared_refresher, unread_total, badge_reads):
         importlib.reload(m)
+    badge_reads._seeded.add(QA)
     client = _of_client(wire)
     orig = (server._load_client, events.open_tab_accounts, of_ws.connected_since, app_open_warm.exit_held_s,
             proxy_health.bad_reasons, proxies.get_for_account)

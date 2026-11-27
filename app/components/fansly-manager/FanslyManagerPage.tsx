@@ -9,6 +9,7 @@ import { FanslyEarnings } from "@/components/fansly-manager/FanslyEarnings";
 import { FanslyLists } from "@/components/fansly-manager/FanslyLists";
 import { FanslyNotifications } from "@/components/fansly-manager/FanslyNotifications";
 import { FanslyScheduled } from "@/components/fansly-manager/FanslyScheduled";
+import { NotAvailable } from "@/components/shell/NotAvailable";
 import { useFlags } from "@/components/shell/useFlags";
 import { EmptyState, IfCreatorSelect, InflowwPageHeader, useCreatorParam } from "@/components/ui/infloww";
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
@@ -32,13 +33,7 @@ export function FanslyManagerPage({ link }: { link: Pick<NavLink, "href" | "labe
   const Body = BODIES[link.href];
 
   if (link.flag && !flags) return <div className="p-4"><TableSkeleton rows={6} /></div>;
-  if (link.flag && !flags?.[link.flag]) {
-    return (
-      <div className="flex h-full min-h-[calc(100dvh-var(--shell-top,56px))] items-center justify-center bg-bg px-6">
-        <EmptyState kind="data" text={`${link.label} is not available.`} />
-      </div>
-    );
-  }
+  if (link.flag && !flags?.[link.flag]) return <NotAvailable label={link.label} />;
   return (
     <div className="flex min-h-[calc(100dvh-var(--shell-top,56px))] flex-col bg-bg">
       <InflowwPageHeader

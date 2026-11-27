@@ -15,6 +15,7 @@ _LOCK = threading.Lock()
 
 
 def get(account_id: str) -> OFClient:
+    platforms.require_account(account_id)
     c = _POOL.get(account_id)
     if c is not None:
         return c

@@ -285,6 +285,16 @@ def test_notify_logs_partial_and_total_delivery_failures(env):
     ]
 
 
+def test_notify_status_file_names_channel_and_http_code_only_when_asked(env):
+    e, tmp = env
+    st = tmp / "status"
+    (tmp / "fastt" / "watchdog.env").write_text(CHANNELS["telegram"] + CHANNELS["whatsapp"])
+    assert notify({**e, "NOTIFY_STATUS": str(st), "STUB_WHATSAPP_CODE": "503"}, 200).returncode == 0
+    assert st.read_text().splitlines() == ["http=503 whatsapp failed", "http=200 telegram ok"]
+    st.unlink()
+    assert notify(e, 200).returncode == 0 and not st.exists()
+
+
 def test_failed_page_stays_pending_then_retries(env):
     e, tmp = env
     transition(e, 500, 1)

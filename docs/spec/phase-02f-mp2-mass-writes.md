@@ -201,7 +201,7 @@ for m in ("send_mass_message", "schedule_mass_message", "cancel_scheduled_mass_m
 assert "schedule_mass_message" not in getattr(sys.modules["fansly_shim"], "UNBUILT", {})
 PY
 test -z "$(git diff --name-only main...HEAD -- service/db/migrations)"
-test "$(nice -n 10 venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
+test "$(PYTHONPATH=. nice -n 10 venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
 (cd app && nice -n 10 pnpm exec vitest related --run hooks/useScheduledMessages.ts components/settings/ScheduledTab.tsx components/chat/ScheduledForChat.tsx)
 nice -n 10 venv/bin/python scripts/comment_budget.py --check
 .claude/skills/public-sync/replay.sh --check
@@ -221,7 +221,7 @@ nice -n 10 scripts/run-tests.sh > "$log" 2>&1
   - the Stateful fake;
   - the Verdict table harness;
   - the Lift table and its drift test (route-only reasons and the trailing `:<digits>` strip).
-- **02b.** `list_users_in` with its Complete read flag, and the priority_mass gates (04 item 6).
+- **02b.** `list_users_in` with its Complete read flag, and the priority_mass gates (04 item 6). Two preconditions 02b leaves to this phase (D28): the Fansly Shim has no `unread_chat_fan_ids`, which `audiences.resolve_mass_audience` calls for the unread audience; and the online-only audience read in `resolve_mass_audience` lets the Shim's `platform_lacks:subscribers:incomplete` refusal through as an error, not a skip. Both are reachable today only behind the mass-send refusals; this phase's verdict rows must prove each one refuses or is built before any Fansly mass send is lifted.
 - **02e.** Blocked `unsend_mass_message`, which OFClient delegates to `cancel_scheduled`. Also the unsend lane and DELETE-route gate (501 for a cached broadcast id), `scheduled_messages` (string ids, `scheduledFor` → `scheduledDate`) and history.
 - Linear PR order (D8): 02a-1 → 02a-2 → 02b → 02c → 02d → 02e → **02f** → 02h → 02g.
 

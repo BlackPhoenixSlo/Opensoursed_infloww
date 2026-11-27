@@ -27,6 +27,7 @@ from types import SimpleNamespace  # noqa: E402
 
 import accounts as account_registry  # noqa: E402
 import cell_mode  # noqa: E402
+import leak_tracker  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Chat  # noqa: E402
 
@@ -140,7 +141,7 @@ def case_agency_write_on_data_cell_refused_control_allowed():
 
 def case_agency_jobs_tick_only_on_control():
     agency = [k for k, v in _DOC["jobs"].items() if v["scope"] == "agency"]
-    assert agency == ["clock-in-missed"], agency
+    assert agency == ["clock-in-missed", "leak-watch-sync", "leak-watch-tombstones"], agency
     assert not cell_mode.runs_job("clock-in-missed") and cell_mode.runs_job("pump-supervisor")
     assert not cell_mode.runs_job("no-such-job"), "a job without a Cell scope row must not run"
     os.environ["OI_CELL_ROLE"] = "control"
@@ -151,6 +152,14 @@ def case_agency_jobs_tick_only_on_control():
     src = Path(server.__file__).read_text()
     at = src.index('first_after_s=60), "clock-in-missed")')
     assert 'cell_mode.runs_job("clock-in-missed")' in src[max(0, at - 300):at], "clock-in tick not gated"
+    os.environ["LEAK_TRACKER_URL"] = "https://tracker.example.test"
+    try:
+        assert not leak_tracker.jobs_on(), "the Leak watch sync never starts in a Cell"
+    finally:
+        os.environ.pop("LEAK_TRACKER_URL")
+    for job in ("leak-watch-sync", "leak-watch-tombstones"):
+        at = src.index(f'"{job}")')
+        assert "leak_tracker.jobs_on()" in src[max(0, at - 400):at], f"{job} not gated"
 
 
 _harness.run()

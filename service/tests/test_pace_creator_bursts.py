@@ -11,6 +11,7 @@ import time  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
+import account_page  # noqa: E402
 import automation_executor as ax  # noqa: E402
 import relay_cache  # noqa: E402
 import server  # noqa: E402
@@ -89,14 +90,14 @@ def case_s4s_timeout_keeps_the_lane_slot_until_the_read_returns():
     live = [IDS["creator_a"], *_EXTRA]
     for aid in live:
         relay_cache.invalidate("users_me", aid)
-    orig, orig_t = ax._make_client, s4s_api.OF_IDENTITY_TIMEOUT_S
+    orig, orig_t = ax._make_client, account_page.OF_IDENTITY_TIMEOUT_S
     ax._make_client = lambda aid: _Slow()
-    s4s_api.OF_IDENTITY_TIMEOUT_S = 0.05
+    account_page.OF_IDENTITY_TIMEOUT_S = 0.05
     try:
         r = fx.login_owner("agency_a_owner").get("/admin/s4s/profiles")
         time.sleep(1.0)
     finally:
-        ax._make_client, s4s_api.OF_IDENTITY_TIMEOUT_S = orig, orig_t
+        ax._make_client, account_page.OF_IDENTITY_TIMEOUT_S = orig, orig_t
     assert r.status_code == 200, f"{r.status_code} {r.text}"
     assert state["peak"] <= 4, f"reads running at once peaked at {state['peak']} (lane cap 4)"
 

@@ -6,3 +6,5 @@ Private main replays to the public repo, which feeds app.inflowwww.com, self-hos
 
 ASSUMPTION: the owner may want the brand in the public repo; generic copy stays until the owner says so. Overturned by that owner call; falls on copy only.
 ASSUMPTION: app.inflowwww.com turns on only by the owner's flip, and Twin stays off until the owner signs off its integration and Removal offer.
+
+Amended 2026-11-27 (owner, rung 2: "I want it live on inflowwww"): app.inflowwww.com is a launch target, not a later flip. The tracker still ships off in every tree and learns its brand at runtime; the public host turns it on by its own env (`LEAK_TRACKER_ENABLED`, `LEAK_TRACKER_URL`) after wave 4 of the public-first order in `docs/spec/plan-review-leak-tracker.md`. Self-hosted installs, the demo and Twin stay off. The first ASSUMPTION above (the owner's flip) is now answered: the owner wants it on.

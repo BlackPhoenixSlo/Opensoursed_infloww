@@ -233,7 +233,7 @@ grep -q 'chat_message_deleted' service/events_decide.py
 if grep -rnE '=== "fansly"|== "fansly"' app/components/setup app/components/shell/PlatformSwitcher.tsx app/components/shell/PlatformGate.tsx | grep -v "\.test\."; then exit 1; fi
 grep -q "Fansly's list not captured" fansly/FANSLY_PARITY_STATUS.md
 venv/bin/python scripts/comment_budget.py --check
-heads="$(venv/bin/alembic -c service/db/migrations/alembic.ini heads)"
+heads="$(PYTHONPATH=. venv/bin/alembic -c service/db/migrations/alembic.ini heads)"
 test "$(printf '%s\n' "$heads" | grep -c '(head)')" -eq 1
 nice -n 10 scripts/run-tests.sh
 (cd app && nice -n 10 pnpm test:run)

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParam
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_SKIP
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -97,6 +98,7 @@ import gdrive  # noqa: E402  # the Drive key's reader, for the import card's on/
 from events_decide import is_plain_chat_view  # noqa: E402
 import relay_cache  # noqa: E402  # in-process TTL cache for hot-path OF endpoints (Stage C will wire call-sites)
 import of_promos  # noqa: E402  # `to_cents`, OF's dollars to our cents
+import of_paging  # noqa: E402
 import of_pacing  # noqa: E402  # background walks: the per-Creator pacer, 429 retry, busy signal
 import of_call_counter  # noqa: E402  # every OF call counted (Caller kind, path, Creator, status), to a file
 import stats_file  # noqa: E402  # lane-stats file: path, read, tmp + os.replace
@@ -130,6 +132,8 @@ from of_consent_api import router as _of_consent_router  # noqa: E402
 from ofm_writes_api import OFM_NEW_WRITES, router as _ofm_writes_router  # noqa: E402
 from of_live_window import router as _of_live_window_router  # noqa: E402
 from assistant_api import router as _assistant_router  # noqa: E402
+import support_api as _support_api  # noqa: E402
+import support_hub as _support_hub  # noqa: E402
 from assistant_draft import router as _assistant_draft_router  # noqa: E402
 from report_recipe_api import router as _report_recipe_router  # noqa: E402
 import report_recipe as _report_recipe  # noqa: E402
@@ -174,6 +178,8 @@ from s4s_api import router as _s4s_router  # noqa: E402
 from s4s_requests_api import router as _s4s_requests_router, expire_callers_requests as _expire_s4s_requests  # noqa: E402
 from s4s_schedule_api import router as _s4s_schedule_router  # noqa: E402
 from s4s_media import router as _s4s_media_router  # noqa: E402
+import leak_tracker_api as _leak_tracker_api  # noqa: E402
+from leak_tracker_api import router as _leak_tracker_router  # noqa: E402
 from account_security_api import router as _account_security_router  # noqa: E402
 import fleet_api  # noqa: E402  # cross-shard login lookup, fleet installs only
 from remote_login_api import router as _remote_login_router  # noqa: E402 — served Browserbase login
@@ -331,6 +337,13 @@ app.add_exception_handler(_report_recipe.RecipeError, _report_recipe_api.refused
 async def _unknown_platform_key_handler(request, exc):  # noqa: ANN001
     return JSONResponse(status_code=501, content={"detail": exc.reason})
 
+
+@app.exception_handler(405)
+async def _leak_paths_never_answer_405(request, exc):  # noqa: ANN001
+    if _leak_tracker_api.owns(request.url.path):
+        return _leak_tracker_api.hidden()
+    return await http_exception_handler(request, exc)
+
 app.include_router(_employees_router)
 app.include_router(_fans_router)
 app.include_router(_fan_insights_router)
@@ -362,6 +375,8 @@ app.include_router(_of_consent_router)
 app.include_router(_ofm_writes_router)
 app.include_router(_of_live_window_router)
 app.include_router(_assistant_router)
+app.include_router(_support_api.router)
+app.include_router(_support_hub.router)
 app.include_router(_assistant_draft_router)
 app.include_router(_report_recipe_router)
 app.include_router(_copilot_router)
@@ -383,6 +398,8 @@ app.include_router(_script_fill_router)
 app.include_router(_shifts_router, dependencies=[Depends(_sweep_callers_agencies)])
 app.include_router(_clock_router, dependencies=[Depends(_sweep_callers_agencies)])
 app.include_router(_sales_amend_router)
+if not _CELLS:
+    app.include_router(_leak_tracker_router)
 app.include_router(_s4s_router, dependencies=[Depends(_expire_s4s_requests)])
 app.include_router(_s4s_requests_router, dependencies=[Depends(_expire_s4s_requests)])
 app.include_router(_s4s_schedule_router, dependencies=[Depends(_expire_s4s_requests)])
@@ -398,7 +415,9 @@ if fleet_api.enabled():
 if _CELLS:
     import actor_token  # noqa: E402
     import cell_hold  # noqa: E402
+    import restore_reconcile  # noqa: E402
     app.include_router(cell_hold.router)
+    app.include_router(restore_reconcile.router)
 if _CELLS and cell_mode.is_control():
     import agency_copy  # noqa: E402
     import creator_reservations  # noqa: E402
@@ -496,6 +515,8 @@ async def _account_isolation_middleware(request: Request, call_next):
 
     # `is_account` raises rather than guess if it can't read the tree: a gate that can't answer must not allow.
     if any(account_registry.is_account(c) for c in candidates - allowed_ids):
+        if _leak_tracker_api.owns(path):
+            return _leak_tracker_api.hidden()
         return Response("not your account", status_code=403)
     return await call_next(request)
 
@@ -586,6 +607,9 @@ async def _share_token_gate(request: Request, call_next):
     if not share_token or (_CELLS and request.url.path == "/api/cell/hold"):
         return await call_next(request)
     if request.url.path == "/health" or request.url.path == "/livez":
+        return await call_next(request)
+    # The hub checks its own owner cookie / instance token on every route.
+    if _support_hub.owns(request.url.path):
         return await call_next(request)
     if request.url.path.startswith(_PUBLIC_PREFIXES):
         return await call_next(request)
@@ -1195,6 +1219,8 @@ async def _start_event_pumps() -> None:
         import send_ops
         log.info("Cells: %d open Send claims turned uncertain at boot", send_ops.install(sync_database_url()))
         import cell_hold
+        import restore_reconcile
+        restore_reconcile.install(sync_database_url())
         await cell_hold.boot(sync_database_url())
         import agency_copy
         import creator_reservations
@@ -1322,6 +1348,12 @@ async def _start_event_pumps() -> None:
         _spawn_bg(_periodic("vault collect", vault_collect.TICK_S, vault_collect.tick,
                             first_after_s=vault_collect.FIRST_AFTER_S), "vault-collect")
 
+    import leak_tracker
+    if leak_tracker.jobs_on():
+        _spawn_bg(_periodic("leak watch sync", leak_tracker.SYNC_EVERY_S, leak_tracker.sync_watches,
+                            first_after_s=leak_tracker.SYNC_FIRST_AFTER_S), "leak-watch-sync")
+        _spawn_bg(leak_tracker.tombstone_loop(), "leak-watch-tombstones")
+
     relay_hooks.start_background_loops()
 
     from transaction_ingest import start_supervisor as _start_tx_ingest
@@ -1341,6 +1373,19 @@ async def _start_event_pumps() -> None:
     import sweep_cadence
     _spawn_bg(_periodic("chat sweep cadence", sweep_cadence.TICK_S, sweep_cadence.tick,
                         first_after_s=sweep_cadence.FIRST_AFTER_S), "chat-sweep-cadence")
+
+
+if _CELLS:
+    @app.on_event("startup")
+    async def _start_cell_stats() -> None:
+        import importlib
+        import cell_stats
+        from sqlalchemy.engine import make_url
+        eng = importlib.import_module("db.engine")
+        cell_stats.instrument(eng._SpillQueuePool)
+        url = make_url(eng.DATABASE_URL)
+        if url.get_backend_name() == "sqlite" and url.database:
+            cell_stats.start(Path(url.database).parent / cell_stats.FILE)
 
 
 @app.on_event("startup")
@@ -2365,7 +2410,7 @@ def _users_me_read() -> dict[str, Any]:
 @app.get("/api/of/v2/users/me")
 async def users_me(max_age: int | None = None) -> dict[str, Any]:
     """The Creator's OF `/users/me`, cached per account for _ME_TTL_S (key `("users_me",)`, shared with
-    s4s_api._of_me). `max_age` (s, clamped to [_ME_TTL_S, _ME_MAX_AGE_MAX_S]): an identity reader (the app's
+    account_page.of_me). `max_age` (s, clamped to [_ME_TTL_S, _ME_MAX_AGE_MAX_S]): an identity reader (the app's
     `["of-profile"]`: avatars, card name, paid/free) takes a body that old: the plain entry while fresh, else its
     own entry of that TTL, so a new tab's per-Creator avatar reads cost OF nothing for that long. Writes clear
     both (namespace `users_me`, of_client._WRITE_INVALIDATES); a change made on OF web waits out the age asked."""
@@ -4593,10 +4638,19 @@ def of_search_chat(chat_id: int, query: str = Query(..., min_length=1, descripti
     OF param is `query` (not `text` — that 200s with an empty list)."""
     return _proxy(lambda: _platform_call("search_chat", "search chat")(chat_id, query, filter))
 
+def _block_user(user_id: int):
+    aid = _current_aid()
+    if not side_effect_gate.is_live_check_name(platforms.for_account(aid), "block_user"):
+        return _platform_call("block_user", "block user")(user_id)
+    side_effect_gate.raise_if_refused(
+        side_effect_gate.live_check(aid, "block_user", frozenset({str(user_id)})), "block user")
+    return _get_client().block_user(user_id)
+
+
 @app.post("/api/of/v2/users/{user_id}/block")
 def of_block_user(user_id: int):
     """Block a user (hides chat + prevents future messages from them)."""
-    return _proxy(lambda: _platform_call("block_user", "block user")(user_id))
+    return _proxy(lambda: _block_user(user_id))
 
 @app.delete("/api/of/v2/users/{user_id}/block")
 def of_unblock_user(user_id: int):
@@ -4814,6 +4868,7 @@ class _PromoBody(BaseModel):
 async def of_create_promo(body: _PromoBody = Body(...)):
     """Create a promo campaign, under the Creator's create reservation like every create
     (promotions_api.reserve_manual: 409 while another is open)."""
+    side_effect_gate.raise_if_refused(promo_create_guard.promotion_type_refusal(_current_aid()), "promotions")
     if isinstance(body.type, list) and (not body.type or not set(body.type) <= {"all", "expired"}):
         raise HTTPException(status_code=422, detail='type: a list of "all" and/or "expired"')
     terms = {"discount": body.discount, "subscribe_counts": body.subscribe_counts,
@@ -5434,9 +5489,21 @@ def of_rename_list(list_id: ListId, body: _NameBody = Body(...)):
     _invalidate_chat_folders()
     return out
 
+def _delete_list(list_id: ListId):
+    aid = _current_aid()
+    side_effect_gate.raise_if_refused(side_effect_gate.delete_list_ungranted(aid, list_id), "delete list")
+    client = _get_client()
+    side_effect_gate.raise_if_refused(side_effect_gate.delete_list_refusal(
+        aid, list_id, functools.partial(of_paging.list_audience, client, list_id)), "delete list")
+    verdict, reason = side_effect_gate.classify(client, "delete_list")
+    if verdict != "live_check":
+        side_effect_gate.raise_if_refused(reason, "delete list")
+    return client.delete_list(list_id)
+
+
 @app.delete("/api/of/v2/lists/{list_id}")
 def of_delete_list(list_id: ListId):
-    out = _proxy(lambda: _platform_call("delete_list", "delete list")(list_id))
+    out = _proxy(lambda: _delete_list(list_id))
     _invalidate_chat_folders()
     return out
 

@@ -1,0 +1,19 @@
+[
+  {"id": "home", "kind": "page", "url": "/home", "tracer": true},
+  {"id": "profile", "kind": "page", "url": "/{username}", "tracer": true},
+  {"id": "messages", "kind": "page", "url": "/messages"},
+  {"id": "messages/thread", "kind": "page", "url": "/messages/{groupId}", "tracer": true},
+  {"id": "notifications", "kind": "page", "url": "/notifications"},
+  {"id": "creator", "kind": "page", "url": "/creator"},
+  {"id": "creator/vault", "kind": "page", "url": "/creator/vault"},
+  {"id": "creator/stats/overview", "kind": "page", "url": "/creator/stats", "tracer": true},
+  {"id": "creator/stats/earnings", "kind": "page", "url": "/creator/stats/earnings"},
+  {"id": "creator/trackinglinks", "kind": "page", "url": "/creator/trackinglinks"},
+  {"id": "creator/trackinglinks/state-create-link", "kind": "state", "url": "/creator/trackinglinks", "parent": "creator/trackinglinks", "opener": "[class*=middle] button.create-link"},
+  {"id": "creator/coperformers/detail", "kind": "page", "url": "/creator/coperformers/{coperformerId}", "optional": true},
+  {"id": "scheduled", "kind": "page", "url": "/scheduled"},
+  {"id": "lists", "kind": "page", "url": "/lists"},
+  {"id": "bookmarks", "kind": "page", "url": "/bookmarks"},
+  {"id": "subscriptions", "kind": "page", "url": "/subscriptions"},
+  {"id": "settings/account", "kind": "page", "url": "/settings/account", "tracer": true}
+]

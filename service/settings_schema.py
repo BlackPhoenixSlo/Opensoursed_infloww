@@ -24,9 +24,10 @@ REVENUE_CARD_KEYS: tuple[str, ...] = tuple(f"/#card-{c}" for c, (_, _, money) in
 BUILT_IN_ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
     "team-leader": {"name": "Team Leader", "scope": "subordinates",
                     "pages": ("/", *CHATTING_PAGES, "/growth/smart-messages", "/of-manager/home",
-                              "/of-manager/vault", "/creators", "/creators/proxy", "/employees",
-                              "/employees/shifts", "/analytics/creator-reports", "/analytics/employee-reports",
-                              "/analytics/message-dashboard", "/analytics/sales-records")},
+                              "/of-manager/vault", "/creators", "/creators/proxy", "/creators/leaks",
+                              "/employees", "/employees/shifts", "/analytics/creator-reports",
+                              "/analytics/employee-reports", "/analytics/message-dashboard",
+                              "/analytics/sales-records")},
     "chatter": {"name": "Chatter", "scope": "self", "pages": ("/", *CHATTING_PAGES), "denied": REVENUE_CARD_KEYS},
     "creator": {"name": "Creator", "scope": "self",
                 "pages": ("/of-manager/home", "/of-manager/new-post", "/of-manager/vault", "/of-manager/queue",
@@ -232,7 +233,7 @@ def _roles(raw: dict[str, Any], errors: list[Error]) -> dict[str, Any]:
     return out
 
 
-FLAGS = ("fansly_manager",)
+FLAGS = ("fansly_manager", "leak_tracker")
 
 
 def _flags(raw: dict[str, Any], errors: list[Error]) -> dict[str, Any]:

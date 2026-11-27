@@ -6,6 +6,7 @@
 
 # Test loop
 - pytest suites (`slop/lib`, `scripts/proxy-health`): `venv/bin/python scripts/run_tests_parallel.py --pytest <dir> -j 8` (one file per process: slop/lib 56–60→23 s, proxy-health 14→10 s, same pass counts, measured 11-20), not plain `pytest <dir>`.
+- Full suite / heavy runs: on a Blacksmith Testbox, not the laptop — `.claude/skills/testbox/SKILL.md`.
 - Iterating on app code: `cd app && pnpm exec vitest related --run <changed files>` (only tests importing them: 12–26 s vs ~70 s full, measured 11-17). Before PR: full `scripts/run-tests.sh` (or `pnpm test:run` for app-only) — related never replaces it.
 
 # Review

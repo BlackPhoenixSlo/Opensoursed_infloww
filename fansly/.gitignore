@@ -5,6 +5,7 @@
 *.har
 *.json
 !fixtures/*.json
+!capture/mirror_plan.json
 sessions/
 secrets*
 

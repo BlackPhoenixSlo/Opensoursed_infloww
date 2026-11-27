@@ -247,4 +247,73 @@ def case_reexported():
         assert getattr(api, n) is getattr(R, n), n
 
 
+def _rules(*rules, match="all") -> dict:
+    return {"match": match, "rules": list(rules)}
+
+
+def case_rules_refusal_table():
+    import platforms
+    money = [{"field": f, "op": ">=", "value": 1} for f in (
+        "total_spend", "ppv_spend", "tips_spend", "subscription_spend", "highest_spend", "last_spend_amount",
+        "lifetime_spend", "recent_spend")]
+    money += [{"field": f, "op": "within_last", "value": 7} for f in ("last_purchase_at", "idle_days")]
+    rows = [(r, "platform_lacks:tip_ledger") for r in money] + [
+        ({"field": "renew", "op": "==", "value": "on"}, "platform_lacks:renewal_state"),
+        ({"field": "renew", "op": "!=", "value": "off"}, "platform_lacks:renewal_state"),
+        ({"field": "expires_at", "op": "within_next", "value": 3}, "platform_lacks:renewal_state"),
+        ({"field": "resubscribed_at", "op": "within_last", "value": 7}, "platform_lacks:return_detection"),
+        ({"field": "status", "op": "==", "value": "expired"}, "platform_lacks:lapse_detection"),
+        ({"field": "status", "op": "!=", "value": "active"}, "platform_lacks:lapse_detection"),
+        ({"field": "status", "op": "!=", "value": "expired"}, "platform_lacks:lapse_detection"),
+        ({"field": "status", "op": "==", "value": "active"}, None),
+        ({"field": "sub_start", "op": "more_than", "value": 30}, "platform_lacks:subscribers:paid_start"),
+        ({"field": "tag", "op": "has", "value": "vip"}, None),
+        ({"field": "last_active_days", "op": "<=", "value": 7}, None),
+        ({"field": "last_message_sent_at", "op": "within_last", "value": 7}, None),
+    ]
+    for rule, want in rows:
+        assert R.rules_refusal(platforms.FANSLY, _rules(rule)) == want, (rule, want)
+        assert R.rules_refusal(platforms.ONLYFANS, _rules(rule)) is None, rule
+
+
+def case_rules_refusal_names_the_first_refused_rule():
+    import platforms
+    tag = {"field": "tag", "op": "has", "value": "vip"}
+    renew = {"field": "renew", "op": "==", "value": "on"}
+    spend = {"field": "lifetime_spend", "op": ">", "value": 1}
+    assert R.rules_refusal(platforms.FANSLY, _rules(tag, renew, spend)) == "platform_lacks:renewal_state"
+    assert R.rules_refusal(platforms.FANSLY, _rules(tag, spend, renew, match="any")) == "platform_lacks:tip_ledger"
+    assert R.rules_refusal(platforms.FANSLY, _rules()) is None
+    assert R.rules_refusal(platforms.FANSLY, {}) is None
+    assert R.rules_refusal(platforms.ONLYFANS, _rules(tag, renew, spend)) is None
+
+
+def case_rules_refusal_keys_on_the_platforms_lacks():
+    import dataclasses
+    import platforms
+    spend = _rules({"field": "lifetime_spend", "op": ">", "value": 1})
+    renew = _rules({"field": "renew", "op": "==", "value": "on"})
+    no_ledger_gap = dataclasses.replace(platforms.FANSLY, lacks=platforms.FANSLY.lacks - {platforms.Lack.TIP_LEDGER})
+    assert R.rules_refusal(no_ledger_gap, spend) is None
+    assert R.rules_refusal(no_ledger_gap, renew) == "platform_lacks:renewal_state"
+
+
+def case_rules_refusal_classifies_every_field_and_refuses_the_rest():
+    import dataclasses
+    import platforms
+    classified = R._CHAT_FIELDS | set(R._RULE_LACKS) | set(R._ANY_LACK_REASONS)
+    assert R._FIELDS <= classified, sorted(R._FIELDS - classified)
+    for field in R._FIELDS - R._CHAT_FIELDS:
+        rule = _rules({"field": field, "op": "!=", "value": "x"})
+        assert R.rules_refusal(platforms.FANSLY, rule), field
+        assert R.rules_refusal(platforms.ONLYFANS, rule) is None, field
+    new = _rules({"field": "fan_country", "op": "==", "value": "SI"})
+    assert R.rules_refusal(platforms.FANSLY, new) == R.UNKNOWN_FIELD == "platform_lacks:rules:unknown_field"
+    assert R.rules_refusal(platforms.ONLYFANS, new) is None
+    one_lack = dataclasses.replace(platforms.FANSLY, lacks=frozenset({platforms.Lack.FOCUS}))
+    sub_start = _rules({"field": "sub_start", "op": "more_than", "value": 30})
+    assert R.rules_refusal(one_lack, sub_start) == "platform_lacks:subscribers:paid_start"
+    assert R.rules_refusal(one_lack, _rules({"field": "renew", "op": "==", "value": "on"})) is None
+
+
 _harness.run()

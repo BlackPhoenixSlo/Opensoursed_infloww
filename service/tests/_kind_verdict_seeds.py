@@ -12,10 +12,10 @@ from automations import _heat_jev, _info_jev, _router_jev
 from db.engine import get_session
 from db.models import (
     Account, AccountAiConfig, AutomationRule, Fan, FanProfile, FunnelState, MassBroadcastCache, MassMessageFunnel,
-    MassRun, Message, MessageMedia, NudgeState, Post, PriorityMassRun, S4SMedia, S4SProfile, S4SRequest, S4SSlot,
+    MassRun, Message, MessageMedia, NudgeState, Post, S4SMedia, S4SProfile, S4SRequest, S4SSlot,
     PromoCampaign, SmartList, SubscriberSnapshot, User, UserAccount,
 )
-from of_client import OFClient
+from of_client import OFAPIError, OFClient
 
 FAN = "900000000000000002"
 LAPSED = 900000000000000007
@@ -41,14 +41,16 @@ class _Download:
 
 class OFStandIn:
     WRITES = frozenset({"send_message", "unsend_message", "cancel_scheduled", "send_mass_message",
-                        "create_list", "add_users_to_lists", "post_story_from_url", "follow_user",
+                        "create_list", "add_users_to_lists", "delete_list", "post_story_from_url", "follow_user",
                         "create_post", "delete_post", "set_fan_custom_name", "set_fan_note",
-                        "mark_chat_read", "create_promo", "upload_media"})
+                        "mark_chat_read", "create_promo", "upload_media", "remove_user_from_list"})
+    platform_list_page = None
 
     def __init__(self, aid: str) -> None:
         self.account_id = self.user_id = aid
         self.http, self.timeout_s = self, 30
         self.calls: list[str] = []
+        self.send_recipients: list[str] = []
         self.unmodelled: list[str] = []
 
     def __getattr__(self, name: str):
@@ -59,6 +61,7 @@ class OFStandIn:
 
     def send_message(self, chat_id, text, **_kw):
         self.calls.append("send_message")
+        self.send_recipients.append(str(chat_id))
         return {"id": 8_800_000 + len(self.calls), "text": text,
                 "createdAt": datetime.utcnow().isoformat() + "+00:00"}
 
@@ -89,6 +92,10 @@ class OFStandIn:
     def create_list(self, name):
         self.calls.append("create_list")
         return {"id": 701}
+
+    def delete_list(self, list_id):
+        self.calls.append("delete_list")
+        return {"success": True}
 
     def vault_media(self, *, list_id=None, **_kw):
         self.calls.append("vault_media")
@@ -129,6 +136,10 @@ class OFStandIn:
             "expiredAt": (now + timedelta(hours=12)).isoformat() + "+00:00", "status": "off"}}
         return {"list": [row] if offset == 0 else [], "hasMore": False}
 
+    def following(self, *, offset=0, **_kw):
+        self.calls.append("following")
+        return {"list": [{"id": int(FAN)}] if offset == 0 else [], "hasMore": False}
+
     def promotions(self, *, offset=0, limit=10, **_kw):
         self.calls.append("promotions")
         row = {"id": 7701, "isFinished": True, "subscribeCounts": 10, "claimsCount": 10, "subscribeDays": 30,
@@ -166,6 +177,10 @@ class OFStandIn:
     def follow_user(self, fan_id):
         self.calls.append("follow_user")
         return {"success": True}
+
+    def recent_expired_subscribers(self):
+        self.calls.append("recent_expired_subscribers")
+        return {"list": [{"id": LAPSED}], "hasMore": False}
 
     def iter_online_subscribers(self, **_kw):
         self.calls.append("iter_online_subscribers")
@@ -219,11 +234,22 @@ def session_for(platform: str, fake):
 
 
 
-async def _seed_active_list(aid: str, _platform: str) -> None:
-    async with get_session() as s:
-        s.add_all([Fan(account_id=aid, fan_id=f, lifetime_spend_cents=20000) for f in (1, 2)])
-        s.add(SmartList(account_id=aid, name="Whales", is_active=True, rules_json=json.dumps(
-            {"rules": [{"field": "lifetime_spend", "op": ">=", "value": 10000}]})))
+TAG_RULE = {"field": "tag", "op": "has", "value": "vip"}
+CHAT_RULES = (TAG_RULE, {"field": "last_active_days", "op": "<=", "value": 7},
+              {"field": "last_message_sent_at", "op": "within_last", "value": 7})
+SPEND_RULE = {"field": "lifetime_spend", "op": ">=", "value": 10000}
+
+
+def _lists(*lists: tuple[str, tuple[dict, ...], dict]):
+    async def seed(aid: str, _platform: str) -> None:
+        now = datetime.utcnow()
+        async with get_session() as s:
+            s.add(Fan(account_id=aid, fan_id=int(FAN), tags=json.dumps(["vip"]), lifetime_spend_cents=20000,
+                      last_message_received_at=now - timedelta(days=1), last_message_sent_at=now - timedelta(days=1)))
+            for name, rules, kw in lists:
+                s.add(SmartList(account_id=aid, name=name, rules_json=json.dumps({"rules": list(rules)}),
+                                **{"is_active": True, **kw}))
+    return seed
 
 
 async def _seed_broadcast_cache(aid: str, _platform: str) -> None:
@@ -373,7 +399,6 @@ _NUDGE_CFG = _ai(nudge_config_json=json.dumps(
     {"quiet_hours": [], "require_welcomed": False, "nudge_line_image": False}))
 
 SEEDS = {
-    ("auto_follow", "run"): _rows(_fan()),
     ("expiry_message", "run"): _rows(_fan(), _rule("expiry_message")),
     ("expired_message", "run"): _rows(
         _fan(), _rule("expired_message"), lambda aid, _p: Fan(account_id=aid, fan_id=LAPSED),
@@ -381,7 +406,6 @@ SEEDS = {
     ("resubscribe_message", "run"): _rows(
         _fan(), _rule("resubscribe_message"), _snap(1, timedelta(days=2)),
         _snap(int(FAN), timedelta(days=3), subscribe_at=datetime.utcnow() - timedelta(days=30))),
-    ("nudge_online", "run"): _rows(_NUDGE_CFG, _seen(1, timedelta(days=1))),
     ("nudge_online_fire", "run"): _rows(_NUDGE_CFG, _rule("nudge_online"), _seen(int(FAN), timedelta(0))),
     ("customs_watch", "owed"): _rows(_fan(customs_owed_at=datetime.utcnow() - timedelta(hours=2)),
                                      _out(timedelta(hours=1)), _audio),
@@ -389,8 +413,6 @@ SEEDS = {
         timedelta(hours=2), price_cents=500, is_paid=True, purchased_at=datetime.utcnow() - timedelta(hours=1))),
     ("birthday_message", "run"): _rows(_fan(birthday=datetime.utcnow().strftime("%m-%d")),
                                        _rule("birthday_message")),
-    ("priority_mass", "list"): _payload_id("run_id", lambda aid, _p: PriorityMassRun(
-        account_id=aid, text="priority hey", audience_json=json.dumps({"user_lists": [AUDIENCE_LIST]}))),
     ("reply_mass_funnel", "landed"): _seed_landed_funnel_send,
     ("full_ai_chat", "shadow"): _seed_turn,
     ("full_ai_chat", "live"): _seed_live_turn,
@@ -403,8 +425,6 @@ SEEDS = {
     ("gen_info", "push"): _rows(_fan(), _in(timedelta(hours=1))),
     ("process_old_fans", "local"): _rows(_fan()),
     ("process_old_fans", "push"): _rows(_fan(hobbies="gym"), _profile),
-    ("autoreply", "run"): _rows(_ai(autoreply_config_json=json.dumps({"enabled": True})),
-                                _fan(), _in(timedelta(hours=1))),
     ("send_followup", "run"): _rows(_fan(lifetime_spend_cents=500), _out(timedelta(hours=30))),
     ("welcome_chatter_for_info", "run"): _rows(_fan(), _out(timedelta(hours=2), automation_kind="send_welcome"),
                                                _in(timedelta(hours=1))),
@@ -412,7 +432,6 @@ SEEDS = {
     ("s4s_post", "media"): _s4s(media=True),
     ("s4s_check", "text_baseline"): _s4s({"id": 5501, "text": "go follow\n#advertisement"}),
     ("s4s_check", "empty_baseline"): _s4s({}),
-    ("smart_list_sync", "sync"): _seed_active_list,
     ("unsend_messages", "mass"): _seed_broadcast_cache,
     ("unsend_messages", "chat"): _seed_own_message,
 }
@@ -432,3 +451,55 @@ def _renewal_off(fake) -> None:
 FAKE_STATE = {("send_welcome", "run"): _subscribed, ("expiry_message", "run"): _renewal_off}
 
 WORLDS = {("full_ai_chat", "shadow"): _jev_answers, ("full_ai_chat", "live"): _jev_answers}
+
+
+def fan_ids(start: int, n: int) -> list[int]:
+    return list(range(start, start + n))
+
+
+def tagged_lists(members: list[int], target: list[int], *rows: dict):
+    async def seed(aid: str, _platform: str) -> None:
+        async with get_session() as s:
+            s.add_all([Fan(account_id=aid, fan_id=f, tags=json.dumps(["vip"])) for f in target])
+            s.add_all([Fan(account_id=aid, fan_id=f) for f in sorted(set(members) - set(target))])
+            s.add_all([SmartList(account_id=aid, rules_json=json.dumps({"rules": [TAG_RULE]}), is_active=True, **row)
+                       for row in rows])
+    return seed
+
+
+def fansly_list(fake, members: list[int]) -> int:
+    lid = fake.mint()
+    fake.lists[lid] = {"accountId": fake.account_id, "type": 1, "label": "Chatty", "id": lid}
+    fake.members[lid] = [str(m) for m in members]
+    return int(lid)
+
+
+class ListsOF(OFStandIn):
+    def __init__(self, aid: str, lists: dict[int, list[int]]) -> None:
+        super().__init__(aid)
+        self.lists = {k: list(v) for k, v in lists.items()}
+        self.bodies: list[tuple] = []
+
+    def create_list(self, name):
+        self.calls.append("create_list")
+        lid = 701 + len(self.lists)
+        self.lists[lid] = []
+        return {"id": lid}
+
+    def list_users_in(self, list_id, *, limit=20, offset=0):
+        self.calls.append("list_users_in")
+        if int(list_id) not in self.lists:
+            raise OFAPIError("404 for lists", response=type("R", (), {"status_code": 404})())
+        return [{"id": m} for m in self.lists[int(list_id)][offset:offset + limit]]
+
+    def add_users_to_lists(self, body):
+        self.bodies.append(("add", {k: list(v) for k, v in body.items()}))
+        for lid, ids in body.items():
+            self.lists[int(lid)] += ids
+        return super().add_users_to_lists(body)
+
+    def remove_user_from_list(self, list_id, user_id):
+        self.calls.append("remove_user_from_list")
+        self.bodies.append(("remove", int(list_id), int(user_id)))
+        self.lists[int(list_id)].remove(int(user_id))
+        return {}

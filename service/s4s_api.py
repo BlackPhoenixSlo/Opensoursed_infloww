@@ -12,9 +12,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
 import account_health
-import admission
-import automation_executor as ax
-import relay_cache
+import account_page
 from db.engine import get_session
 from db.models import Account, Action, S4SBlock, S4SPost, S4SProfile, UserAccount
 from employees import AgencyContext
@@ -32,7 +30,6 @@ MAX_POSTS = 20
 MAX_CAPTION = 5000
 MAX_DISPLAY = 64
 MAX_AVATAR_URL = 2048
-OF_IDENTITY_TIMEOUT_S = 8.0
 MAX_DISCOVERY = 200
 
 
@@ -51,25 +48,7 @@ def _default_name(account: Account) -> str:
 
 
 
-async def _of_me(account_id: str) -> dict[str, Any] | None:
-    async def fetch():
-        held = asyncio.Event()
-
-        async def call():
-            async with admission.OF_ME_READ:
-                held.set()
-                return await asyncio.to_thread(lambda: ax._make_client(account_id).me())
-        # The slot stays held until the thread returns, also past the timeout: a hung proxy must not admit more calls beside the ones still running.
-        task = asyncio.ensure_future(call())
-        task.add_done_callback(lambda t: t.cancelled() or t.exception())
-        await held.wait()
-        return await asyncio.wait_for(asyncio.shield(task), OF_IDENTITY_TIMEOUT_S)
-    try:
-        me = await relay_cache.get_or_fetch("users_me", account_id, ("users_me",), 60, fetch)
-    except Exception:  # noqa: BLE001 — any failure keeps the stored copy
-        log.info("s4s: OnlyFans profile of %s unreadable; keeping the stored one", account_id, exc_info=True)
-        return None
-    return me if isinstance(me, dict) else None
+_of_me = account_page.of_me
 
 
 def _of_hosted(url: Any) -> bool:

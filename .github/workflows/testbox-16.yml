@@ -1,0 +1,17 @@
+name: Testbox 16 vCPU
+on:
+  workflow_dispatch:
+    inputs:
+      testbox_id:
+        type: string
+        default: ''
+jobs:
+  testbox:
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+      - uses: useblacksmith/begin-testbox@v2
+        with:
+          testbox_id: ${{ inputs.testbox_id }}
+      - uses: ./.github/actions/testbox-setup
+      - uses: useblacksmith/run-testbox@v2

@@ -1,0 +1,47 @@
+{
+  "method": "GET",
+  "path": "/v1/leaks?watch_id=w_miavale_0001&watch_id=w_rowanash_0002&limit=2&cursor=MjAyNi0xMS0yMFQwOTowNjowMFp8bGtfMDAwMw",
+  "request": null,
+  "response": {
+    "leaks": [
+      {
+        "came_back": true,
+        "first_seen_at": "2026-11-20T09:05:00Z",
+        "found_on_first_scan": true,
+        "kind": "page",
+        "last_probe_at": "2026-11-27T04:01:00Z",
+        "last_up_at": "2026-11-27T04:01:00Z",
+        "leak_id": "lk_0001",
+        "leak_site": "example-leaks.test",
+        "origin_status": "live",
+        "pill": "live",
+        "sources": [
+          "google_web"
+        ],
+        "title": "miavale onlyfans leak",
+        "url": "https://example-leaks.test/miavale-onlyfans-leak",
+        "watch_id": "w_miavale_0001"
+      },
+      {
+        "came_back": false,
+        "first_seen_at": "2026-11-20T09:05:00Z",
+        "found_on_first_scan": true,
+        "kind": "page",
+        "last_probe_at": "2026-11-27T04:01:00Z",
+        "last_up_at": "2026-11-24T04:01:00Z",
+        "leak_id": "lk_0002",
+        "leak_site": "example-leaks.test",
+        "origin_status": "gone",
+        "pill": "cached",
+        "sources": [
+          "google_web"
+        ],
+        "title": "mia.vale.x thread",
+        "url": "https://forum.example-leaks.test/t/mia.vale.x",
+        "watch_id": "w_miavale_0001"
+      }
+    ],
+    "next_cursor": null
+  },
+  "status": 200
+}

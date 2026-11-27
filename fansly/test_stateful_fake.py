@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from fansly_client import API_BASE
+from fansly_shim import FanslyUnsupported
 from stateful_fake import ROUTES, StatefulFansly, Unmodelled
 
 HERE = Path(__file__).resolve().parent
@@ -16,8 +17,9 @@ FAN_MESSAGE = "900000000000000304"
 LOCKED_MESSAGE = "900000000000000303"
 OTHER_FAN = "900000000000000003"
 FLAGS = ("INVENTED: ", "ASSUMPTION: ")
-FLAGGED = {("POST", "/group"), ("GET", "/lists/itemsnew"), ("GET", "/message"),
-           ("POST", "/message"), ("GET", "/subscribers"), ("GET", "/account/me"), ("POST", "/message/ack")}
+FLAGGED = {("POST", "/group"), ("GET", "/lists/itemsnew"), ("POST", "/lists/commands"), ("GET", "/message"),
+           ("POST", "/message"), ("GET", "/subscribers"), ("GET", "/account/me"), ("POST", "/message/ack"),
+           ("POST", "/account/ignore"), ("POST", "/lists/edit")}
 
 
 def _raises(fn) -> bool:
@@ -167,6 +169,53 @@ def main() -> int:
     check(_raises(lambda: c._request("GET", "/lists/itemsnew",
                                      params={"listId": other, "limit": "25", "sortMode": "3"})),
           "a list read with an uncaptured limit must raise")
+    fake.refused_removes.add(FAN)
+    echo = c._request("POST", "/lists/commands", json_body={"listCommands": [
+        {"type": 2, "listId": made["id"], "itemIds": [FAN]}]})
+    check(echo == [] and _members(c, made["id"]) == [FAN, OTHER_FAN],
+          f"a refused remove must echo without its command and keep the member: {echo}")
+    fake.calls.clear()
+    check(c.delete_list(other) == {"success": True}
+          and fake.calls == [("POST", "/lists/remove", {"listId": other}, {})],
+          f"list delete must be the captured POST /lists/remove: {fake.calls}")
+    check(all(r["id"] != other for r in c.get_lists()["list"]), "a deleted list must be gone on read back")
+    check(_raises(lambda: c.delete_list(other)), "deleting a gone list is not captured and must raise")
+
+    fake = StatefulFansly()
+    c = fake.client()
+    lid = c.create_list("vip")["id"]
+    c.add_users_to_lists({lid: [FAN]})
+    fake.calls.clear()
+    check(c.list_users_in(lid) == {"list": [{"id": FAN}], "hasMore": False}
+          and [(m, p) for m, p, _b, _q in fake.calls] == [("GET", "/lists/account"), ("GET", "/lists/itemsnew")],
+          f"list_users_in must read the account's lists, then one captured itemsnew page: {fake.calls}")
+    c.remove_user_from_list(lid, FAN)
+    check(c.list_users_in(lid)["list"] == [], "a removed member must be gone from list_users_in")
+    c.add_user_to_list(lid, FAN)
+    check(c.list_users_in(lid)["list"] == [{"id": FAN}], "a re-added member must read back through list_users_in")
+    fake.calls.clear()
+    try:
+        c.list_users_in("900000000000009999")
+        check(False, "an unknown list must raise, never read empty")
+    except FanslyUnsupported as e:
+        check(e.reason == "platform_lacks:list_users_in:unknown_list"
+              and [p for _m, p, _b, _q in fake.calls] == ["/lists/account"],
+              f"an unknown list must refuse after the account read only: {e.reason} {fake.calls}")
+    fake.calls.clear()
+    check(c.rename_list(lid, "renamed") == {"id": lid, "name": "renamed"} and fake.calls == [
+        ("POST", "/lists/edit", {"id": lid, "accountId": fake.account_id, "pos": None, "type": 1,
+                                 "label": "renamed"}, {})],
+        f"rename must be the captured POST /lists/edit: {fake.calls}")
+    check({"id": lid, "name": "renamed"} in c.get_lists()["list"], "a rename must read back")
+    c.rename_list(lid, "again")
+    check({"id": lid, "name": "again"} in c.get_lists()["list"], "a repeated rename must read back the new label")
+    c.rename_list(lid, "vip")
+    check({"id": lid, "name": "vip"} in c.get_lists()["list"], "renaming back must undo the rename")
+    check(c.list_users_in(lid)["list"] == [{"id": FAN}], "a rename must keep the members")
+    check(_raises(lambda: c.rename_list("900000000000009999", "x")), "renaming an unknown list must raise")
+    c.session.account_id = "900000000000009998"
+    check(_raises(lambda: c.rename_list(lid, "x")), "renaming another account's list must raise")
+    check({"id": lid, "name": "vip"} in fake.client().get_lists()["list"], "a refused rename must keep the label")
 
     fake = StatefulFansly()
     c = fake.client()
@@ -180,6 +229,20 @@ def main() -> int:
     check(fake.calls == [("POST", f"/account/{FAN}/followers/remove", None, {})],
           f"unfollow must be the captured bodyless POST: {fake.calls}")
     check(fake.following == set(), "an unfollow must undo the follow")
+
+    fake = StatefulFansly()
+    c = fake.client()
+    check(c.block_user(FAN) == {"success": True} and fake.calls == [
+        ("GET", "/ignore", None, {"noAggregation": "true"}),
+        ("POST", "/account/ignore", {"ignoredId": FAN, "ignoreFlags": 2}, {})],
+        f"block must be the captured empty /ignore read, then POST /account/ignore flags 2: {fake.calls}")
+    check(fake.blocked == {FAN}, "a block must be held")
+    fake.calls.clear()
+    check(_raises(lambda: c.block_user(OTHER_FAN)) and [p for _m, p, _b, _q in fake.calls] == ["/ignore"],
+          f"a populated /ignore read is not captured and must raise before any POST: {fake.calls}")
+    check(_raises(lambda: c._request("POST", "/account/ignore", json_body={"ignoredId": OTHER_FAN,
+                                                                          "ignoreFlags": 0})),
+          "an unblock (flags 0) is not built and must raise")
 
     fake = StatefulFansly()
     c = fake.client()

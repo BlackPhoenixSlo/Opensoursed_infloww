@@ -82,8 +82,9 @@ def case_real_schema_is_fully_classified_and_matches_cell_scope_tables():
     live = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite%'")}
     con.close()
     runtime = {"cell_meta", "agency_copy_gate", "agency_copy_sections", "agency_copy_missing_owners",
+               "agency_copy_repair",
                "agency_copy_version", "creator_reservations", "creator_handoff_ops", "send_ops", "cell_holds",
-               "employee_floor", "employee_floor_reports"}
+               "employee_floor", "employee_floor_reports", "reconcile_peeks"}
     assert set(own_data.TABLES) == live | runtime and live == set(_SCOPE), set(own_data.TABLES) ^ live ^ set(_SCOPE)
     for t, (_, own, other) in own_data.TABLES.items():
         assert not set(own.split()) & set(other.split()), t
@@ -94,11 +95,13 @@ def case_cells_runtime_tables_are_classified():
     import cell_hold
     import cell_mode
     import creator_reservations
+    import restore_reconcile
     import send_ops
     for role in ("control", "data"):
         path = _fresh()
         cell_mode.install_meta(f"sqlite:///{path}")
         send_ops.install(f"sqlite:///{path}")
+        restore_reconcile.install(f"sqlite:///{path}")
         cell_hold.install(f"sqlite:///{path}")
         agency_copy.install(f"sqlite:///{path}", role)
         if role == "control":

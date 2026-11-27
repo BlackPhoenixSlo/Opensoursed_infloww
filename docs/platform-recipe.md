@@ -1,6 +1,6 @@
 # Platform recipe
 
-How a new Platform (site #2 onward) joins the Relay. Terms follow `CONTEXT.md` → Platforms; decisions in ADR-0053 to ADR-0057.
+How a new Platform (site #2 onward) joins the Relay. Terms follow `CONTEXT.md` → Platforms; decisions in ADR-0053 to ADR-0057. The creator-UI copy (Mirror) is `docs/platform-mirror-recipe.md`.
 
 ## What one entry buys
 

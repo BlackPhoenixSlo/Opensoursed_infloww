@@ -69,6 +69,7 @@ _proxy_down: frozenset[str] = frozenset()
 _proxy_at: int | None = None
 _polled: dict[str, int] = {}
 _queued: set[str] = set()
+_seeded: set[str] = set()
 _arrivals: dict[str, dict[int, dict[str, int]]] = {}
 _latest_message_at: dict[tuple[str, int], int] = {}
 _task: asyncio.Task | None = None
@@ -422,7 +423,9 @@ async def tick() -> None:
     for aid in open_tabs:
         unread_total.set_grey_cause(aid, _cause(aid, lives[aid]))
     down = {a for a in eligible if of_ws.connected_since(a) is None}
-    asks: set[str] = set()
+    seed = {a for a in eligible - down if a not in _seeded and unread_total.restricted_unknown(a)}
+    _seeded.update(seed)
+    asks: set[str] = set(seed)
     with _lock:
         for aid in set(_polled) - down:
             del _polled[aid]

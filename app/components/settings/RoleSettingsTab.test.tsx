@@ -44,7 +44,7 @@ const DEFAULT_ROLES = [
     id: "team-leader", name: "Team Leader", description: "", scope: "subordinates",
     permissions: only([
       "/", ...CHATTING, "/growth/smart-messages", "/of-manager/home", "/of-manager/vault", "/creators",
-      "/creators/proxy", "/employees", "/employees/shifts", "/analytics/creator-reports",
+      "/creators/proxy", "/creators/leaks", "/employees", "/employees/shifts", "/analytics/creator-reports",
       "/analytics/employee-reports", "/analytics/message-dashboard", "/analytics/sales-records",
     ]),
   },

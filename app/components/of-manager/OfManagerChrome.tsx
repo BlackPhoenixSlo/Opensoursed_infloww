@@ -1,7 +1,6 @@
 "use client";
 
 
-import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -15,8 +14,8 @@ import { FanDrawer } from "@/components/chat/FanDrawer";
 import { InflowwPalette } from "@/components/chat/InflowwPalette";
 import { TemplatePicker } from "@/components/chat/TemplatePicker";
 
+import { CreatorsAction, NoCreators } from "@/components/shell/NoCreators";
 import { ScopeSelect } from "@/components/shell/ScopeSelect";
-import { useGrantedPages } from "@/components/shell/useGrantedPages";
 import { EmptyState } from "@/components/ui/infloww";
 import { usePageCreator } from "@/contexts/PageCreatorContext";
 import { ScopeOverride, useScope, WatcherScope } from "@/contexts/ScopeContext";
@@ -24,7 +23,7 @@ import { ofManagerWatcher, useAccounts, useOfManagerAccounts, usePlatformAccount
 import { findFanChatRow } from "@/hooks/useInboxRealtime";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { fanIdFromParam, type FanId } from "@/lib/fanId";
-import { deniedPage, findNavLink, platformOfPath } from "@/lib/nav";
+import { findNavLink, platformOfPath } from "@/lib/nav";
 import { DEFAULT_PLATFORM, foreignCreator, type Platform } from "@/lib/platform";
 import { applyScript, type PickedScript } from "@/lib/ofMirrorChat";
 import { OF_INSIGHTS_ATTR } from "@/lib/ofMirrorChrome";
@@ -219,7 +218,7 @@ function Chrome({ children }: { children: React.ReactNode }) {
       <div className="flex" style={{ ["--shell-top" as string]: "calc(var(--chrome-top) + 48px)" }}>
         <CreatorColumn accounts={accounts} onPicked={() => setViewKey((k) => k + 1)} />
         <div ref={viewRef} key={viewKey} className="relative flex-1 min-w-0 h-chat bg-[var(--ofm-nav)]">
-          {noCreators ? <NoCreators /> : sessionGone ? <SessionGone /> : children}
+          {noCreators ? <NoCreators className="h-full" /> : sessionGone ? <SessionGone /> : children}
           {insights && !desktop && sheet && (
             <InflowwPalette className="contents">
               <FanDrawer open onClose={() => setSheet(false)} onComposeWith={pick} {...insights} />
@@ -237,31 +236,6 @@ function Chrome({ children }: { children: React.ReactNode }) {
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function useCanOpenCreators(): boolean {
-  return !deniedPage("/creators", useGrantedPages());
-}
-
-const NO_PERMISSION = "Unfortunately, you don't have permission for this page. Please contact the administrator.";
-const PRIMARY = "h-8 px-[15px] grid place-items-center rounded-md bg-accent text-white text-base hover:opacity-90";
-
-function CreatorsAction({ label }: { label: string }) {
-  if (!useCanOpenCreators()) return <p className="max-w-[380px] text-err text-sm">{NO_PERMISSION}</p>;
-  return <Link href="/creators" className={PRIMARY}>{label}</Link>;
-}
-
-function NoCreators() {
-  return (
-    <div className="h-full flex items-center justify-center px-6">
-      <EmptyState
-        kind="data"
-        text={<>You have not yet tied a creator, if you need to bind<br />one, you can bind on the “Creators Management” page.</>}
-        textClassName="mt-4 mb-1.5 max-w-[400px] text-base leading-6 font-medium text-fg"
-        action={<CreatorsAction label="Link account" />}
-      />
     </div>
   );
 }

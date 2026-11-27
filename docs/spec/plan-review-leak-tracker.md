@@ -20,12 +20,30 @@ ASSUMPTION: this file is `plan-review-leak-tracker.md`, not `plan-review.md`, wh
 | 2 | 3 Notice feed, Service status, Removal offer | `phase-03-leak-tracker-notices-and-offer.md` | Phase 1 (Phase 2 for discovery counts in the offer angles) |
 | 3 | 4 Bell, tenant offboarding, backups, key revoke, public enablement, plus the pieces moved from Phase 1 in Fable round 3: rename rule, paused push on the kill switch, orphan logging, Demo tracker, empty-Agency rebind | `phase-04-leak-tracker-bell-purge-public.md` | Phases 1–3 |
 
+## Public-first wave order (owner 2026-11-27)
+
+Owner, rung 2: "I want it live on inflowwww" — the target is the public app.inflowwww.com, not only the AE pilot. Phase 4's public flip (ticket 64) is pulled forward; everything not on the route to a working public deploy trails it. Fable round 4 (2026-11-27) shaped the cut; the build map `.scratch/leak-tracker-build/map.md` carries the same table.
+
+| Wave | Tickets | Why here |
+|---|---|---|
+| 0 | 01, 02, 46; this re-plan; Phase 2 proxies-off fix | Leak-check must land before any tracker code rides a deploy-all; 46 touches no tracker code |
+| 1 CRM slice A | 04 (+47), 05, 06, 08, 69, 65, 66 | Page, gates, key, enrol, drill-in, disclaimer; selftest + Twin red before the first deploy carrying 04 |
+| 1 Service S1 | 03, tracker DB + `/v1` (me, creators, leaks, PUT/DELETE watch), seed (07 service side), golden `/v1` JSON both sides test against, service deploy runbook (HTTPS host, `tracker_cli` tenant + key) | Freezes the contract before the CRM depends on it |
+| 2 P1 slices B, C | 07, 09, 10, 11, 12, 13, 14, 15, 16, 17 | Daily probes, delete, tombstones, purge, cross-repo tracer; 12 before the first real scan |
+| 3 P2 lanes | 18, 19, 20, 21, 22, 23, 25, 26, 27 | Mega, listing recheck, Google fresh + weekly (Browserbase, proxies off), budget, Today strip |
+| 4 P3 offer path | 41 (Service status `none` branch only), 42, 43, 74 (no Taken down until notices), 75, 76, 80 | Contact-only offer and the Start removal popup; the service reads carry `service_status: none` until 38 |
+| 5 Public flip | 64, public-sync, deploy-all, env on the public host | `LEAK_TRACKER_ENABLED` + `LEAK_TRACKER_URL` set on app.inflowwww.com only; Twin and the demo stay off |
+| Trail | 24, 28–40, 44, 45, 48–63, 67, 68, 70–73 (previews, legal go), 77–79 | After the flip. Deadlines: 60 before any key goes to a third-party Agency; 57 before the kill switch is relied on to stop spend |
+
+ASSUMPTION: 42 and 76 render on the `none` branch with no Notice feed (ticket 42's own `none`/`former`/`unknown` rule), so the notice chain 33–40 trails the flip. Overturned if the owner wants Removal track counts live at the flip; then 33–41 move into wave 4.
+
 ## Adversary
 
 - Phase 1: codex — 12 accept, 10 partial, 1 reject, 0 needs-human. Six hats 9 accept. Cross-Phase 5 accept, 1 reject.
 - Phase 2: codex — 13 accept, 8 partial, 8 reject, 0 needs-human. Six hats 4 accept.
 - Phase 3: codex — 18 accept, 8 partial, 2 reject, 0 needs-human. Six hats 5 accept.
 - Phase 4: codex — 21 accept, 3 partial, 5 reject, 1 needs-human (D12, backup inventory). Six hats 10 accept, 1 partial. Cross-Phase 6 accept, 1 partial.
+- Visuals (wayfinder tickets 11–14, 2026-11-27): codex — 40 accept, 15 partial, 1 reject (cutting the popup and imagery contradicts the owner's ask), 1 needs-human (legal go for previews).
 
 ## Six hats
 
@@ -34,7 +52,7 @@ Per bullet, across the specs it touches (spec lines carry the detail):
 - 2 stale Phase 4 claims, one clamp — **accept** (P1, P4).
 - 3 `identity_note` column — **accept** (P1, P2, P4), superseded in Fable round 3: it is a Phase 4 additive column with the rename note.
 - 4 `first_run` → `seen.first_scan` — **accept** (P4).
-- 5 `capped`/`complete` from `lane_day` — **accept** (P4). ADR-0070 and the CONTEXT Leak event log are amended so that `scan_partial` is a watch-scoped `lane_day` row.
+- 5 `capped`/`complete` from `lane_day` — **accept** (P4). ADR-0075 and the CONTEXT Leak event log are amended so that `scan_partial` is a watch-scoped `lane_day` row.
 - 6 `client_watches` at purge — **accept** (P3, P4): it joins Phase 1's `WATCH_TABLES`.
 - 7 Notices for non-clients — **accept** (P3, P4, set). Phase 3 owns Notice retention:
   - withheld events are counted, not stored;
@@ -94,7 +112,7 @@ Counts: 7 accept, 1 partial, 3 reject.
 - Google CSE, Serper, Bing, DuckDuckGo, Brave lanes — CSE quota is shared with the owner's tools; Serper was cut in Fable round 2; the rest were never planned (P2).
 - Suggested alias chips, the OnlyFans + Fansly "same person" link — cut in Fable round 2; aliases stay manual (P1, P2).
 - The CSV export, pause reasons — cut in Fable round 2 (P1, P2, P4).
-- The 30-day trend sparkline — no Phase lists it, and the ticket 08 layout awaits the owner (P1, P2).
+- The 30-day trend sparkline — no Phase lists it, and the owner's ticket 08 layout (variant D) has none (P1, P2).
 - A headless-browser fallback, Telegram crawling — unmeasured browser cost; a `site:t.me` query covers Telegram (P2).
 - Crawl worker-hours in admission — ticket 04 refuses on loads only (P2).
 - Thumbnails, media, page bodies, any CRM fetch of a Leak — never (tickets 08, 10).
@@ -105,7 +123,7 @@ Counts: 7 accept, 1 partial, 3 reject.
 - A per-Creator offer mute or per-viewer snooze — 06 fixed a 7-day agency-wide snooze (P3).
 - An export of Notices — the CSV was cut (P3).
 - Price or revenue on the offer card — banned by 06 (P3).
-- Running the exporter more than daily, or pulling from the laptop — ADR-0072 (P3).
+- Running the exporter more than daily, or pulling from the laptop — ADR-0077 (P3).
 - Telegram, email or OS push channels — the CRM has no agency sender (P4, ticket 07).
 - A sidebar badge — `NavLink` has no badge field (P1, P4).
 - A per-Creator bell mute — the Creator toggle already stops scans (P1, P4).
@@ -114,7 +132,7 @@ Counts: 7 accept, 1 partial, 3 reject.
 - A past day's Leak list under `?day=` — the strip shows counts (P4).
 - Creating tracker backups — none exist; the plan asks only for roll-off (P4).
 - A timer for the public flip — owner flip only (ticket 03) (P4).
-- Naming the brand in public copy — owner call, ADR-0069 (P4).
+- Naming the brand in public copy — owner call, ADR-0074 (P4).
 - Turning Twin on — needs the owner's sign-off (P3, P4).
 - Slop runs — no mass send or concurrency path on the CRM side (P2, P3).
 
@@ -130,8 +148,8 @@ Counts: 7 accept, 1 partial, 3 reject.
 - A live Fansly handle source (ticket 05): Fansly handles stay typed and unverified.
 - Cell routing of `/admin/leaks`: the tracker is off in cell mode (P4). The routing spec must include the `leaks/watches` account-path pattern (P3).
 - A Twin integration and its Removal offer: off until the owner signs off.
-- ADR-0071 still names the tombstone as (watch_id, requested_at) and lists three delete triggers; Phase 1 has 7 columns and adds the agency-user delete. It was outside this pass's permitted files, and the coordinator may amend it.
-- CONTEXT's Demo tracker line names Phase 1, and its Purge line says `deleted_ids` is pruned after 30 days. After Fable round 3 the Demo tracker is Phase 4's and `deleted_ids` rows stay while the tenant row exists. Coordinator checked: the CONTEXT lines name no Phase for the Demo tracker and say nothing of `deleted_ids` pruning, so they stand; ADR-0071 now states that `deleted_ids` is kept for the tenant's life.
+- ADR-0076 still names the tombstone as (watch_id, requested_at) and lists three delete triggers; Phase 1 has 7 columns and adds the agency-user delete. It was outside this pass's permitted files, and the coordinator may amend it.
+- CONTEXT's Demo tracker line names Phase 1, and its Purge line says `deleted_ids` is pruned after 30 days. After Fable round 3 the Demo tracker is Phase 4's and `deleted_ids` rows stay while the tenant row exists. Coordinator checked: the CONTEXT lines name no Phase for the Demo tracker and say nothing of `deleted_ids` pruning, so they stand; ADR-0076 now states that `deleted_ids` is kept for the tenant's life.
 
 ## Open questions
 
@@ -151,7 +169,7 @@ Every ASSUMPTION in the four specs, sharpest first, with what falls if it is wro
 12. P1/P4: Phase 1 always refuses a foreign tenant; Phase 4 rebinds an Agency with no watch and no tombstone; clearing the key is refused while a tombstone is pending. Wrong → an AE Agency must move tenants during the tracer (Phase 4's rebind ships early), or the owner wants a migrate-tenant path.
 13. P3: "on delete, the agency link is removed" is met by hiding at once, with `client_watches` purged by Phase 1. Wrong → the row must go at the DELETE.
 14. P4: the tracker is off in cell mode until a spec routes `/admin/leaks`. Wrong → cell-mode Agencies expect the tracker; the routing spec is then needed first.
-15. P2: a watch-scoped `scan_partial` lives in `lane_day`, not `leak_events`. Wrong → ADR-0070 must give the log watch-scoped events (this pass amended it to agree).
+15. P2: a watch-scoped `scan_partial` lives in `lane_day`, not `leak_events`. Wrong → ADR-0075 must give the log watch-scoped events (this pass amended it to agree).
 16. P1: `dead_since` is the first dead probe of the current run, kept through blocked and unknown probes. Wrong → a blocked probe should break the run, which changes the gone-after-notice dates.
 17. P3: "Gone after notice" uses Phase 1's `dead_since`; a Leak without it is in neither gone count. Wrong → early gone spells undercount.
 18. P2: a Mega `deleted` flag on two daily lookups makes a link-only Leak gone. Wrong → Mega packs flap or the flag means something else; Gone counts are inflated.
@@ -172,7 +190,7 @@ Every ASSUMPTION in the four specs, sharpest first, with what falls if it is wro
 33. P4: the delete triggers are Phase 1's, and this Phase owns the selftest plants. Wrong → Phase 1 ships the plants; story 44 is then done.
 34. P4: the Demo tracker, moved from Phase 1, runs in-process as the demo's Tracker API and the tests' fake, and Phase 2 and 3 demo states are built on it in Phase 4; until then the demo keeps the tracker off. Wrong → Phase 2 or 3 demo work must ship first, or it is demo-only and seam 1 needs a loopback stub.
 35. P3: `first_daily_at` counts a `partial` day. Wrong → the offer waits for a full-coverage day.
-36. P3: Notice entries are a read-time join through the mapping. Wrong → ADR-0070 is read as requiring copies, which needs an attach job.
+36. P3: Notice entries are a read-time join through the mapping. Wrong → ADR-0075 is read as requiring copies, which needs an attach job.
 37. P3: the feed counts as updated only on a complete run; rejected and withheld rows count toward completeness. Wrong → any rejection should keep the feed stale.
 38. P3: a missing or malformed ledger aborts the whole run. Wrong → one broken tool stalls every tool's freshness.
 39. P3: a URL-keyed ledger gets its source client by exact url key from the laptop tools' findings. Wrong → many rows come back withheld in the dry-run reconcile.
@@ -244,12 +262,31 @@ Every ASSUMPTION in the four specs, sharpest first, with what falls if it is wro
 105. P1: the e2e test prints SKIP and exits 0 without `$REMOVAL_REPO`, writes `$LEAK_E2E_OUT` when it runs, and Acceptance checks that file. Wrong → the house moves cross-repo tests out of `service/tests`.
 106. P1: Phase 1 ships as slices A, B, C in that order. Wrong → slice C must land before AE enrols anyone; then C moves ahead of B.
 107. P1: the tracer's rebind, kill-switch push, rename, orphans and Demo tracker wait for Phase 4. Wrong → AE needs one of them during the tracer; that piece ships early.
+108. P2: the service keeps a thumbnail URL only for Google's own image CDN hosts, never a `data:` URI. Wrong → most pilot tiles are `data:`; then the full pass needs another source inside its reservation.
+109. P2: Reveal is one page-level button held in memory. Wrong → the legal review wants per-tile reveal.
+110. P2: the All Models strip is the 12 newest-seen previews across the viewer's Creators, not a "worst" rank. Wrong → the owner wants a severity order or one strip per Creator; then the service needs a per-Creator preview read.
+111. P2: previews are `no-store` on both hops. Wrong → load measurements say it is too slow and the legal review allows a cache.
+112. P2: Team Leaders see blurred previews and may reveal them. Wrong → the owner limits Reveal to Owner and Admin.
+113. P2: no per-view audit of previews. Wrong → the legal review requires one.
+114. P2: the Leak disclaimer's seen key is versioned for the preview line. Wrong → a second dialog is judged worse than missing the line.
+115. P2: Agencies enrolled before previews need no new tick. Wrong → the legal review says the enable checkbox must name previews; then previews wait for an Owner or Admin re-tick.
+116. P3: "Contact us to start removal" opens the Start removal popup instead of the link. Wrong → the owner wants the link one click away; then the card gets both.
+117. P3: popup overlay scenes read `forum` as source `site_search` off X and `x` as Leak site `x.com` or `twitter.com`. Wrong → the service gains a forum Kind; then the mapping reads it.
+118. P3: the popup video is Owner and Admin only. Wrong → Team Leaders should watch it.
+119. P3: captions are required and there is no transcript. Wrong → an accessibility review asks for one.
+120. P3: the Removal preview sits only in the popup, the Taken down gallery stops at 6 and keeps one generic after panel. Wrong → the owner wants it on the card, every Leak (paged), or per-Kind looks.
+121. P1: the read cache keeps the last good response per (Agency, path), and a served copy is filtered to the viewer's Creator grants on every serve, as the live read is. Wrong → a cached copy can leak another Creator's rows; then the cache key gains the viewer's grant set.
+
+## Owner answers (2026-11-27)
+
+- Ticket 08 (owner, rung 2): the Inflowwww look. Creator names sit in the left Creator column with "All Models" on top, selected by default, showing the Today strip and one combined Leak list. One Creator shows its drill-in in the main pane, and phones get the house Creator dropdown (P1 stories 15, 34–37, 39 and 66). Removal is never self-serve: the only CTA is "Contact us to start removal", and the service owner links the client with the mapping CLI (P3 stories 24, 25, 41, 43, 50 and 51). The first open shows the Leak disclaimer, a bot-scrape notice dismissed once per person in that browser, and the demo shows it too (P1 stories 67–69). It replaces variant C. The prototype is variant D.
+- Wayfinder tickets 11–14 (owner, rung 2: sliders, Google previews, a video popup to start removal). Phase 2's drill-in gains a List / Google view of media Leaks, with Google's thumbnails passed through by id, blurred by default, never stored, behind `LEAK_TRACKER_PREVIEWS` (off), and All Models gets one strip of the 12 newest-seen previews (P2 stories 47–58). Phase 3's contact CTA opens the Start removal popup: a captioned generic video served through the Relay, with the Creator's own Leaks drawn over it by the CRM on the service's cue times, the results as text, a Removal preview slider and the contact link; `active` and `former` Creators gain a Taken down gallery of at most 6 sliders (P3 stories 52–63). Phase 4's Demo tracker serves placeholders and the popup with no video. Build tickets 70–80.
 
 ## Needs the human
 
+- **Phase 2:**
+  - The legal go for Google previews: copyright display, the Creator's consent scope under the enable checkbox, age-verification duties and whether views need an audit. `LEAK_TRACKER_PREVIEWS` stays off in every tree until the owner records it.
 - **Phase 4:**
   - D12, the backup inventory. Confirm that the Removal service host has no cron, provider snapshot or volume backup of the tracker DB, or name each one with its retention (at most 30 days after a purge).
-- **Phase 1 and Phase 2 (UI):**
-  - The ticket 08 layout pick: A digest, B pipeline, or C roster with drill-in. Recommended: C plus A's Today strip. The specs are written against C, so this blocks UI detail only.
 - **Set:**
   - Twin sign-off is not needed now. Twin stays off, and deploy-all goes red if it turns on.

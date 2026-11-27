@@ -100,9 +100,10 @@ def case_session_payload_shape():
         rl._bb_request = orig
     assert session["id"] == "s1"
     assert (seen["path"], seen["method"]) == ("/sessions", "POST")
-    assert seen["body"] == {"projectId": "proj-xyz", "proxies": True,
+    assert seen["body"] == {"projectId": "proj-xyz",
                             "browserSettings": {"solveCaptchas": False,
                                                  "viewport": {"width": 1280, "height": 800}}}, seen["body"]
+    assert "proxies" not in seen["body"], seen["body"]
 
 
 _BB = "https://api.browserbase.com/v1"
@@ -252,7 +253,7 @@ def case_managed_login_binds_proxy():
     assert order == [("bind", "hu-1", "777"), ("persist", "777", None), ("hooks", "777")], order
     assert _GOTOS == [f"s1 {ofl.HOME}"], _GOTOS
     creates = [b for m, u, b in calls if (m, u) == ("POST", f"{_BB}/sessions")]
-    assert creates == [{"projectId": "proj-xyz", "proxies": True,
+    assert creates == [{"projectId": "proj-xyz",
                         "browserSettings": {"solveCaptchas": False,
                                                  "viewport": {"width": 1280, "height": 800}}}], creates
     assert ("POST", f"{_BB}/sessions/s1", {"projectId": "proj-xyz", "status": "REQUEST_RELEASE"}) in calls
@@ -260,7 +261,7 @@ def case_managed_login_binds_proxy():
 
 def case_create_refused_fails_loud():
     _set_env()
-    for status, body in ((402, b'{"message":"Proxies are not included in your plan"}'),
+    for status, body in ((402, b'{"message":"Payment required"}'),
                          (400, b'{"message":"projectId is invalid"}'),
                          (401, b'{"message":"Invalid API key"}'),
                          (429, b'{"message":"too many sessions"}'),
@@ -269,7 +270,7 @@ def case_create_refused_fails_loud():
         job, ran = _job(), []
         _with_fakes(urlopen, lambda: rl._serve(job, secrets=(OF_PW,), body=lambda p, c: ran.append(1)))
         assert job.state == rl.STATE_ERROR, (status, job.state)
-        assert "couldn't start a Browserbase session on its managed proxies" in job.error, job.error
+        assert "couldn't start a Browserbase session: " in job.error, job.error
         assert f"HTTP {status}" in job.error, (status, job.error)
         assert not ran and len(calls) == 1, (status, calls)
 
@@ -1212,6 +1213,31 @@ def case_api_otp_gates():
     finally:
         rl._jobs.clear()
     assert any("/admin/login/remote/x/otp".startswith(p) for p in employees._AUDIT_SKIP_PREFIXES)
+
+
+def case_job_start_and_failure_log_lines():
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _backend(_job):
+        yield None, None
+
+    def _body(_page, _ctx):
+        raise RuntimeError("couldn't open OnlyFans in the remote browser: net::ERR_TIMED_OUT")
+
+    job = _job()
+    tap = _LogTap()
+    logging.getLogger().addHandler(tap)
+    orig = rl._browserbase_backend
+    rl._browserbase_backend = _backend
+    try:
+        rl._serve(job, secrets=(OF_PW,), body=_body)
+    finally:
+        rl._browserbase_backend = orig
+        logging.getLogger().removeHandler(tap)
+    assert f"remote login {job.id} started platform=onlyfans" in tap.lines, tap.lines
+    assert (f"remote login {job.id} failed platform=onlyfans: RuntimeError: couldn't open OnlyFans in the remote"
+            " browser: net::ERR_TIMED_OUT") in tap.lines, tap.lines
 
 
 _harness.run()

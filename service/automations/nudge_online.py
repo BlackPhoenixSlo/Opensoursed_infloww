@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from audiences import lacks_reason
 import automation_executor as ax
 from automation_registry import kind_family, register
 from db.engine import get_session
@@ -463,7 +464,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         return {"test_fan": fid, "enqueued": 1, "job_id": job_id}
 
     client = await asyncio.to_thread(ax._make_client, account_id)
-    online = await asyncio.to_thread(lambda: client.iter_online_subscribers(max_fans=limit))
+    try:
+        online = await asyncio.to_thread(lambda: client.iter_online_subscribers(max_fans=limit))
+    except Exception as e:
+        if reason := lacks_reason(e):
+            return {"online": 0, "enqueued": 0, "reason": reason}
+        raise
 
     online_objs: dict[int, dict] = {}
     for f in (online or []):

@@ -173,7 +173,7 @@ venv/bin/python fansly/test_shim_shapes.py
 venv/bin/python fansly/test_lift_table.py
 (cd app && pnpm exec vitest run hooks/scheduledRows.test.ts lib/platform.test.ts hooks/useCan.test.tsx components/compose/massSenders.test.ts components/compose/massMessageReducer.test.ts components/compose/MassMessageComposer.test.tsx components/settings/ScheduledTab.test.tsx components/chat/FanList.test.tsx components/growth/CreateMessagePopUp.test.tsx)
 python3 scripts/comment_budget.py --check
-test "$(nice -n 10 venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
+test "$(PYTHONPATH=. nice -n 10 venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
 nice -n 10 scripts/run-tests.sh
 (cd app && nice -n 10 pnpm test:run)
 NOVA_ID=900539700124344320   # scripts/demo-shots/fansly_nova.py ACCOUNT

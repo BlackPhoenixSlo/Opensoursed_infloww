@@ -11,6 +11,7 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import events
+import restore_reconcile
 from chatters import _account_restrictions_for, _filter_owner_accounts
 from db import of_writer
 from db.engine import get_session
@@ -757,5 +758,10 @@ async def timesheet(
         "employee_id": key if by_employee else None,
         "group_name": groups.get(key),
     } for key, t in rows.items()]
+    if restore_reconcile.active():
+        from starlette.concurrency import run_in_threadpool
+        held = await run_in_threadpool(restore_reconcile.held_keys, events, by_employee)
+        for r, key in zip(out, rows):
+            r["restore_held"] = key in held
     out.sort(key=lambda r: (r["display_name"].lower(), r["key"]))
     return {"rows": out}

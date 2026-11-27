@@ -13,6 +13,8 @@ import llm_providers
 from llm_providers import PROVIDERS, TENANT_KEY_PROVIDERS, TYPESAFE
 from secrets_store import MASK_CHAR, mask
 
+TRACKER_PROVIDER = "leak_tracker"
+NON_LLM_PROVIDERS = (TRACKER_PROVIDER,)
 
 
 def billable_owners(links: list[tuple[str, bool]]) -> list[str]:
@@ -133,7 +135,8 @@ async def key_overview(registry: dict[str, bool],
 
     providers: dict[str, list[str]] = {}
     for uid, prov in keyed:
-        providers.setdefault(uid, []).append(prov)
+        if prov not in NON_LLM_PROVIDERS:
+            providers.setdefault(uid, []).append(prov)
 
     out: dict[str, dict] = {}
     links: dict[tuple[str, str], bool] = {}
@@ -199,8 +202,8 @@ async def get_key(user_id: str, provider: str) -> str:
     return (val or "").strip()
 
 
-async def set_keys(user_id: str, values: dict[str, str | None]) -> None:
-    known = TENANT_KEY_PROVIDERS
+async def set_keys(user_id: str, values: dict[str, str | None], *,
+                   known: tuple[str, ...] | list[str] = TENANT_KEY_PROVIDERS) -> None:
     cleaned: dict[str, str] = {}
     for prov, raw in values.items():
         if prov not in known:

@@ -49,6 +49,11 @@ def _connect() -> sqlite3.Connection:
 
 
 def install(sync_url: str) -> list[tuple[str, str]]:
+    bump = _install(sync_url)
+    return [] if bump is None else bump[0]
+
+
+def _install(sync_url: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]], bool] | None:
     global _path
     _path = sync_url.split("sqlite:///", 1)[1]
     gen = cell_mode.data_gen()
@@ -60,9 +65,12 @@ def install(sync_url: str) -> list[tuple[str, str]]:
                 db.execute("ALTER TABLE cell_meta ADD COLUMN last_data_gen INTEGER")
         last = db.execute("SELECT COALESCE(last_data_gen, 1) FROM cell_meta").fetchone()[0]
         if gen is None or gen <= last:
-            return []
+            return None
         op = f"data_gen {last}->{gen}"
-        held = sorted((p, a) for a, p in cell_mode._owned_platforms().items())
+        owned = sorted((p, a) for a, p in cell_mode._owned_platforms().items())
+        import restore_reconcile
+        peek = restore_reconcile.arm(db)
+        held = [(p, a) for p, a in owned if not (peek and p == "onlyfans")]
         db.execute("BEGIN IMMEDIATE")
         for platform, account in held:
             db.execute(f"INSERT INTO cell_holds (scope, platform, account, why, blocks, op, set_by, set_at)"
@@ -72,20 +80,29 @@ def install(sync_url: str) -> list[tuple[str, str]]:
         db.execute("COMMIT")
     log.warning("Cells: restore Cell hold (%s) on %d Creator(s): automated sends wait for a person's release",
                 op, len(held))
-    return held
+    return held, owned, peek
+
+
+_queue_check = None
 
 
 async def boot(sync_url: str) -> list[tuple[str, str]]:
+    global _queue_check
     cutoff = datetime.utcnow()
     gen = cell_mode.data_gen()
-    if restored := install(sync_url):
+    if bump := _install(sync_url):
+        held, owned, peek = bump
         import automation_executor
-        n = await automation_executor.park_restore([a for _, a in restored], cutoff, data_gen=gen)
+        n = await automation_executor.park_restore([a for _, a in owned], cutoff, data_gen=gen)
         log.warning("Cells: %d due job(s) parked as may have sent (restore)", n)
-    else:
-        with contextlib.closing(_connect()) as db:
-            db.execute("UPDATE cell_meta SET last_data_gen=?", (gen,))
-    return restored
+        if peek:
+            import asyncio
+            import restore_reconcile
+            _queue_check = asyncio.create_task(restore_reconcile.boot_queue_check(owned))
+        return held
+    with contextlib.closing(_connect()) as db:
+        db.execute("UPDATE cell_meta SET last_data_gen=?", (gen,))
+    return []
 
 
 def holds(db: sqlite3.Connection | None = None) -> list[Hold]:

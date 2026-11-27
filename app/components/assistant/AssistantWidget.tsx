@@ -40,6 +40,8 @@ import { useDoRunner } from "./useDoRunner";
 import { FocusLine } from "./FocusLine";
 import { canOpenChats, commandLinks, confirmation, openablePages, prepass, type PrepassHit } from "./prepass";
 import { ThreadList } from "./ThreadList";
+import { SupportButton, SupportPanel } from "./SupportPanel";
+import { NO_SUPPORT, SUPPORT_POLL_MS, supportStatusOf, type SupportStatus } from "./supportReducer";
 import { UltraPanel, UltraToggle, useUltraMode } from "@/components/ultra/UltraPanel";
 import {
   initialLauncherState, launcherDockReducer, launcherSpot, parseLauncherDock,
@@ -85,6 +87,8 @@ interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "unre
   sendDo: (request: string) => void;
   doFromQuestion: (question: string) => void;
   doCallbacks: DoCallbacks;
+  support: SupportStatus;
+  markSupportRead: () => void;
 }
 
 // Not crypto.randomUUID: it needs a secure context and a phone on the LAN over http has none.
@@ -143,6 +147,29 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   }, [hydrated, open]);
 
   const toggle = useCallback(() => dispatch({ type: "toggle" }), []);
+
+  const [supportBy, setSupportBy] = useState<Record<string, SupportStatus>>({});
+  const support = (principal && supportBy[principal]) || NO_SUPPORT;
+  const loadSupport = useCallback((who: string) => {
+    void Promise.resolve()
+      .then(() => relay.get<unknown>("/admin/support/unread"))
+      .then((body) => setSupportBy((cur) => ({ ...cur, [who]: supportStatusOf(body) })))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (hydrated && principal) loadSupport(principal);
+  }, [hydrated, principal, loadSupport]);
+  const supportOn = support.configured || !(principal && principal in supportBy);
+  useEffect(() => {
+    if (!supportOn || !principal) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") loadSupport(principal);
+    }, SUPPORT_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [supportOn, principal, loadSupport]);
+  const markSupportRead = useCallback(() => {
+    if (principal) setSupportBy((cur) => (cur[principal] ? { ...cur, [principal]: { ...cur[principal], unread: 0 } } : cur));
+  }, [principal]);
 
   const wantHistory = hydrated && (open || state.onHelpPage) && state.historyStatus === "idle";
   const asWho = state.principal;
@@ -312,6 +339,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     shown, threads,
     pick, newChat, openThread, userName,
     doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks,
+    support, markSupportRead,
   };
   return (
     <AssistantContext.Provider value={value}>
@@ -334,6 +362,7 @@ export function AssistantWidget() {
   const onMessagesPro = isPopoutRoute(pathname ?? "/");
   const phone = useMediaQuery("(max-width: 767.98px)");
   const [expanded, setExpanded] = useState<DoRun | null>(null);
+  const unread = a.unread || a.support.unread > 0;
 
   if (!a.hydrated || pathname === HELP_PATH || onMessagesPro) return null;
 
@@ -343,7 +372,7 @@ export function AssistantWidget() {
         {a.open && (pillFor(a.doRun, expanded)
           ? <DoPill run={a.doRun} onStop={a.doCallbacks.stop} onOpen={() => setExpanded(a.doRun)} />
           : <AssistantPanel variant="sheet" onClose={a.toggle} />)}
-        <PhoneLauncher hidden={a.open} unread={a.unread} onOpen={a.toggle} />
+        <PhoneLauncher hidden={a.open} unread={unread} onOpen={a.toggle} />
       </>
     );
   }
@@ -365,7 +394,7 @@ export function AssistantWidget() {
         aria-label="Help assistant"
       >
         {a.open ? <ChevronDown className="h-6 w-6" aria-hidden /> : <LauncherIcon />}
-        {a.unread && !a.open && (
+        {unread && !a.open && (
           <span
             className="absolute right-0 top-0 h-3 w-3 rounded-full bg-[#e5372f]"
             aria-label="New reply"
@@ -508,12 +537,13 @@ export function AssistantPanel({
   const {
     shown, threads, active, held, userName, accounts, rosterLoaded, isUser, accountId, canGeneral, appFocus, canChat, openPages,
     ask, command, pick, newChat, openThread,
-    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks,
+    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks, support, markSupportRead,
   } = useAssistant();
   const answer = useLazyModule(answerText);
   const [ultra, setUltra] = useUltraMode(isUser);
   const [draft, setDraft] = useState("");
   const [listOpen, setListOpen] = useState(false);
+  const [supportOpen, setSupportOpen] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const doOn = doRun.phase !== "off";
@@ -535,10 +565,21 @@ export function AssistantPanel({
     if (el) el.scrollTop = el.scrollHeight;
   }, [shown]);
 
+  const supportButton = support.configured
+    ? <SupportButton unread={support.unread > 0} onClick={() => setSupportOpen(true)} />
+    : null;
+
+  if (supportOpen && support.configured) {
+    return (
+      <SupportPanel frame={v.frame} column={column} composerPad={v.composerPad} inputText={v.inputText}
+        unread={support.unread} onBack={() => setSupportOpen(false)} onClose={onClose} onRead={markSupportRead} />
+    );
+  }
+
   if (ultra) {
     return (
       <UltraPanel frame={v.frame} column={column} composerPad={v.composerPad} inputText={v.inputText}
-        onClose={onClose} onOff={() => setUltra(false)} />
+        onClose={onClose} onOff={() => setUltra(false)} headerAction={supportButton} />
     );
   }
 
@@ -618,6 +659,7 @@ export function AssistantPanel({
             <IfMark className="size-7" />
             <span className="text-[18px] font-bold">{BRAND_NAME.toUpperCase()}</span>
             <span className="-mr-4 ml-auto flex items-center gap-1">
+              {supportButton}
               {threads.length > 0 && (
                 <button
                   type="button"

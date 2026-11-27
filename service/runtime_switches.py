@@ -87,6 +87,11 @@ SWITCHES: tuple[Switch, ...] = (
            "Per Creator: the Creator's owner can force it off for that Creator alone "
            "(Settings › OF Manager writes); on for a Creator = on here and not forced off there.",
            "bool", False, _truthy, "server._ofm_new_writes_on", off_only=True),
+    Switch("LEAK_TRACKER_ENABLED", "Leak tracker",
+           "On (with LEAK_TRACKER_URL set and cell mode off): Agencies whose Leak tracker flag is on see "
+           "Creators › Leak tracker. Off: the page is hidden and every Leak tracker route answers 404. "
+           "Turns on only from the server's env; here it can only be forced off.",
+           "bool", False, _truthy, "leak_tracker.deployment_on", off_only=True),
 )
 BY_NAME: dict[str, Switch] = {s.env: s for s in SWITCHES}
 

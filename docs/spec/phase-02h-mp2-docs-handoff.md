@@ -119,7 +119,7 @@ sent |= set(re.findall(r'"([a-z_]+)"', tab)) | {"followed"}
 assert desc == sent, (sorted(desc), sorted(sent))
 EOF
 nice -n 10 "$PY" fansly/test_lift_table.py
-test "$(nice -n 10 venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
+test "$(PYTHONPATH=. nice -n 10 venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
 "$PY" scripts/comment_budget.py --check
 nice -n 10 scripts/run-tests.sh
 (cd app && nice -n 10 pnpm test:run)

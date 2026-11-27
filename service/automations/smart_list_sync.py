@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import delete, or_, select, update
 
+import platforms
 from audience_include import _crawl_list_ids_blocking
 from automation_registry import register
 from db.engine import get_session
 from db.models import SmartList
 from of_client import OFAPIError
-from side_effect_gate import PLATFORM_LACKS_PREFIX, refusal
+from of_paging import list_audience
+from side_effect_gate import PLATFORM_LACKS_PREFIX, delete_list_refusal, delete_list_ungranted
+from smart_list_rules import rules_refusal
 
 log = logging.getLogger("of-relay.automation.smart_list_sync")
 
@@ -22,6 +27,14 @@ _MAX_WRITES_PER_RUN = 40  # ≈7.5 min of paced writes per run, all lists togeth
 _ADD_CHUNK = 100
 _MAX_MEMBERS = 19_000  # under the 20k crawl backstop
 _ROSTER_USABLE = ("crawled", "fresh")
+SYNC_METHODS = ("list_users_in", "add_users_to_lists", "remove_user_from_list", "create_list")
+
+
+def sync_refusal(account_id: str) -> str | None:
+    for name in SYNC_METHODS:
+        if platforms.refusal_for_account(account_id, name):
+            return f"{PLATFORM_LACKS_PREFIX}{name}"
+    return None
 
 
 def _not_found(e: Exception) -> bool:
@@ -85,6 +98,48 @@ class _Run:
         return await _write(self.account_id, fn)
 
 
+@dataclass
+class _Tally:
+    left: int
+    added: int = 0
+    unconfirmed: int = 0
+    removed: int = 0
+    failed: int = 0
+
+
+async def _add(run: _Run, row: SmartList, of_list_id: int, chunk: list[int], t: _Tally) -> bool:
+    if run.budget <= 0:
+        return False
+    t.left -= len(chunk)
+    try:
+        resp = await run.write(lambda: run.client.add_users_to_lists({str(of_list_id): chunk}))
+    except Exception as e:  # noqa: BLE001 — retried next run
+        t.failed += len(chunk)
+        log.warning("smart_list_sync add failed list=%s (%s)", row.id, _short(e))
+        return True
+    ok = _confirmed(resp, of_list_id, chunk)
+    t.added += len(ok)
+    t.unconfirmed += len(chunk) - len(ok)
+    return True
+
+
+async def _remove(run: _Run, row: SmartList, of_list_id: int, fid: int, t: _Tally, *,
+                  gone_is_removed: bool) -> bool:
+    if run.budget <= 0:
+        return False
+    t.left -= 1
+    try:
+        await run.write(lambda: run.client.remove_user_from_list(of_list_id, fid))
+        t.removed += 1
+    except Exception as e:  # noqa: BLE001 — retried next run
+        if gone_is_removed and _not_found(e):
+            t.removed += 1
+            return True
+        t.failed += 1
+        log.warning("smart_list_sync remove failed list=%s fan=%s (%s)", row.id, fid, _short(e))
+    return True
+
+
 async def _sync_one(run: _Run, row: SmartList) -> dict:
     from smart_lists_api import (
         _load_normalised_fans, _rules_of, resolve, uses_subscription_facts,
@@ -102,9 +157,11 @@ async def _sync_one(run: _Run, row: SmartList) -> dict:
     fans = await _load_normalised_fans(run.account_id, rules,
                                        roster_fresh=run.roster in _ROSTER_USABLE)
     target = set(resolve(rules, fans))
-    if len(target) > _MAX_MEMBERS:
+    page = getattr(run.client, "platform_list_page", None)
+    cap = page - 1 if page else _MAX_MEMBERS
+    if len(target) > cap:
         return {"sync_state": "error",
-                "sync_error": f"{len(target)} fans match — lists above {_MAX_MEMBERS} are not synced"}
+                "sync_error": f"{len(target)} fans match — lists above {cap} are not synced"}
 
     of_list_id = row.of_list_id
     if of_list_id is None:
@@ -143,54 +200,43 @@ async def _sync_one(run: _Run, row: SmartList) -> dict:
         return {"sync_state": "error",
                 "sync_error": "no fans stored for this creator — removals held"}
 
-    added = unconfirmed = removed = failed = 0
-    left = len(adds) + len(removes)
-    for i in range(0, len(adds), _ADD_CHUNK):
-        if run.budget <= 0:
-            break
-        chunk = adds[i:i + _ADD_CHUNK]
-        left -= len(chunk)
-        try:
-            resp = await run.write(
-                lambda c=chunk: run.client.add_users_to_lists({str(of_list_id): c}))
-        except Exception as e:  # noqa: BLE001 — retried next run
-            failed += len(chunk)
-            log.warning("smart_list_sync add failed list=%s (%s)", row.id, _short(e))
-            continue
-        ok = _confirmed(resp, of_list_id, chunk)
-        added += len(ok)
-        unconfirmed += len(chunk) - len(ok)
-    for fid in removes:
-        if run.budget <= 0:
-            break
-        left -= 1
-        try:
-            await run.write(lambda f=fid: run.client.remove_user_from_list(of_list_id, f))
-            removed += 1
-        except Exception as e:  # noqa: BLE001 — retried next run
-            if _not_found(e):
-                removed += 1
-                continue
-            failed += 1
-            log.warning("smart_list_sync remove failed list=%s fan=%s (%s)",
-                        row.id, fid, _short(e))
+    t = _Tally(left=len(adds) + len(removes))
+    if page:
+        for fid in removes:
+            if not await _remove(run, row, of_list_id, fid, t, gone_is_removed=False):
+                break
+        room = cap - (len(members) - t.removed)
+        for fid in adds[:max(room, 0)]:
+            if not await _add(run, row, of_list_id, [fid], t):
+                break
+    else:
+        for i in range(0, len(adds), _ADD_CHUNK):
+            if not await _add(run, row, of_list_id, adds[i:i + _ADD_CHUNK], t):
+                break
+        for fid in removes:
+            if not await _remove(run, row, of_list_id, fid, t, gone_is_removed=True):
+                break
 
     notes = []
-    if unconfirmed:
-        notes.append(f"{unconfirmed} fans could not be added on OnlyFans")
-    if failed:
-        notes.append(f"{failed} OnlyFans writes failed — retried next sync")
+    if t.unconfirmed:
+        notes.append(f"{t.unconfirmed} fans could not be added on OnlyFans")
+    if t.failed:
+        notes.append(f"{t.failed} OnlyFans writes failed — retried next sync")
     log.info("smart_list_sync list=%s of_list=%s target=%d members=%d +%d -%d left=%d",
-             row.id, of_list_id, len(target), len(members), added, removed, left)
-    return {"sync_state": "pending" if (left or failed) else "ok",
+             row.id, of_list_id, len(target), len(members), t.added, t.removed, t.left)
+    return {"sync_state": "pending" if (t.left or t.failed) else "ok",
             "sync_error": "; ".join(notes) or None,
             "synced_at": datetime.utcnow(),
-            "member_count": len(members) + added - removed}
+            "member_count": len(members) + t.added - t.removed}
 
 
-async def _finish_tombstone(run: _Run, list_id: int, of_list_id: int | None) -> bool:
+async def _finish_tombstone(run: _Run, list_id: int, of_list_id: int | None, held: dict[int, str]) -> bool:
     if of_list_id is not None:
         if run.budget <= 0:
+            return False
+        if why := await asyncio.to_thread(delete_list_refusal, run.account_id, of_list_id,
+                                          functools.partial(list_audience, run.client, of_list_id)):
+            held[list_id] = why
             return False
         try:
             await run.write(lambda: run.client.delete_list(of_list_id))
@@ -210,7 +256,9 @@ async def _finish_tombstone(run: _Run, list_id: int, of_list_id: int | None) -> 
 
 @register(_KIND)
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
-    from smart_lists_api import DELETING
+    from smart_lists_api import DELETING, _rules_of
+    if reason := sync_refusal(str(account_id)):
+        return {"status": "skipped", "reason": reason}
     async with get_session() as s:
         await s.execute(
             update(SmartList)
@@ -221,24 +269,29 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             .where(SmartList.account_id == str(account_id), SmartList.sync_state == DELETING)
             .order_by(SmartList.id)
         )).all()
-        ids = (await s.execute(
-            select(SmartList.id)
+        rows = (await s.execute(
+            select(SmartList.id, SmartList.rules_json)
             .where(SmartList.account_id == str(account_id), SmartList.is_active.is_(True))
             .order_by(SmartList.synced_at, SmartList.id)
-        )).scalars().all()
+        )).all()
+    platform = platforms.for_account(str(account_id))
+    refused = {int(r.id): why for r in rows if (why := rules_refusal(platform, _rules_of(r)))}
+    ids = [int(r.id) for r in rows if int(r.id) not in refused]
+    held = {int(t): why for t, o in tombstones
+            if o is not None and (why := delete_list_ungranted(str(account_id), o))}
+    tombstones = [(t, o) for t, o in tombstones if int(t) not in held]
     if not ids and not tombstones:
-        return {"status": "skipped", "reason": "no_active_lists"}
+        return {"status": "skipped",
+                "reason": next(iter({**refused, **held}.values()), "no_active_lists")}
 
     import automation_executor as ax
     state = _Run(str(account_id), await asyncio.to_thread(ax._make_client, account_id))
-    if refusal(state.client, "list_users_in"):
-        return {"status": "skipped", "reason": f"{PLATFORM_LACKS_PREFIX}list_users_in"}
-    stats: dict = {"lists": len(ids), "ok": 0, "pending": 0, "error": 0, "deleted": 0}
+    stats: dict = {"lists": len(rows), "ok": 0, "pending": 0, "error": 0, "deleted": 0}
     for list_id, of_list_id in tombstones:
-        if await _finish_tombstone(state, int(list_id), of_list_id):
+        if await _finish_tombstone(state, int(list_id), of_list_id, held):
             stats["deleted"] += 1
     for list_id in ids:
-        row = await _claim(int(list_id))
+        row = await _claim(list_id)
         if row is None:
             continue
         try:
@@ -246,8 +299,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         except Exception as e:  # noqa: BLE001 — one list's failure never stops the rest
             log.warning("smart_list_sync list=%s failed: %s", list_id, _short(e))
             result = {"sync_state": "error", "sync_error": _short(e)}
-        await _save(int(list_id), **result)
+        await _save(list_id, **result)
         stats[result["sync_state"]] += 1
     stats["writes"] = _MAX_WRITES_PER_RUN - state.budget
     stats["status"] = "ok"
+    if stops := {**refused, **held}:
+        stats["reason"] = f"partial:{next(iter(stops.values()))}"
+    if refused:
+        stats["refused_rows"] = sorted(refused)
+    if held:
+        stats["held_tombstones"] = sorted(held)
     return stats

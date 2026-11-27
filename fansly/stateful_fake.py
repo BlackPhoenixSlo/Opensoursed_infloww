@@ -21,6 +21,7 @@ READS_RUN = "RECIPES.md: ## Reads confirmed this run"
 LISTS = "RECIPES.md: ## Lists (OF's `add_user_to_list` family)"
 LISTS_1126 = "RECIPES.md: ### Lists (§6.1–6.3) — M"
 FOLLOW = "RECIPES.md: ## Follow / unfollow"
+BLOCK = "RECIPES.md: ### Block / mute (§6.4) — M"
 SUBSCRIBERS = "RECIPES.md: ### A6/A7 — the first subscriber (gift-code trial, paid with a card on file)"
 PRESENCE = "RECIPES.md: ## Presence — and why `statusId` is NOT the online flag"
 POSTS = "RECIPES.md: ## Posts — create and delete"
@@ -36,6 +37,10 @@ BARE_SUBSCRIBERS = "ASSUMPTION: a GET /subscribers without limit/offset answers 
 RENEWAL_OFF = ("INVENTED: renewal_off's autoRenew 0 and future endsAt; the capture has only autoRenew 1 "
                "and an endsAt already past")
 ACK_ANSWER = "ASSUMPTION: the ack's `response` field; the recipe shows only the success flag"
+REFUSED_REMOVE = ("INVENTED: a refused remove keeps the member and echoes the batch without its command; "
+                  "no refused remove is captured")
+IGNORED_ID = "ASSUMPTION: ignoredId is a digit string, as in every captured Fansly id body; the recipe names only keys"
+EDIT_ECHO = "ASSUMPTION: /lists/edit answers the list in the POST /lists row shape; the recipe says only `the list`"
 ME_WALLS = "INVENTED: the /account/me envelope and wall object; the capture names only the `walls` field and one wall id"
 WALL = "900264702215319552"
 
@@ -123,6 +128,8 @@ class StatefulFansly:
         self.lists: dict[str, dict] = {}
         self.members: dict[str, list[str]] = {}
         self.following: set[str] = set()
+        self.blocked: set[str] = set()
+        self.refused_removes: set[str] = set()
         self.posts: dict[str, dict] = {}
         self.calls: list[tuple[str, str, Any, dict]] = []
         self.unmodelled: list[str] = []
@@ -277,7 +284,7 @@ def _lists(fake: StatefulFansly, params: dict, body: Any) -> list:
 _ADD = {"type": 1, "listItem": {"id": ID, "listId": ID}}
 
 
-@_route("POST", "/lists/commands", LISTS, WRITES_FIXTURE)
+@_route("POST", "/lists/commands", LISTS, WRITES_FIXTURE, REFUSED_REMOVE)
 def _list_commands(fake: StatefulFansly, params: dict, body: Any) -> list:
     if not isinstance(body, dict) or list(body) != ["listCommands"] or not body["listCommands"]:
         raise Unmodelled(f"POST /lists/commands: {body!r} is not a captured command batch")
@@ -285,7 +292,7 @@ def _list_commands(fake: StatefulFansly, params: dict, body: Any) -> list:
     kinds = {cmd.get("type") if isinstance(cmd, dict) else None for cmd in cmds}
     if kinds not in ({1}, {2}) or (kinds == {2} and len(cmds) != 1):
         raise Unmodelled(f"POST /lists/commands: only an all-add batch or one remove was captured: {cmds!r}")
-    staged = copy.deepcopy(fake.members)
+    staged, echo = copy.deepcopy(fake.members), []
     for i, cmd in enumerate(cmds):
         if cmd["type"] == 1:
             _expect(cmd, _ADD, f"POST /lists/commands[{i}]")
@@ -299,10 +306,13 @@ def _list_commands(fake: StatefulFansly, params: dict, body: Any) -> list:
             raise Unmodelled(f"POST /lists/commands[{i}]: a repeat add or a non-member remove is not captured")
         if cmd["type"] == 1:
             staged[lid].append(uid)
+        elif uid in fake.refused_removes:
+            continue
         else:
             staged[lid].remove(uid)
+        echo.append(cmd)
     fake.members = staged
-    return copy.deepcopy(cmds)
+    return copy.deepcopy(echo)
 
 
 @_route("GET", "/lists/itemsnew", LISTS_1126, SORT_IDS)
@@ -314,6 +324,25 @@ def _list_items(fake: StatefulFansly, params: dict, body: Any) -> list:
         raise Unmodelled(f"GET /lists/itemsnew: list {lid} does not exist")
     return [{"id": m, "sortId": str(i), "listId": lid, "type": 1, "metadata": ""}
             for i, m in enumerate(fake.members[lid])]
+
+
+@_route("POST", "/lists/edit", LISTS_1126, EDIT_ECHO)
+def _rename_list(fake: StatefulFansly, params: dict, body: Any) -> dict:
+    _expect(body, {"id": ID, "accountId": ID, "pos": None, "type": 1, "label": TEXT}, "POST /lists/edit")
+    if body["accountId"] != fake.account_id or body["id"] not in fake.lists:
+        raise Unmodelled(f"POST /lists/edit: list {body['id']} of account {body['accountId']} does not exist")
+    fake.lists[body["id"]]["label"] = body["label"]
+    return copy.deepcopy(fake.lists[body["id"]])
+
+
+@_route("POST", "/lists/remove", LISTS_1126)
+def _delete_list(fake: StatefulFansly, params: dict, body: Any) -> None:
+    _expect(body, {"listId": ID}, "POST /lists/remove")
+    lid = body["listId"]
+    if lid not in fake.lists:
+        raise Unmodelled(f"POST /lists/remove: list {lid} does not exist")
+    del fake.lists[lid], fake.members[lid]
+    return None
 
 
 @_route("POST", r"/account/(\d+)/followers", FOLLOW, WRITES_FIXTURE)
@@ -333,6 +362,24 @@ def _unfollow(fake: StatefulFansly, params: dict, body: Any, who: str) -> dict:
         raise Unmodelled(f"POST /account/{who}/followers/remove: unfollowing a non-follow is not captured")
     fake.following.discard(who)
     return {"followerId": fake.account_id, "accountId": who, "id": fake.mint(), "createdAt": int(time.time())}
+
+
+@_route("GET", "/ignore", BLOCK)
+def _ignoring(fake: StatefulFansly, params: dict, body: Any) -> dict:
+    _expect(body, None, "GET /ignore body")
+    _expect_params(params, {"noAggregation": "true"}, "GET /ignore")
+    if fake.blocked:
+        raise Unmodelled(f"GET /ignore: only the empty read is captured, not one holding {sorted(fake.blocked)}")
+    return {"ignoring": [], "accounts": []}
+
+
+@_route("POST", "/account/ignore", BLOCK, IGNORED_ID)
+def _block(fake: StatefulFansly, params: dict, body: Any) -> dict:
+    _expect(body, {"ignoredId": ID, "ignoreFlags": 2}, "POST /account/ignore")
+    if body["ignoredId"] in fake.blocked:
+        raise Unmodelled(f"POST /account/ignore: a repeat block of {body['ignoredId']} is not captured")
+    fake.blocked.add(body["ignoredId"])
+    return {"accountId": fake.account_id, **body}
 
 
 @_route("GET", "/subscribers", SUBSCRIBERS, READS_FIXTURE, BARE_SUBSCRIBERS, RENEWAL_OFF)

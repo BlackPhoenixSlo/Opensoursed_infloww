@@ -1381,7 +1381,7 @@ def _drift(nav_ts: str) -> list[str]:
 
 def case_the_page_map_follows_the_nav():
     nav_ts = _nav_text()
-    assert len(_nav_pages(nav_ts)) == 48
+    assert len(_nav_pages(nav_ts)) == 49
     assert _drift(nav_ts) == []
 
 

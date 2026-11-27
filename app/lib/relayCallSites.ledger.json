@@ -11,10 +11,6 @@
     "class": "agency", "state": "off",
     "why": "Master user admin"
   },
-  "components/AgencyNotifications.tsx get /admin/agency-notifications?limit=30": {
-    "class": "agency", "state": "off",
-    "why": "Agency notification feed"
-  },
   "components/ErrorBadge.tsx delete /admin/errors?since_hours=24": {
     "class": "agency", "state": "off",
     "why": "Agency error log"

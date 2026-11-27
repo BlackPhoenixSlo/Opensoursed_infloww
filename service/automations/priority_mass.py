@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select, update
 
 import automation_executor as ax
+import media_cotag
+import platforms
 import send_ops
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -21,6 +23,9 @@ from automations._wordfilter import banned_hit_summary, filter_banned, load_bann
 from db.engine import get_session
 from db.models import Blacklist, Fan, PriorityMassRecipient, PriorityMassRun, ScheduledJob
 from of_client import OFSessionRetired
+from side_effect_gate import (
+    PLATFORM_LACKS_PREFIX, is_live_check_name, live_check, live_check_targets, send_refusal,
+)
 
 log = logging.getLogger("of-relay.automation.priority_mass")
 
@@ -150,14 +155,48 @@ async def exclusions(account_id: str, fan_ids: list[int], *, priced: bool,
 
 
 
-async def _freeze(run: PriorityMassRun) -> dict:
-    from audiences import roster_audience_blocking
+def _platform_refusal(platform: platforms.Platform, run: PriorityMassRun, gated: bool) -> str | None:
+    from audiences import audience_refusal
+    aud = json.loads(run.audience_json or "{}")
+    cotag = bool(platform.backend and media_cotag.would_cotag(run.account_id, _ids(run.media_json)))
+    ungranted = gated and not live_check_targets(run.account_id, KIND)
+    return (audience_refusal(run.account_id, aud.get("user_lists"), aud.get("excluded_user_lists"))
+            or send_refusal(platform, {"locked_text": bool(run.locked_text and run.price_cents > 0)},
+                            would_cotag=cotag)
+            or (f"{PLATFORM_LACKS_PREFIX}{KIND}" if ungranted else None))
+
+
+def _grant_refusal(account_id: str, fan_ids) -> str | None:
+    return live_check(account_id, KIND, frozenset(str(f) for f in fan_ids))
+
+
+async def _persisted_refusal(run: PriorityMassRun) -> str | None:
+    async with get_session() as s:
+        persisted = (await s.execute(select(PriorityMassRecipient.fan_id).where(
+            PriorityMassRecipient.run_id == run.id))).scalars().all()
+    return _grant_refusal(run.account_id, persisted)
+
+
+async def refusal(run: PriorityMassRun) -> str | None:
+    platform = platforms.for_account(run.account_id)
+    gated = is_live_check_name(platform, KIND)
+    if reason := _platform_refusal(platform, run, gated):
+        return reason
+    return await _persisted_refusal(run) if gated and run.status == RUNNING else None
+
+
+async def _freeze(run: PriorityMassRun, gated: bool) -> dict:
+    from audiences import AudienceRefusal, roster_audience_blocking
     aud = json.loads(run.audience_json or "{}")
     client = await asyncio.to_thread(ax._make_client, run.account_id)
-    ids = await asyncio.to_thread(
-        roster_audience_blocking, client,
-        user_lists=list(aud.get("user_lists") or []),
-        excluded_user_lists=list(aud.get("excluded_user_lists") or []))
+    try:
+        ids = await asyncio.to_thread(
+            roster_audience_blocking, client,
+            user_lists=list(aud.get("user_lists") or []),
+            excluded_user_lists=list(aud.get("excluded_user_lists") or []))
+    except AudienceRefusal as e:
+        await _set_status(run.id, ERROR, error=e.reason, only_from=(RESOLVING,))
+        return {"status": "skipped", "reason": e.reason}
     if ids is None:
         await _set_status(run.id, ERROR, error=(
             "the audience could not be read in full from OnlyFans; nothing was sent"))
@@ -166,6 +205,9 @@ async def _freeze(run: PriorityMassRun) -> dict:
                             media=_ids(run.media_json))
     eligible = sorted(f for f in ids if f not in excl)
     claimed = eligible[:MAX_RECIPIENTS]
+    if gated and (reason := _grant_refusal(run.account_id, claimed)):
+        await _set_status(run.id, ERROR, error=reason, only_from=(RESOLVING,))
+        return {"status": "skipped", "reason": reason}
     now = datetime.utcnow()
     async with get_session() as s:
         res = await s.execute(update(PriorityMassRun).where(
@@ -200,8 +242,10 @@ async def _defer(run_id: int, fan_id: int) -> None:
     await _set_recipient(run_id, fan_id, PENDING, only_from=PENDING)
 
 
-async def _leg(run: PriorityMassRun) -> dict:
+async def _leg(run: PriorityMassRun, gated: bool) -> dict:
     aid, rid = run.account_id, run.id
+    if gated and (reason := await _persisted_refusal(run)):
+        return {"status": "skipped", "reason": reason}
     async with get_session() as s:
         # A claim this leg did not make was left by a crash mid-send: unknown, never resent (OF may have created it).
         stale = await s.execute(update(PriorityMassRecipient).where(
@@ -369,15 +413,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             s.expunge(row)
     if row is None or row.account_id != str(account_id):
         return {"status": "skipped", "reason": "no_run"}
+    platform = platforms.for_account(account_id)
+    gated = is_live_check_name(platform, KIND)
+    if row.status in LIVE and (reason := _platform_refusal(platform, row, gated)):
+        log.info("priority_mass refused run=%s account=%s (%s)", rid, account_id, reason)
+        return {"status": "skipped", "reason": reason}
     stats: dict = {"run_id": rid}
     if row.status == RESOLVING:
-        stats.update(await _freeze(row))
+        stats.update(await _freeze(row, gated))
         if await _status(rid) != RUNNING:
             return stats
         row.status = RUNNING
     if row.status != RUNNING:
         return {**stats, "status": "skipped", "reason": row.status}
-    return {**stats, **await _leg(row)}
+    return {**stats, **await _leg(row, gated)}
 
 
 async def counts(run_ids: list[int]) -> dict[int, dict[str, int]]:

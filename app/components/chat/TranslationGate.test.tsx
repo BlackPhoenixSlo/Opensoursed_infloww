@@ -35,7 +35,7 @@ const applied = (): AppliedSettings => ({
   preferences: { tz: null, report_tz: null, week_start: "monday" },
   messaging: { ai_translation: aiTranslation },
   permissions: { enforced: false, pages: null, scope: "all" },
-  flags: { fansly_manager: false },
+  flags: { fansly_manager: false, leak_tracker: false },
 });
 let heldApplied: Promise<AppliedSettings> | null = null;
 

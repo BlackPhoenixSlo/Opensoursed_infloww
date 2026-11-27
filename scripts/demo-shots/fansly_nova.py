@@ -25,6 +25,9 @@ FIRST_MESSAGE = 900539700124344400
 FIRST_GRANT = 900539700124344500
 FIRST_MEDIA = 900539700124344550
 ALBUM = "900539700124344600"
+SCHEDULED_POST = "900539700124344700"
+LIST = "900539700124344710"
+FIRST_NOTIFICATION = 900539700124344720
 NAME = "Nova Reyes"
 THREAD = {"route": f"/messages-pro/{ACCOUNT}/{FAN}", "creator": NAME}
 SESSION = {"token": "demo-shots-throwaway", "user_agent": "demo-shots", "device_id": "demo-shots",
@@ -91,6 +94,16 @@ def raw_payloads(now: datetime) -> dict[str, Any]:
         "messages": {"messages": messages, "accountMedia": grants},
         "group": {"users": [{"userId": ACCOUNT}, {"userId": FAN}], "lastMessage": messages[0], "groupFlags": 0},
         "albums": [{"id": ALBUM, "accountId": ACCOUNT, "public": False, "pos": 0, "title": "Beach", "type": 0}],
+        "scheduled": {"scheduledPosts": [{"postId": SCHEDULED_POST, "status": 1,
+                                          "scheduledFor": int((now + timedelta(days=2)).timestamp() * 1000),
+                                          "postTemplate": {"content": "beach set drops Friday"}}]},
+        "lists": [{"id": LIST, "label": "Top fans"}],
+        "notifications": [
+            {"id": str(FIRST_NOTIFICATION), "type": 3003, "correlationGroupId": FAN,
+             "createdAt": int((now - timedelta(hours=3)).timestamp())},
+            {"id": str(FIRST_NOTIFICATION + 1), "type": 1002, "correlationId": FAN,
+             "createdAt": int((now - timedelta(hours=1)).timestamp())},
+        ],
     }
 
 
@@ -122,7 +135,11 @@ class FixtureShim(FanslyShimClient):
         if path == f"/group/{GROUP}/":
             return raw["group"]
         if path == "/notifications":
-            return {"notifications": []}
+            return {"notifications": raw["notifications"]}
+        if path == "/post/scheduled":
+            return raw["scheduled"]
+        if path == "/lists/account":
+            return raw["lists"]
         if path == "/subscribers":
             return {"stats": {"totalActive": 1, "totalExpired": 0, "total": 1}, "subscriptions": []}
         if path == "/vault/albums":
@@ -162,6 +179,14 @@ class FanslyFixtures(Fixtures):
             return self.shim.get_user(FAN)
         if path == "/api/of/v2/users/list":
             return self.shim.list_users(q.get("ids", []) + q.get("ids[]", []))
+        if path == "/api/of/v2/schedules":
+            return self.shim.schedules()
+        if path == "/api/of/v2/lists":
+            return self.shim.get_lists()
+        if path == "/api/of/v2/users/notifications":
+            return self.shim.notifications(limit=num("limit", 10), offset=num("offset", 0), type=one("type"))
+        if path == "/api/of/v2/users/notifications/count":
+            return self.shim.notifications_count()
         if path == "/api/of/v2/vault/lists":
             return self.shim.vault_lists(limit=num("limit", 10), offset=num("offset", 0))
         if path == "/api/of/v2/vault/media":

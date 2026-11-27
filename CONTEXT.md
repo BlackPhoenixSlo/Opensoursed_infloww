@@ -1531,14 +1531,14 @@ _Avoid_: `claim_failed`, `cell_held`, Not owner, outage
 
 ### Leak tracker
 
-Copy, docs and code in git never name the Removal service's brand, domain or private repos; the brand arrives at runtime (ADR-0069).
+Copy, docs and code in git never name the Removal service's brand, domain or private repos; the brand arrives at runtime (ADR-0074).
 
 **Leak tracker**:
-The Creators page `/creators/leaks` and its Relay routes, a thin client that shows each Leak watch's Leaks as read from the Tracker API (ADR-0068). It holds no scraper, host rules or search keys.
+The Creators page `/creators/leaks` and its Relay routes, a thin client that shows each Leak watch's Leaks as read from the Tracker API (ADR-0073). It holds no scraper, host rules or search keys.
 _Avoid_: leak scan, leak search (the Quick scan), leak monitor, Leak gate (deploy-all's `leak-check.sh` of a pushed tree)
 
 **Removal service**:
-The owner's paid leak-removal business and its server, which runs the Tracker API, every Daily scan and the Notice feed, and alone holds Leak history (ADR-0068).
+The owner's paid leak-removal business and its server, which runs the Tracker API, every Daily scan and the Notice feed, and alone holds Leak history (ADR-0073).
 _Avoid_: the brand name in git, engine, scanner, sidecar, vendor, provider (a `tenant_keys` id)
 
 **Tracker API**:
@@ -1576,7 +1576,7 @@ A Leak watch the CRM reports as paused (Agency flag off, Creator toggle off, or 
 _Avoid_: pause reasons (cut), Cell hold, disabled, off
 
 **Leak watch tombstone**:
-The `leak_watch_tombstone` row (watch_id, agency_user_id, account_id, tenant_id, requested_at, attempts, last_error) the CRM writes before dropping a Leak watch, which a Relay job retries as `DELETE /v1/watches/{watch_id}` until a 2xx (ADR-0071); an agency-user delete lands them first.
+The `leak_watch_tombstone` row (watch_id, agency_user_id, account_id, tenant_id, requested_at, attempts, last_error) the CRM writes before dropping a Leak watch, which a Relay job retries as `DELETE /v1/watches/{watch_id}` until a 2xx (ADR-0076); an agency-user delete lands them first.
 _Avoid_: soft delete, cascade, unlink (the Agency grant's)
 
 **Leak**:
@@ -1621,7 +1621,7 @@ A plain HTTP fetch of a known Leak's URL that updates its Probe state and, on a 
 _Avoid_: check, ping, recovery probe ladder (an expired session's)
 
 **Probe state**:
-The one rolling row per Leak (`probe_state`: last probe time, `last_live_at`, consecutive dead count, last status, `first_dead`, `flaps`, and `dead_since`, the first dead probe of the current dead run) that routine Origin probes overwrite; never part of the Leak event log (ADR-0070).
+The one rolling row per Leak (`probe_state`: last probe time, `last_live_at`, consecutive dead count, last status, `first_dead`, `flaps`, and `dead_since`, the first dead probe of the current dead run) that routine Origin probes overwrite; never part of the Leak event log (ADR-0075).
 _Avoid_: probe log, probe history
 
 **Origin status**:
@@ -1641,7 +1641,7 @@ The event badge on a Leak whose Origin status turned live again after gone; coun
 _Avoid_: reappeared, regression, relapse
 
 **Leak event log**:
-The append-only per-Leak history (`seen`, origin-status change, `google_seen`, `notice`, `notice_outcome`) that every derived date and count is computed from (ADR-0070). `scan_partial` is watch-scoped, so it lives outside it, as an append-only `lane_day` row.
+The append-only per-Leak history (`seen`, origin-status change, `google_seen`, `notice`, `notice_outcome`) that every derived date and count is computed from (ADR-0075). `scan_partial` is watch-scoped, so it lives outside it, as an append-only `lane_day` row.
 _Avoid_: history table, audit log, Witness journal, probe log
 
 **New today**:
@@ -1665,7 +1665,7 @@ A later decision on a Notice, stored as its own event; the only source of Delist
 _Avoid_: status, result
 
 **Notice feed**:
-The daily push of confirmed sends and decisions from the owner's laptop exporter to the Removal service with the Ingest key, replaying every ledger each run (ADR-0072).
+The daily push of confirmed sends and decisions from the owner's laptop exporter to the Removal service with the Ingest key, replaying every ledger each run (ADR-0077).
 _Avoid_: notice sync, import, pull, Notifications panel
 
 **Service status**:
@@ -1685,14 +1685,34 @@ A Leak Google dropped by its own decision, known only from an imported Notice ou
 _Avoid_: deindexed, missing from Google, Cached
 
 **Removal offer**:
-The one drill-in card offering the Removal service's help, shown only to Owner or Admin for Service status `none`, `former` or (with a fresh Notice feed) `unknown`.
+The one drill-in card offering the Removal service's help, shown only to Owner or Admin for Service status `none`, `former` or (with a fresh Notice feed) `unknown`. Its only CTA is "Contact us to start removal", which opens the Start removal popup. Removal is never self-serve: only the service owner's mapping CLI makes a Creator `active`.
 _Avoid_: Offer (Full AI Chat's PPV), upsell, pitch, banner, ad
+
+**Start removal popup**:
+The dialog the Removal offer's CTA opens: the Removal service's generic captioned video with the Creator's own Leaks drawn over it by the CRM on the service's cue times, the Creator's results as text, a Removal preview, and the contact link as its main button. It starts nothing itself.
+_Avoid_: checkout, sign-up, order form, video page
+
+**Removal preview**:
+A before/after slider in the Start removal popup: one of the Creator's Visible Leaks as recorded, against a labelled illustration of a removed page. It is always marked "Preview · not removed".
+_Avoid_: mockup, simulation, removal result, screenshot
+
+**Taken down gallery**:
+Before/after sliders in the Removal area of an `active` or `former` Creator, at most 6, each a Leak that is Gone after notice, dated by its observed gone event and hidden while the feed or read is stale.
+_Avoid_: success stories, removals we did, results wall
+
+**Google view**:
+The drill-in's grid of a Creator's media Leaks as Google image and video results show them, using Google's own thumbnails passed through at view time, blurred by default, never stored, behind a Deployment switch off by default.
+_Avoid_: gallery (that is the Taken down gallery), Google Images tab, screenshot view, image search
+
+**Leak disclaimer**:
+The one-time dialog shown the first time a person opens the Leak tracker's results. It says every link is an automated bot scrape that may be wrong, and that the removal team personally checks each leak before any removal. It is dismissed once per person in that browser. Once Google view previews are on, it adds a line saying previews are automated matches that can be explicit or show someone else, and it shows once more.
+_Avoid_: warning, terms, consent (that is the enrolment consent attestation), onboarding tour
 
 - **Removal client** (a Creator the Removal service works for), **Removal client mapping** (the owner's two CLI maps, source-tool client → Removal client → Agency + Creator; never by handle), **withheld** (an event of an unlinked or ignored source client: counted, never stored, since Notices for non-clients are not kept): tickets 09, 10
 - **Ingest key** (the owner's own key for the Notice feed, never a Tracker key), **stale banner** (shown over counts when the last ingest is over 48 h old): ticket 09
 - **Strong alias** (5+ characters, queried alone), **weak alias** (4 characters, only beside the handle): ticket 05
 - **Waitlist** (a new Leak watch refused because its projected peak day passes the global cap), **`scan_partial`** (a cap made discovery wait; a watch-scoped `lane_day` row, not a Leak event), **`coverage_reduced`** (the day's Google load failed): ticket 04
-- **Today strip** (header counts across Creators), **Leak roster** (one row per Leak watch; avoid roster alone, Roster count), **drill-in** (one Creator's side panel, a full sheet on phone): ticket 08
+- **Today strip** (header counts across Creators, above the All Models view), **Leak roster** (the page's left Creator column, the house `CreatorColumn`: the All Models tag on top, then one entry with a count line per Creator the session can see, tracked or "Not tracked"; a house dropdown on phone; avoid roster alone, Roster count, roster table), **All Models view** (the default main pane: one combined Leak list across Creators with a Creator column; the label is the owner's word here, the scope is still All-Creators scope), **drill-in** (the main pane for one picked Creator, never a side panel or sheet): ticket 08
 - **`leak_daily` row** (one agency-bell row per UTC day with news, a dated snapshot, owner only; avoid: digest, alert): ticket 07
 - **Demo tracker** (the demo's fixture-only Tracker API, held by a zero-egress test), **consent attestation** (the required checkbox at enable): tickets 03, 10
-- **Purge** (30 days after a delete request, Phase 1's daily job; or after a tenant offboard, Phase 4; backups roll off within 30 more): ADR-0071
+- **Purge** (30 days after a delete request, Phase 1's daily job; or after a tenant offboard, Phase 4; backups roll off within 30 more): ADR-0076

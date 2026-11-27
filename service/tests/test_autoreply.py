@@ -21,6 +21,7 @@ from automations.autoreply import _step_in_minutes  # noqa: E402
 from autoreply_config_api import _validate  # noqa: E402
 from automation_executor import run_once  # noqa: E402
 from db.engine import get_session  # noqa: E402
+from fansly_shim import FanslyUnsupported  # noqa: E402
 from db.models import (  # noqa: E402
     Account, AccountAiConfig, AutoreplyState, Fan, FanLease, Message, SkipList,
     Transaction, User, UserAccount,
@@ -802,6 +803,41 @@ async def case_folder_failure_keeps_new_fans():
     assert fake.list_reads == [558], fake.list_reads
 
 
+class RepeatingFolderOF(FolderOF):
+    def list_users_in(self, list_id, *, limit=20, offset=0):
+        return super().list_users_in(list_id, limit=limit, offset=0)
+
+
+class OnePageFolder(FolderOF):
+    platform_list_page = 50
+    def list_users_in(self, list_id, *, limit=20, offset=0):
+        return {"list": super().list_users_in(list_id, limit=limit, offset=offset), "hasMore": True}
+
+
+class LackingFolder(FolderOF):
+    def list_users_in(self, list_id, *, limit=20, offset=0):
+        raise FanslyUnsupported("sort mode not observed", reason="platform_lacks:list_users_in")
+
+
+async def case_folder_lack_refuses_the_folder_and_keeps_new_fans():
+    incomplete = "platform_lacks:list_users_in:incomplete"
+    for n, (fake, sent, lack) in enumerate((
+            (RepeatingFolderOF({561: [8802]}), [8801, 8802], None),
+            (OnePageFolder({561: [8802]}), [8801], incomplete), (OnePageFolder({}, fail=True), [8801], incomplete),
+            (LackingFolder({}), [8801], "platform_lacks:list_users_in"))):
+        aid = f"ar_folder_lack_{n}"
+        await _seed_account(aid, extra={"list_ids": [561], "new_fans_enabled": True})
+        await _seed_fan(aid, 8801, sub_days=1)
+        await _seed_fan(aid, 8802, sub_days=30)
+        ax._make_client = lambda account_id, fake=fake: fake  # type: ignore[attr-defined]
+        await _counting_llm()
+        res = await run_once(aid, "autoreply", payload={})
+        peek = _autoreply.peek_folder(aid, [561])
+        assert sorted(c for c, _ in fake.sent) == sent and res["status"] == "ok", (n, fake.sent, res)
+        assert res.get("folder_error") == lack and res.get("reason") == (lack and f"partial:{lack}"), (n, res)
+        assert (peek.members is None and peek.failed_age_s is not None) if lack else peek.partial, (n, peek)
+
+
 async def case_no_source_replies_to_nobody():
     aid = "ar_nosource"
     await _seed_account(aid, extra={"folders_enabled": False, "new_fans_enabled": False})
@@ -956,6 +992,7 @@ _harness.run(
     case_folder_cap_skips_high_spender,
     case_new_fan_qualifies,
     case_folder_failure_keeps_new_fans,
+    case_folder_lack_refuses_the_folder_and_keeps_new_fans,
     case_no_source_replies_to_nobody,
     case_delay_zero_replies_at_once,
     case_randomised_window,

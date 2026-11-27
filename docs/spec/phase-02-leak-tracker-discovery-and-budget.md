@@ -51,7 +51,7 @@ In the CRM:
 16. As a Team Leader, I want results where only the title names the Creator hidden until the Leak judge calls them real, so that the page never shows a guess.
 17. As a Team Leader, I want results the judge calls fake never shown and never judged again, so that the same false hit doesn't come back daily.
 18. As a Team Leader, I want the Creator's own OnlyFans, Instagram and X pages and the Removal service's own hosts never counted as Leaks, so that their real profiles don't inflate the count.
-19. As a Team Leader, I want every Google image or video result stored as a `media` Leak linked to its landing page, with no image fetched or kept, so that image-only leaks are tracked without storing the content.
+19. As a Team Leader, I want every Google image or video result stored as a `media` Leak linked to its landing page, with no media fetched by any scan and only the thumbnail URL Google served kept (stories 47-57), so that image-only leaks are tracked without storing the content.
 20. As a Team Leader, I want a known Leak marked visible in Google when a search returns it, and not visible only when the full pass ran every (vertical, field) query that ever returned it to the end and missed it, so that Cached never rests on a search that didn't run, and never sticks on a query that no longer runs.
 21. As a Team Leader, I want Leaks found the first time a lane ever runs for a Creator to read "Found on first scan", not "new", so that a first full search doesn't look like a leak wave.
 22. As a Team Leader, I want a Today strip at the top of the Leak tracker page (new today, came back today, gone today, Creators fully checked today), so that I see the day's change in one line.
@@ -78,7 +78,22 @@ In the CRM:
 43. As the owner, I want Pending hits never judged within 30 days deleted, so that unconfirmed URLs don't pile up.
 44. Built by Phase 4 (its stories 48 and 52): the Demo tracker serves the Today strip, every lane state and a waitlisted Creator from fixtures. Until then the demo keeps the tracker off.
 45. As a developer, I want every Phase 2 service table keyed by `watch_id` or `tenant_id` (the one-day `serp_cache` excepted, which holds no tenant data past its day), so that Phase 1's purge removes a deleted watch's discovery data with the rest.
-46. As the owner, I want the same Google query on the same UTC day run once across all watches and tenants, charged to the first reserver, while each watch keeps its own Leak rows, so that two Agencies tracking one Creator don't pay twice (ADR-0070: scan work is deduped, Leak rows never shared).
+46. As the owner, I want the same Google query on the same UTC day run once across all watches and tenants, charged to the first reserver, while each watch keeps its own Leak rows, so that two Agencies tracking one Creator don't pay twice (ADR-0075: scan work is deduped, Leak rows never shared).
+
+*Google view (owner 2026-11-27, wayfinder tickets 11 and 14):*
+
+47. As a Team Leader, I want a List / Google view switch on a Creator's drill-in, the Google view showing that Creator's media Leaks as tiles like an image search, so that I can see at a glance what a fan finds.
+48. As the owner, I want the service to keep, for a media Leak, only the https thumbnail URL the Google results page served for its tile, on Google's own image CDNs and never as a `data:` URI, cleared when its query leaves the plan or the Leak's Google visibility turns false, and purged with the Leak, so that no leaked content is stored.
+49. As a Team Leader, I want a tile only for a Leak with a `preview` (media, thumbnail kept, still visible in Google, previews on), labelled "Seen in Google Images · <date>" and newest first, so that the view shows what Google shows without inventing a rank.
+50. As a Team Leader, I want every preview loaded by id through the CRM, so that my browser never contacts Google or the Removal service and no caller can name a URL.
+51. As the owner, I want the service to fetch a stored thumbnail only after checking its host, port, public address, redirects, size, time and image bytes, and to answer `no-store`, so that a scraped URL can't reach a private address or leave explicit bytes in any cache.
+52. As a Team Leader, I want tiles blurred by default, a placeholder with no image request while SFW is on, and one Reveal button that resets when the Creator, the Agency or SFW changes, so that explicit previews never show unasked.
+53. As a Team Leader, I want each tile to say "Google preview · image may be unrelated" and to link out like its list row, so that a picture of someone else is never read as confirmation.
+54. As a Team Leader, I want a failed preview to read "Preview unavailable" with the Leak's pill unchanged, so that a CDN error never looks like a removal.
+55. As the owner, I want previews behind a Deployment switch, `LEAK_TRACKER_PREVIEWS`, off by default in every tree until I record the legal go, with the Google view showing text tiles while it is off, so that nothing explicit ships before the legal review.
+56. As a Team Leader, I want the Leak disclaimer to gain a line about previews once they are on, shown once more to people who dismissed the old text, so that everyone has read the preview rule.
+57. Built by Phase 4 on the Demo tracker: placeholder previews from local fixtures, with zero egress.
+58. As a Team Leader on All Models, I want one "Seen in Google Images" strip of up to 12 preview tiles across the Creators I can see, newest first, each naming its Creator and opening that Creator's Google view, so that I see what Google Images shows across the agency at a glance.
 
 ## Implementation Decisions
 
@@ -99,6 +114,9 @@ In the CRM:
 | Coverage logic (`leakCoverage.ts`) | This repo, `app/` | New. Pure: Today strip sums, lane rows, day markers, freshness copy. |
 | `LeakTodayStrip`, `LeakCoverage` components; roster and drill-in | This repo, `app/` | New components; Phase 1's page and drill-in modified to mount them. |
 | `leakIdentityForm.ts` reducer | This repo, `app/` | Modified (Phase 1's). Adds `aliasLane` and the trimmed-field note. |
+| Preview store and thumb route (`tracker_preview`) | Removal service repo | New. Keeps `thumb_url` from full-pass tiles, derives `preview`, serves `/thumb` with the fetch-time checks. Reuses the existing thumbnail guard's allowlist and Phase 1's probe destination checks. |
+| Leak tracker relay module (`leak_tracker_api`), thumb route | This repo, `service/` | Modified. One GET route by id, the previews switch, `preview` nulled while it is off. |
+| Preview logic (`leakPreview.ts`), `LeakGoogleView` | This repo, `app/` | New. Pure tile state and copy; the view switch and grid in the drill-in. |
 | Demo tracker fixtures | This repo | Not here: Phase 4 builds the Demo tracker with every Phase 2 shape and state. |
 
 **Interfaces.**
@@ -124,6 +142,13 @@ In the CRM:
 - `tracker_judge.admit_hit(watch, hit) -> Leak | PendingHit | None` and `judge_pending(day)`.
 - `tracker usage --since YYYY-MM-DD [--tenant T]`, `tracker caps global --daily-loads N --daily-judge N`, `tracker caps tenant T --month-loads N`. The Creator cap stays Phase 1's `tenant cap <tenant_id> <n>` (`tenants.creators_max`).
 - Relay: no new route. Phase 1's `GET /setup` passes through `accepting_new`, `creators_max` and `creators_used` from `/v1/me`; the roster and drill-in reads pass through `today` and `lanes`. Phase 1's `PUT /watches/{account_id}` keeps `{synced}` and adds `admission: "waitlist" | "creator_cap" | null` and `creators_max?`, answering 200 after it saves the `leak_watch` row.
+- Relay: Phase 1's `GET /all` takes `preview=1`: it calls `/v1/leaks` with the same grant-filtered `watch_id` set plus `preview_only=1` and `limit=12`, and answers 404 with the previews switch off (story 58).
+- Relay: `GET /admin/leaks/watches/{account_id}/leaks/{leak_id}/thumb` (stories 50-55, 58).
+  - The four Tracker gates, the path rule, `runtime_switches.on("LEAK_TRACKER_PREVIEWS")` (`off_only`, default off) and the local `leak_watch` row, all checked before any egress; 404 otherwise. No URL parameter (the `vault_poster` precedent).
+  - Calls the Tracker route below, never the read cache. Streams and stores nothing. Sets its own `Content-Type` (only `image/jpeg`, `image/png`, `image/webp` or `image/gif`), `X-Content-Type-Options: nosniff` and `Cache-Control: no-store` on every status.
+  - Upstream 401 marks the key `invalid` and 410 drops the stale watch, as Phase 1 does; the browser gets 404 either way. Logs count fetches and refusals only.
+  - While the switch is off, every read passes `preview: null`.
+- App: `leakPreview.ts` exports `thumbState(sfwOn, previewsOn, revealed) -> "placeholder" | "blurred" | "clear"`, `stripTiles(rows) -> Tile[]` (at most 12, each with its Creator's name and a `?open=<account_id>&view=google` link) and `previewTiles(leaks) -> Tile[]` (`preview` non-null, newest `seen_at` first, then `first_seen_at`; label and caption copy).
 - App: `leakCoverage.ts` exports:
   - `todayStrip(creators) -> {new, cameBack, gone, firstRun, checked, partial, total}`;
   - `laneRows(lanes, now) -> Row[]` (label, state chip, last-success text, next-attempt text, skipped names);
@@ -146,13 +171,15 @@ lane_day              (watch_id, day, lane, outcome ok|partial|failed, reason NU
                        PRIMARY KEY (watch_id, day, lane))                             -- append-only, one row per lane run
 pending_hits         + query_id, verdict pending|unsure|real|fake DEFAULT pending,
                        judged_by NULL, judged_at NULL, rounds INT DEFAULT 0          -- P1's seed queue drains through the judge
-leaks                + google_fields_json, landing_key NULL                           -- media → landing
+leaks                + google_fields_json, landing_key NULL, thumb_url NULL, thumb_query_id NULL  -- media → landing; thumb only for media
 serp_cache            (day, vertical, text, page, results_json, PRIMARY KEY (day, vertical, text, page))
 tracker_usage         (tenant_id, day, lane, loads, sessions, session_s, proxy_bytes, captchas,
                        jev_calls, deepseek_calls, deepseek_in_tok, deepseek_out_tok, crawl_s, finds,
                        PRIMARY KEY (tenant_id, day, lane))
 ```
 Phase 1's `daily_scans.outcome` gains `partial`, set when any of that day's `lane_day` rows is `partial` or `failed`.
+
+`thumb_url` sits on the `leaks` row, so the watch purge removes it with the Leak. `thumb_query_id` is the query whose tile set it; when that query's (vertical, field) pair leaves `google_fields_json`, or visibility turns false, both are cleared.
 
 `lane_state`, `lane_day` and `load_reservation` are appended to Phase 1's `tracker_purge.WATCH_TABLES` (column `watch_id`), so a purged watch leaves no row in them; `test_tracker_lanes.py` asserts it. `serp_cache` is cleared at the next UTC day and `tracker_usage` holds tenant totals only, so neither is on the list.
 
@@ -171,6 +198,13 @@ Phase 1's `daily_scans.outcome` gains `partial`, set when any of that day's `lan
   - The `coverage_reduced` day state is derived from `google_failed`.
   - `seen` keeps Phase 1's `first_scan: bool` and gains the query id.
   - `google_seen` carries `visible: true | false | null` and is written only when visibility changes; `null` is unknown.
+- The leak reads (`/v1/creators/{id}/leaks`, `/v1/leaks`) add `preview: {vertical: images|videos, seen_at} | null`, non-null only for a `media` Leak with `thumb_url`, visibility true and the service's `TRACKER_PREVIEWS` on (default off). The URL never leaves the service.
+- `/v1/leaks` takes `preview_only=1`: only Leaks with a non-null `preview`, ordered by `preview.seen_at` newest first, then `leak_id`.
+- `GET /v1/creators/{watch_id}/leaks/{leak_id}/thumb` → the image bytes.
+  - Tracker key; tenant, live watch and Leak bound in one lookup. 401 bad key, 410 `watch_deleted`, 404 for another watch's Leak, a null `preview`, or any failed check below.
+  - Fetch-time checks: canonical hostname on the thumbnail allowlist matched on DNS-label boundaries, https on 443, no userinfo, the connection made only to a public address checked after DNS (Phase 1's probe destination rule), no redirects, 3 MB and 5 s caps, a per-tenant rate and concurrency cap.
+  - The first bytes must be JPEG, PNG, WebP or GIF; the response carries that fixed type, `nosniff` and `Cache-Control: no-store` on every status.
+  - Logs carry no URL, key or handle.
 
 **Lanes in detail.**
 - **Mega lookup** (daily, $0, no reservation).
@@ -185,7 +219,9 @@ Phase 1's `daily_scans.outcome` gains `partial`, set when any of that day's `lan
   - One web query: `"<handle>" OR "<strong alias>"… OR "<ig>" OR "<x>"`, past-day filter (`tbs=qdr:d`, the laptop leak tools' SERP URL builder), page 1. Weak aliases are left out.
   - Trimmed in the 05 order to Google's query-length limit.
   - It only ever sets visibility true; a past-day query can't show absence, so it never enters a Leak's `google_fields_json` as a query that must miss.
-  - Browserbase with residential proxies on, as the service's media gather already does.
+  - Browserbase with proxies off and the CAPTCHA solver on (`solveCaptchas: true`), as the vendored SERP backend already runs (owner 2026-11-27: proxy data is the scarce part of the Browserbase plan, ~0.94 of 1 GB used this period, measured). The same session settings hold for every Google lane (fresh, full, images, videos).
+  - Every SERP load blocks image, font and media requests the parser does not need: web and video verticals block all three; the images vertical blocks fonts and media, and images only where a parser test shows the same results and thumbnail URLs with them blocked.
+  - Walls keep the existing handling: a walled load retries once in a fresh session; a second wall ends the query incomplete. There is no proxy fallback; if the pilot measures walls, that becomes an owner question, and proxies stay off until the owner answers.
   - A failed load writes `scan_partial` with `google_failed`. There is no fallback engine.
 - **Full Google pass** (Weekly slot, `tracker_plan`, ≤31 loads by construction):
 
@@ -213,13 +249,13 @@ Phase 1's `daily_scans.outcome` gains `partial`, set when any of that day's `lan
 - **Origin probe** (Phase 1's): Phase 2 only writes its `lane_state` row.
 - **Waiting and paused.** Only lanes that spend reserved units wait on a cap (`google_fresh`, `google_full`, and judging); the $0 lanes keep running. A paused watch runs no lane, and its lanes read `paused` while keeping their last success.
 - **First run.** A Leak first seen by the first-ever successful run of a lane for that watch gets `seen.first_scan = true`, so it reads "Found on first scan" and is excluded from New today. The Quick scan seed is Phase 1's first-scan set.
-- **Usage.** Each lane adds its units to `tracker_usage` for (tenant, UTC day, lane) in the same transaction that settles its reservation. `finds` counts confirmed Leaks the lane first saw that day. `proxy_bytes` is the Browserbase session's reported proxy bytes, or 0 when the session reports none.
+- **Usage.** Each lane adds its units to `tracker_usage` for (tenant, UTC day, lane) in the same transaction that settles its reservation. `finds` counts confirmed Leaks the lane first saw that day. `proxy_bytes` is the Browserbase session's reported proxy bytes, or 0 when the session reports none; with proxies off it is 0 on every Google lane, and a non-zero value is a fault the report shows.
 
 **Hit admission and the Leak judge.**
 - Drop hits on the Creator's own OnlyFans, Instagram or X URLs, on the Removal service's own hosts, and on aggregator hosts. These rules are reused from the service's official-URL and aggregator filters.
 - A hit whose URL holds the handle or a strong alias, or a weak alias together with the handle, becomes a Leak.
 - A hit where only the title holds them becomes a Pending hit. Anything else is dropped.
-- Image and video results become `media` Leaks keyed `url_key(landing) + "#google_images" | "#google_videos"`, with `landing_key` set. Their pill uses the landing page's Origin status, and no media is fetched.
+- Image and video results become `media` Leaks keyed `url_key(landing) + "#google_images" | "#google_videos"`, with `landing_key` set. Their pill uses the landing page's Origin status, and no media is fetched. The tile's thumbnail URL is kept as `thumb_url` only when it is https on the thumbnail allowlist; it never enters a judge payload or a public scan.
 - The judge runs Jev first: p ≤ 0.2 is fake, p ≥ 0.8 is real (the laptop leak tools' measured band, pinned model). The middle band, and any Jev failure, goes to DeepSeek in batches with the laptop leak tools' judge prompt as input. The display name is passed as confirmation context.
 - Each model HTTP attempt reserves one `judge_call` first. Over the cap, judging waits and the watch's day gets a `scan_partial` `judge_cap`.
 - The judge reads the watch's current identity. A Pending hit whose title no longer names any current field (an alias was removed) is deleted without a model call.
@@ -240,7 +276,14 @@ Phase 1's `daily_scans.outcome` gains `partial`, set when any of that day's `lan
   - Before submit, the enable dialog reads `accepting_new`, `creators_max` and `creators_used` from the setup read. When `accepting_new` is false it warns "The removal service is full right now; this Creator joins the waitlist". When `creators_used >= creators_max` it warns "Your agency's Creator limit ({cap}) is reached".
   - A refused save still stores the `leak_watch` row with `admission` set. The roster shows a "Waitlist" or "Limit reached" chip in place of the pills.
   - Phase 1's hourly `leak-watch-sync` skips rows with `admission` set, overriding its `synced_at is null` push, except once per UTC day: it pushes when `admission_tried_on` is before today, then sets `admission_tried_on` to today. A 2xx clears `admission` and sets `synced_at`.
-- Every new field reaches the app only through Phase 1's gated routes, so the four Tracker gates and the 404-when-off rule cover Phase 2 unchanged.
+- **Google view** (drill-in), plus one All Models strip.
+  - All Models shows one "Seen in Google Images" strip above the combined list: `stripTiles` from `/all?preview=1`, each tile with its Creator's name, opening that Creator's drill-in at `?view=google`. Newest `seen_at` first, no rank. Same `thumbState`, labels and page-level Reveal. Hidden when empty, while previews are off, and on phones under 640 px it scrolls sideways inside its own row.
+  - A labelled List / Google view switch above the Leak list, with programmatic selection; `?view=google` keeps it in the URL (the `?open=` precedent). Focus stays on the switch through loading and errors.
+  - A tile shows the image in its `thumbState`, the Leak site, the title, "Seen in Google Images · <date>" (or Videos), the Leak pill and "Google preview · image may be unrelated", the last also in its accessible name. The image's alt is "Google preview", never the scraped title. It links out as its list row does. No search-engine logo or colours.
+  - SFW on (`useSfw`): placeholder, no image request, no Reveal. SFW off: lazy-loaded, `blur-md` whatever the hover blur mode. One "Reveal previews" button (`aria-pressed`, `useState`, never stored) resets on Creator change, Agency change, SFW on, reload and leaving.
+  - A failed image reads "Preview unavailable". With previews off, tiles show the Kind icon. The empty state is "No Google previews for this Creator yet."; under 640 px the grid is one column.
+  - Once previews are on, the Leak disclaimer (Phase 1 story 67) adds: "Google previews are automated search matches. They can be explicit or show someone else. They stay blurred until you reveal them, and this app keeps no copy." Its seen key gains a version suffix.
+- Every new field reaches the app only through Phase 1's gated routes, so the four Tracker gates and the 404-when-off rule cover Phase 2 unchanged. The thumb route adds the previews switch on top.
 
 **Deploy and cost.**
 - The service needs `TYPESAFE_API_KEY` (Jev) on the VPS beside its existing DeepSeek and Browserbase keys. That step belongs to the owner.
@@ -255,13 +298,21 @@ Seams, by public interface. Nothing is added to `service/` for tests, and no rea
   - Refusals: a `409 waitlist` or `409 creator_cap` on save stores the row with `admission` set and answers `200` with `{synced: false, admission}`. Hourly ticks the same UTC day make no call for that row while the fake keeps answering 409; the first tick of the next UTC day pushes once and sets `admission_tried_on`; a 2xx clears `admission`.
   - Gates: with any gate off, the routes still answer 404.
   - Demo: Phase 1's `demo/tests/test_leak_tracker_off.py` stays green (tracker off, every `/admin/leaks` route 404, the new write routes locked, no egress), run explicitly in Acceptance.
+- **CRM relay seam, previews.** File: `service/tests/test_leak_previews.py`, same setup. Cases:
+  - previews switch off → `preview: null` on every read and the thumb route 404 with no call to the fake;
+  - `/all?preview=1` sends only the session's granted `watch_id`s with `preview_only=1` and `limit=12`, and answers 404 with the switch off;
+  - wrong Agency, same Agency without the Creator grant, a custom role without the Leaks page, a deleted local row → 404 with no call to the fake;
+  - a fake answering 401 marks the key invalid, 410 drops the watch, both 404 to the browser;
+  - an upstream `image/svg+xml` or `text/html` → 404; every response, error included, carries `no-store` and `nosniff`;
+  - the route takes no URL parameter, and the read cache never serves it.
 - **App pure seam.** Vitest tables in `leakCoverage.test.ts`:
   - `todayStrip` with first-run, paused and pending watches;
   - `laneRows` for every state × reason, including `trimmed` and the `never` and `paused` rows;
   - `dayMarker` over every `today.state`.
   - It also asserts `FRESHNESS` and no row text contains "next full search".
   - `leakIdentityForm.test.ts` gains `aliasLane` rows for lengths 4 and 5.
-- **App render seam.** `page.test.tsx` for the leaks page renders the Today strip, roster chips (Partial check, Waitlist, Limit reached) and the Coverage section from fixture responses, at desktop and phone widths. It also opens the enable dialog with `accepting_new: false` and with `creators_used = creators_max` and asserts each warning shows before submit, and renders the identity form with a 4- and a 5-letter alias and asserts "Only with the handle" and "Searched on its own".
+  - `leakPreview.test.ts`: `thumbState` over every (sfwOn, previewsOn, revealed), `previewTiles` order, filter and copy, and `stripTiles` cap, Creator name and link.
+- **App render seam.** `page.test.tsx` for the leaks page renders the Today strip, roster chips (Partial check, Waitlist, Limit reached) and the Coverage section from fixture responses, at desktop and phone widths. It also opens the enable dialog with `accepting_new: false` and with `creators_used = creators_max` and asserts each warning shows before submit, and renders the identity form with a 4- and a 5-letter alias and asserts "Only with the handle" and "Searched on its own". It also renders the Google view: no `<img>` under SFW, blurred tiles otherwise, Reveal reset on a Creator change, "image may be unrelated" in each tile's accessible name, "Preview unavailable" on an image error, and `?view=google` restoring the view. On All Models it renders the strip with Creator names, hides it when empty, and a tile click opens that Creator at `?view=google`.
 - **Service seams** (Removal service repo, pytest, existing `app/tests` layout):
   - `test_tracker_plan.py`: tables for identity → plan. It checks:
     - the handle-only plan;
@@ -279,7 +330,7 @@ Seams, by public interface. Nothing is added to `service/` for tests, and no rea
     - two watches in two tenants with the same handle making one Google request per query, charged to the first, each getting its own Leak row;
     - Mega index `deleted` once → unchanged, twice in a row → gone; absent → unchanged;
     - 21 known listings → 20 fetched, the oldest first, lane `reduced` with `listing_rotated`;
-    - a media result storing a `media` Leak with `landing_key`, its pill following the landing Leak, and no request to the media URL at the stub;
+    - a media result storing a `media` Leak with `landing_key`, its pill following the landing Leak, no request to the media URL at the stub, `thumb_url` kept for an allowlisted https tile and not for a `data:` or other-host tile, and cleared when its alias is removed;
     - listing recheck → new `site_search` Leaks;
     - fresh pass with a failed load → `coverage_reduced` and no other engine called;
     - full pass under a partial grant → trimmed fields, `scan_partial`, `carry_json`, and next-day carry-over exactly once;
@@ -290,8 +341,9 @@ Seams, by public interface. Nothing is added to `service/` for tests, and no rea
     - $0 lanes still running over the cap;
     - a paused watch running nothing.
   - `test_tracker_judge.py`: the URL, title and weak-alias admission table; own-profile and aggregator drops; the Jev band, with Jev down falling through to DeepSeek; a Jev 5xx retry consuming a second `judge_call`; a Pending hit for a removed alias deleted with no model call; Phase 1's seed `pending_hits` rows judged like new ones; `unsure` getting one more round; `fake` never rejudged; the judge cap leaving rows pending and writing `scan_partial`; the 30-day deletion; the `media` key and `landing_key`.
-  - `test_tracker_api.py` (Phase 1's, extended): `/v1/me` `accepting_new`; the `409` shapes only on create; the `today` and `lanes` shapes; tenant isolation of the new fields.
-  - `test_tracker_usage.py`: lanes run against stubs fill `tracker_usage`; `tracker usage --since` prints cost per Creator per month (Jev and DeepSeek calls and tokens apart, proxy bytes) and crawl minutes per Creator per week from a fixed fixture, and no handle appears in its output.
+  - `test_tracker_api.py` (Phase 1's, extended): `/v1/me` `accepting_new`; the `409` shapes only on create; the `today` and `lanes` shapes; tenant isolation of the new fields; `preview` null with previews off, visibility false or no thumb.
+  - `test_tracker_preview.py`: the thumb route against a local CDN stub: tenant A's key on B's Leak 404 with no stub request; 410 on a deleted watch; a stored URL on a look-alike host, a non-443 port, with userinfo, or resolving to a private address refused before connecting; a redirect not followed; an over-3 MB or slow body cut; mislabelled, SVG and truncated bodies 404; `no-store` on every status; no URL in the log.
+  - `test_tracker_usage.py`: lanes run against stubs fill `tracker_usage`; `tracker usage --since` prints cost per Creator per month (Jev and DeepSeek calls and tokens apart, proxy bytes, 0 for every Google lane) and crawl minutes per Creator per week from a fixed fixture, and no handle appears in its output.
 
 Prior art: in this repo, `app/components/chat/fanDrawerForm.test.ts` (pure tables), `app/app/creators/proxy/page.test.tsx` (page render) and `service/tests/test_s4s_api.py` (`TestClient` on an agency-scoped feature). In the Removal service repo, its wire stubs and its existing Mega index client tests, plus the laptop leak tools' judge and Jev tests as the source of the band cases.
 
@@ -301,18 +353,21 @@ set -e
 cd "$(git rev-parse --show-toplevel)"
 PY=$PWD/venv/bin/python
 nice -n 10 $PY service/tests/test_leak_tracker_discovery.py
+nice -n 10 $PY service/tests/test_leak_previews.py
 nice -n 10 $PY -m pytest -q demo/tests/test_leak_tracker_off.py demo/tests/test_routes.py
-(cd app && nice -n 10 pnpm exec vitest run components/leaks/leakCoverage.test.ts components/leaks/leakIdentityForm.test.ts app/creators/leaks/page.test.tsx)
+(cd app && nice -n 10 pnpm exec vitest run components/leaks/leakCoverage.test.ts components/leaks/leakIdentityForm.test.ts components/leaks/leakPreview.test.ts app/creators/leaks/page.test.tsx)
 test -d app/components/leaks && test -d app/app/creators/leaks
 if grep -rniE 'next full search' app/components/leaks app/app/creators/leaks; then exit 1; fi
 grep -q 'admission' service/db/models.py
 nice -n 10 scripts/run-tests.sh
 : "${REMOVAL_REPO:?set REMOVAL_REPO to the Removal service repo checkout}"
-(cd "$REMOVAL_REPO" && nice -n 10 python3 -m pytest -q app/tests/test_tracker_plan.py app/tests/test_tracker_budget.py app/tests/test_tracker_admission.py app/tests/test_tracker_lanes.py app/tests/test_tracker_judge.py app/tests/test_tracker_api.py app/tests/test_tracker_usage.py)
-for m in plan budget admission lanes judge usage; do f="$REMOVAL_REPO/app/tracker_$m.py"; test -f "$f"; if grep -niE 'cse_scanner|serper' "$f"; then exit 1; fi; done
+(cd "$REMOVAL_REPO" && nice -n 10 python3 -m pytest -q app/tests/test_tracker_plan.py app/tests/test_tracker_budget.py app/tests/test_tracker_admission.py app/tests/test_tracker_lanes.py app/tests/test_tracker_judge.py app/tests/test_tracker_api.py app/tests/test_tracker_usage.py app/tests/test_tracker_preview.py)
+for m in plan budget admission lanes judge usage preview; do f="$REMOVAL_REPO/app/tracker_$m.py"; test -f "$f"; if grep -niE 'cse_scanner|serper' "$f"; then exit 1; fi; done
 # manual: owner sets TYPESAFE_API_KEY on the Removal service VPS, deploys the service, runs `tracker caps global --daily-loads 300 --daily-judge 2000`, `tracker caps tenant <AE> --month-loads 1000` and Phase 1's `tenant cap <AE> 5`
 # manual: AE pilot on 3-5 Creators for 14 days (two Weekly slots each); owner opens /creators/leaks on AE: Today strip, one Partial/Reduced day if any, drill-in Coverage rows with last OK / next attempt
 # manual: owner runs `tracker usage --since <pilot start>` and records cost per Creator per month and crawl minutes per Creator per week; sets the real caps from them
+# manual: verify-app on a local stack with a fixture Tracker and local image fixtures: Google view under SFW on (placeholders, zero image requests in the network log), SFW off (blurred), Reveal, a wrong-person fixture tile labelled, the All Models strip with a tile opening its Creator's Google view, desktop and phone screenshots, plus the thumb route's response headers
+# manual: previews stay off on AE (`LEAK_TRACKER_PREVIEWS` unset) until the owner records the legal go (wayfinder ticket 14); a gated AE session then reads `preview: null` and the thumb route answers 404
 ```
 
 ## Depends on
@@ -337,7 +392,8 @@ for m in plan budget admission lanes judge usage; do f="$REMOVAL_REPO/app/tracke
 - The purge jobs: the watch purge is Phase 1's, and Phase 2 only adds its watch-keyed tables to `WATCH_TABLES`; backups and tenant offboarding are Phase 4's.
 - Headless-browser fallback for JS-only leak sites, and Telegram channel crawling. That is VPS browser cost the pilot hasn't measured; `"H" site:t.me` in Google covers Telegram in v1.
 - Crawl worker-hours in admission. Ticket 04 refuses on loads only, and crawl minutes are measured first.
-- Fetching, storing or thumbnailing any media (ticket 08: none).
+- Storing or re-encoding any media, or fetching it during a scan. The only fetch is the view-time thumb route, behind the previews switch (stories 47-57, amending ticket 08's "Thumbnails: none").
+- Per-Creator strips on All Models, a Google rank and per-tile reveal (wayfinder ticket 11).
 - Filing notices from the CRM, which is out of the map's scope.
 - A slop run. This is not a mass-send or many-user change on the CRM side, and the owner's rule is no slop unless asked.
 
@@ -357,13 +413,20 @@ for m in plan budget admission lanes judge usage; do f="$REMOVAL_REPO/app/tracke
 - ASSUMPTION: the tracker's load cap counts only tracker loads, and the Quick scan keeps its own Browserbase gate (rung 5). Overturned if both draw on one Browserbase budget that the owner wants capped together.
 - ASSUMPTION: the registry crawl uses plain HTTP only on the VPS (rung 5: no browser cost until it is measured). Overturned if the pilot shows key hosts are JS-only.
 - ASSUMPTION: unsure Pending hits get one more DeepSeek round, and unjudged rows are deleted after 30 days (rung 4, after the laptop leak tools' one-rejudge rule). Overturned if real Leaks are found among the expired rows.
-- ASSUMPTION: a watch-scoped `scan_partial` lives in the append-only `lane_day` table, not in Phase 1's per-Leak `leak_events`, because a watch with zero Leaks must still record a capped day and Phase 4's `complete` reads it (rung 4: additive table, `leak_events.leak_id` untouched). Overturned if ADR-0070 is amended to give the Leak event log watch-scoped rows; then `lane_day` becomes those rows unchanged.
+- ASSUMPTION: a watch-scoped `scan_partial` lives in the append-only `lane_day` table, not in Phase 1's per-Leak `leak_events`, because a watch with zero Leaks must still record a capped day and Phase 4's `complete` reads it (rung 4: additive table, `leak_events.leak_id` untouched). Overturned if ADR-0075 is amended to give the Leak event log watch-scoped rows; then `lane_day` becomes those rows unchanged.
 - ASSUMPTION: Google visibility is tracked per (vertical, field) pair, with Phase 1's seed results mapped to (`web`, `handle`), and an emptied set reads unknown, never Cached (rung 4; ticket 02: a query that didn't run gives unknown, not missing). Overturned if the pilot shows Leaks Cached on a handle query that the field rule clears too early.
-- ASSUMPTION: the same Google query on the same UTC day is fetched once across watches and tenants through a one-day `serp_cache`, charged to the first reserver (rung 2: ADR-0070 "the service dedupes scan work across Agencies"; rung 5 for the cache). Overturned if the owner wants each tenant charged its own share; then reuse books a zero-load usage row per reuser.
+- ASSUMPTION: the same Google query on the same UTC day is fetched once across watches and tenants through a one-day `serp_cache`, charged to the first reserver (rung 2: ADR-0075 "the service dedupes scan work across Agencies"; rung 5 for the cache). Overturned if the owner wants each tenant charged its own share; then reuse books a zero-load usage row per reuser.
 - ASSUMPTION: the Creator cap is checked at reserve time by `created_at` rank, so a lowered cap stops spend for the newest watches without pausing them (rung 2: ticket 04 lists the Creator cap among the reservation's three limits; rung 4 for rank order). Overturned if the owner wants a lowered cap to pause watches instead.
 - ASSUMPTION: a known-listing recheck over 20 per watch rotates oldest-first and marks the lane Reduced (rung 4: bounded VPS fetches, honest coverage). Overturned if the pilot shows watches rarely pass 20; then the ceiling goes.
 - ASSUMPTION: judge calls reserve only against the global daily judge cap, not the tenant's monthly allowance, which ticket 04 names as a load allowance (rung 2); each tenant's judge spend is still recorded in `tracker_usage`. Overturned if the pilot shows judge spend per tenant is material.
-- ASSUMPTION: `proxy_bytes` comes from the Browserbase session's own report, and is 0 when none is reported (rung 5; residential proxy bandwidth is billed apart, per the service's media gather). Overturned if Browserbase reports no bytes; then the report shows session minutes only and says so.
+- `proxy_bytes` comes from the Browserbase session's own report and is 0 with proxies off (owner 2026-11-27, rung 2: Google lanes never use proxies). Kept as a column so a proxy turned on by mistake shows in the report.
+
+- ASSUMPTION: `thumb_url` is kept only for Google's own CDN hosts and never as a `data:` URI (rung 4: a `data:` URI would be stored media). Overturned if most pilot tiles come back `data:`; then the full pass needs another source inside its existing reservation.
+- ASSUMPTION: one page-level Reveal, in memory (rung 2: the owner wants the report easy to see; rung 4: never stored). Overturned if the legal review wants per-tile reveal.
+- ASSUMPTION: `no-store` on both hops (rung 4: a browser cache would serve explicit bytes after access is removed). Overturned only if measured load time is too slow and the legal review allows a cache.
+- ASSUMPTION: Team Leaders and custom roles with the Leaks page may reveal previews, like Vault media (rung 3). Overturned if the owner limits Reveal to Owner and Admin.
+- ASSUMPTION: no per-view audit; logs keep counts only (rung 5). Overturned by the legal review.
+- ASSUMPTION: the All Models strip is the 12 newest-seen previews across the viewer's Creators, not a "worst" rank (rung 2: "make people easily visualize those reports on google images"; rung 4: a rank needs a fixed query, scan time and tile selection). Overturned if the owner wants a severity order or one strip per Creator; then the service needs a per-Creator preview read.
 
 ## Review
 Reviewer: codex (blind call, then draft call), 2026-11-27.
@@ -374,7 +437,7 @@ Reviewer: codex (blind call, then draft call), 2026-11-27.
 - B3 **reject** — the Mega display-name match is already closed: the lookup passes `names=()`.
 - B4 **accept** — a watch with zero Leaks had nowhere to record a capped day (`CONTEXT.md` Leak event log is per Leak). New append-only `lane_day` table; Contracts and an ASSUMPTION.
 - B5 **reject** — the late-verdict day is decided (judgement time, flagged ASSUMPTION) and matches Phase 4's `first_seen_at` reading.
-- B6 **accept** — scan work across tenants was neither shared nor charged (ADR-0070 "dedupes scan work across Agencies"). One-day `serp_cache`, first reserver pays; story 46.
+- B6 **accept** — scan work across tenants was neither shared nor charged (ADR-0075 "dedupes scan work across Agencies"). One-day `serp_cache`, first reserver pays; story 46.
 - B7 **reject** — the 110-watch peak overrun is about ticket 04's 600 cap; the pilot cap of 300 fits 50 watches (50 + 8·31 = 298) and admission refuses past it.
 - B8 **accept** — the listing recheck had no request bounds: Phase 1's 15 s timeout, 5 redirects, 2 MB body, and oldest-first rotation with an honest Reduced state.
 - B9 **partial** — `tracker_usage` gains `finds` per lane so the pilot sees each lane's yield; a paired weekly-Google holdout is rejected, since the plan's Phase 2 measures are cost and crawl minutes (`plan/goal.md:13`).
@@ -404,7 +467,7 @@ Reviewer: codex (blind call, then draft call), 2026-11-27.
 *Cross-Phase:*
 - Binds Phase 1: its pill rule (link-only is always `listed`) must read a link-only Leak whose last status is `gone` as Gone, for Phase 2's Mega `deleted` and Phase 3's removal track (`phase-03…:141`).
 - Binds Phase 1: its Acceptance lines `! printf … | leak-check.sh --diff` fail open under `set -e` (same reproduction as D14).
-- Binds Phase 1 / ADR-0070: `scan_partial` is watch-scoped in `lane_day`, not a `leak_events` row; the ADR's event list should say so if amended.
+- Binds Phase 1 / ADR-0075: `scan_partial` is watch-scoped in `lane_day`, not a `leak_events` row; the ADR's event list should say so if amended.
 - Binds Phase 4: its `complete` and partial-day reads come from `lane_day` and `daily_scans.outcome = partial`.
 
 Counts: accept 13 · partial 8 · reject 8 · needs-human 0.
@@ -423,3 +486,7 @@ Counts: 4 accept, 0 partial, 0 reject.
 - Cut 3 (95 % bound and CSV sampling) — **accept, no edit here**: Phase 1's report now prints plain counts, and this Phase's pilot reads them again; nothing here named the bound.
 - Cut 4 (waitlist and least-loaded slots) — **reject**: ticket 04 states the waitlist and the least-loaded Weekly slot, and the plan names them.
 - C1, C2, C3, C4, cuts 1, 2, 5, 6 — not this Phase's.
+
+### Owner answers (2026-11-27, visuals)
+- Owner: "google preset images … Make people easily visualize those reports on google images search". Wayfinder tickets 11 and 14 decided it, with a codex adversary per ticket (11: 11 accept, 3 partial, 0 reject; 14: 7 accept, 6 partial, 1 reject). Applied as stories 47-58 (19 amended; 58, the All Models strip, added on coordinator review under rung 2, reversing adversary A12), the `tracker_preview` and relay rows in Owns, the thumb routes, `preview` and `thumb_url`, the Google view in CRM behaviour, `test_leak_previews.py`, `leakPreview.test.ts`, `test_tracker_preview.py`, two manual lines, Out of Scope and six ASSUMPTIONs.
+- Needs the human: the legal adequacy of showing previews (ticket 14). `LEAK_TRACKER_PREVIEWS` stays off until the owner records a go.

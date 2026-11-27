@@ -209,7 +209,7 @@ grep -q '"mass_history"' app/lib/platform.ts
 test -f fansly/fixtures/broadcast.json && grep -q '"_source"' fansly/fixtures/broadcast.json
 (cd app && nice -n 10 pnpm exec vitest related --run components/settings/MassMessagesTab.tsx components/settings/massFilterBar.ts components/settings/massUnsendRules.ts hooks/useMassMessages.ts lib/platform.ts)
 nice -n 10 $PY scripts/comment_budget.py --check
-test "$(nice -n 10 venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
+test "$(PYTHONPATH=. nice -n 10 venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
 # manual: regenerate the _send_kill_jobs.py strip patch with .claude/skills/public-sync/strip-regen.sh and commit it if it changed
 nice -n 10 scripts/run-tests.sh
 D=scripts/verify-app/drive.py

@@ -27,7 +27,7 @@ from automations.auto_follow import gated_follow  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account, Action, AutomationRun, AutomationRule, Fan, LifecycleMessageClaim, MassBroadcastCache, MassRun, Message,
-    ScheduledJob, SmartList, WelcomeSent,
+    ScheduledJob, SmartList, SubscriberSnapshot, WelcomeSent,
 )
 from fansly_shim import FanslyShimClient  # noqa: E402
 
@@ -319,6 +319,7 @@ async def _list_rows(aid: str) -> list[tuple]:
 
 async def case_fansly_smart_list_sync_skips_before_any_row_moves():
     aid = "8803301"
+    account_registry.save_meta(aid, {"platform": "fansly"})
     await _seed_lists(aid)
     before = await _list_rows(aid)
     fake = _use(_Fansly())
@@ -326,7 +327,7 @@ async def case_fansly_smart_list_sync_skips_before_any_row_moves():
         r = await sls.run(aid, {}, run_id=0)
     finally:
         _restore()
-    assert r == {"status": "skipped", "reason": "platform_lacks:list_users_in"}, r
+    assert r == {"status": "skipped", "reason": "platform_lacks:tip_ledger"}, r
     assert fake.calls == [], fake.calls
     assert await _list_rows(aid) == before, (before, await _list_rows(aid))
 
@@ -597,6 +598,48 @@ async def case_fansly_discount_only_expiry_refuses_before_roster_refresh():
     assert await _claimed_fans(aid) == set()
 
 
+class _FanslyRoster(_Fansly):
+    def __init__(self, *fans: int) -> None:
+        super().__init__()
+        ends = int((datetime.utcnow() + timedelta(days=20)).timestamp() * 1000)
+        self.roster = {"stats": {"totalActive": len(fans)}, "subscriptions": [
+            {"subscriberId": str(f), "status": 3, "createdAt": ends - 864_000_000, "endsAt": ends} for f in fans]}
+
+    def _request(self, method, path, *_a, **_k):
+        if (method, path) == ("GET", "/subscribers"):
+            return self.roster
+        if (method, path) == ("GET", "/account"):
+            return []
+        return super()._request(method, path)
+
+
+async def _snapshot(aid: str) -> dict[int, datetime]:
+    async with get_session() as s:
+        return {r.fan_id: r.seen_at for r in (await s.execute(select(SubscriberSnapshot).where(
+            SubscriberSnapshot.account_id == aid))).scalars()}
+
+
+async def case_fansly_short_roster_keeps_the_old_snapshot():
+    aid = "8803210"
+    await _seed_expiry(aid)
+    account_registry.save_meta(aid, {"platform": "fansly"})
+    fake = _use(_FanslyRoster(6301, 6302))
+    try:
+        first = await lm.sweep(lm.EXPIRY, aid, {})
+        async with get_session() as s:
+            for r in (await s.execute(select(SubscriberSnapshot).where(SubscriberSnapshot.account_id == aid))).scalars():
+                r.seen_at -= timedelta(minutes=30)
+        before = await _snapshot(aid)
+        fake.roster["stats"]["totalActive"] += 1
+        second = await lm.sweep(lm.EXPIRY, aid, {})
+    finally:
+        _restore()
+    assert first.get("roster") == "crawled" and sorted(before) == [6301, 6302], (first, before)
+    assert second.get("roster") == "truncated" and second.get("sent", 0) == 0, second
+    assert await _snapshot(aid) == before
+    assert not [c for c in fake.calls if c[0] == "send"], fake.calls
+
+
 async def _assert_terminal_refusal(aid, kind, payload, reason):
     job_id = await ax.enqueue_job(aid, kind, payload=payload)
     result = await run_once(aid, kind)
@@ -626,19 +669,20 @@ async def case_of_word_guard_skip_keeps_plugin_return_precedence():
 
     aid = "8803803"
     await _account(aid)
-    stats = {"status": "plugin_status", "reason": "plugin_reason", "job_id": "plugin_job"}
+    stats = {"status": "plugin_status", "reason": "plugin_reason"}
 
     async def plugin(_aid, _payload, *, run_id):
         try:
             ax.OUTBOUND_TEXT_GUARD.get()("telegram")
         except _wordfilter.OutboundWordsBlocked:
-            return stats.copy()
+            return {**stats, "run_id": "plugin_run", "job_id": "plugin_job"}
         raise AssertionError("word guard allowed blocked text")
 
     with (patch.object(ax, "get_automation", return_value=plugin),
           patch.object(_wordfilter, "load_banned_words", return_value=(["telegram"], "block"))):
         result = await run_once(aid, "mass_premade", payload={})
     assert {key: result[key] for key in stats} == stats, result
+    assert result["run_id"] != "plugin_run" and result["job_id"] is None, result
     async with get_session() as s:
         run = await s.get(AutomationRun, result["run_id"])
         assert run.status == "skipped"

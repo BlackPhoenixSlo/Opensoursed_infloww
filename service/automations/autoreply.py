@@ -20,6 +20,7 @@ from . import _language
 from . import _voice
 import inbound_describe
 from attribution import write_outbound_attribution
+from audiences import LIST_INCOMPLETE, AudienceRefusal, lacks_reason
 from automation_registry import register
 from db.engine import get_session
 from db.models import (
@@ -150,7 +151,14 @@ async def _folder_members(account_id: str, client, list_ids: tuple[int, ...]) ->
             log.warning("autoreply folder read failed account=%s list=%s: %s",
                         account_id, lid, (str(e).splitlines() or [type(e).__name__])[0][:120])
             _folder_failed[key] = time.monotonic()
+            lack = lacks_reason(e)
+            if lack or getattr(client, "platform_list_page", None):
+                raise AudienceRefusal(lack or LIST_INCOMPLETE) from e
             return None
+        if truncated and getattr(client, "platform_list_page", None):
+            log.warning("autoreply folder %s on account=%s read incomplete — replying to nobody", lid, account_id)
+            _folder_failed[key] = time.monotonic()
+            raise AudienceRefusal(LIST_INCOMPLETE)
         if truncated:
             log.warning("autoreply folder %s on account=%s hit the paging backstop "
                         "— replying to the members read so far", lid, account_id)
@@ -353,8 +361,9 @@ async def _first_seen(account_id: str, fans: list[Fan]) -> dict[int, datetime]:
 async def _audience(account_id: str, cfg: dict, cands: list, now: datetime):
     stats: dict = {}
     client = None
+    refused: str | None = None
     if not cands:
-        return cands, stats, client
+        return cands, stats, client, refused
     spend = {int(f.fan_id): int(f.lifetime_spend_cents or 0) for f, _ in cands}
     keep: set[int] = set()
 
@@ -375,11 +384,13 @@ async def _audience(account_id: str, cfg: dict, cands: list, now: datetime):
             try:
                 client = await asyncio.to_thread(ax._make_client, account_id)
                 members = await _folder_members(account_id, client, folders)
+            except AudienceRefusal as e:
+                refused = stats["folder_error"] = e.reason
             except Exception:
                 log.warning("autoreply client init failed account=%s", account_id,
                             exc_info=True)
             if members is None:
-                stats["folder_error"] = "read"
+                stats.setdefault("folder_error", "read")
                 pool = set()
             else:
                 pool &= members
@@ -387,7 +398,7 @@ async def _audience(account_id: str, cfg: dict, cands: list, now: datetime):
 
     kept = [(f, t) for (f, t) in cands if int(f.fan_id) in keep]
     stats["skipped_audience"] = len(cands) - len(kept)
-    return kept, stats, client
+    return kept, stats, client, refused
 
 
 async def _load_state(account_id: str, fan_id: int) -> AutoreplyState | None:
@@ -494,7 +505,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if only_set is not None:
         cands = [(f, t) for (f, t) in cands if int(f.fan_id) in only_set]
 
-    cands, folder_stats, client = await _audience(account_id, cfg, cands, now)
+    cands, folder_stats, client, refused = await _audience(account_id, cfg, cands, now)
 
     import audience_include as _audiences
     audience_stats: dict = {}
@@ -508,7 +519,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     cands = [(f, t) for (f, t) in cands if int(f.fan_id) in _kept and int(f.fan_id) not in _claimed][:limit]
     if not cands:
         return {"enabled": True, "candidates": 0, "sent": 0, **folder_stats,
-                **audience_stats, **claimed_stats}
+                **audience_stats, **claimed_stats, **({"reason": refused} if refused else {})}
 
     typing_wpm = await load_typing_wpm(account_id)
     typing_indicator = await load_typing_indicator(account_id)
@@ -732,6 +743,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     return {"enabled": True, "candidates": len(cands), "sent": sent,
             **folder_stats, **audience_stats, **claimed_stats,
+            **({"reason": f"partial:{refused}"} if refused else {}),
             "skipped_cap": skipped_cap,
             "skipped_raced": skipped_raced, "skipped_restricted": skipped_restricted,
             "skipped_unreachable": skipped_unreachable, "skipped_spam": skipped_spam,

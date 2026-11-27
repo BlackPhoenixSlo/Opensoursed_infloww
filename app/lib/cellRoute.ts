@@ -2,8 +2,8 @@
 export const CONTROL_PATHS = [
   "/auth/*", "/chatter/*", "/livez", "/fleet/*", "/admin/chatters", "/admin/chatters/*",
   "/admin/employees", "/admin/employees/*", "/admin/employee-groups", "/admin/employee-groups/*",
-  "/admin/notifications", "/admin/notifications/*", "/admin/shifts", "/admin/shifts/*",
-  "/admin/clock", "/admin/clock/*", "/admin/impersonate",
+  "/admin/agency-notifications", "/admin/agency-notifications/*", "/admin/shifts", "/admin/shifts/*",
+  "/admin/clock", "/admin/clock/*", "/admin/impersonate", "/admin/support/*",
 ] as const;
 export const RELAY_PATHS = ["/api/of/*", "/img", "/img/*", "/events", "/auth/*", "/chatter/*", "/livez"] as const;
 export const ACCOUNT_PATH_RES = [
@@ -73,6 +73,8 @@ export const CONTROL_WRITES = [
   "POST /admin/shifts/clock-in",
   "POST /admin/shifts/clock-out",
   "POST /admin/shifts/{shift_id}/cancel",
+  "POST /admin/support/messages",
+  "POST /admin/support/read",
   "POST /admin/ultra/plans",
   "POST /admin/ultra/plans/{plan_id}/cancel",
   "POST /admin/ultra/plans/{plan_id}/ok",

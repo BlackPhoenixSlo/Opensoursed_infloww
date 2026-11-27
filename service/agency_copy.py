@@ -67,6 +67,7 @@ PEOPLE = {"users": ("user", "id"), "chatters": ("chatter", "id"),
           "chatter_folder_access": ("chatter", "chatter_id"), "employees": ("employee", "id"),
           "employee_account_access": ("employee", "employee_id"), "shift_assignments": ("employee", "employee_id")}
 GRANTS = "grants/"
+_UNMATERIALIZED = "unmaterialized:"
 _HIST_N = 64
 _ACCOUNT_FK = ("user_accounts", "chatter_account_access", "chatter_folder_access", "employee_account_access",
                "shift_assignments")
@@ -253,9 +254,15 @@ def install(sync_url: str, role: str) -> dict[str, int]:
                 db.execute("CREATE TABLE IF NOT EXISTS agency_copy_gate (open INTEGER)")
                 db.execute("INSERT INTO agency_copy_gate SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM agency_copy_gate)")
                 _sections_table(db)
+                db.execute("CREATE TABLE IF NOT EXISTS agency_copy_repair (pending INTEGER PRIMARY KEY)")
                 db.execute(f"CREATE TABLE IF NOT EXISTS {MISSING} (user_id TEXT PRIMARY KEY, since TEXT NOT NULL)")
                 n = {"dropped_version": _sync(db, _VER, {}), "dropped_floor": _sync(db, _FLOOR, {}),
                      "read_only": _sync(db, _RO, read_only_triggers(db))}
+                if "users" in _tables(db):
+                    db.execute("UPDATE agency_copy_gate SET open = 1")
+                    db.execute(f"UPDATE users SET username = '#missing:' || id WHERE id IN (SELECT user_id FROM {MISSING})"
+                               " AND username IS NOT '#missing:' || id")
+                    db.execute("UPDATE agency_copy_gate SET open = 0")
             db.execute("COMMIT")
         except BaseException:
             db.execute("ROLLBACK")
@@ -487,12 +494,16 @@ def _local_no_action_refs(db: sqlite3.Connection) -> dict[str, list[tuple[str, s
 
 def meta(db: sqlite3.Connection) -> dict[str, Any]:
     e, v, g, conf = db.execute("SELECT copy_epoch, copy_version, grant_gen, confirmed_at FROM cell_meta").fetchone()
-    return {"epoch": e, "version": v, "section_sha": dict(db.execute("SELECT name, sha256 FROM agency_copy_sections")),
-            "grant_gen": g, "confirmed_at": conf}
+    shas = dict(db.execute("SELECT name, sha256 FROM agency_copy_sections"))
+    pending = {n for n, sha in shas.items() if n in FIELDS and sha.startswith(_UNMATERIALIZED)}
+    repair = db.execute("SELECT 1 FROM agency_copy_repair").fetchone() is not None
+    return {"epoch": e, "version": v, "repair_needed": repair, "section_sha": {n: sha.removeprefix(_UNMATERIALIZED) for n, sha in shas.items()},
+            "pending": pending, "grant_gen": g, "confirmed_at": conf}
 
 
 def root_ok(db: sqlite3.Connection, want: str) -> bool:
-    return root_of(dict(db.execute("SELECT name, sha256 FROM agency_copy_sections"))) == want
+    mine = meta(db)
+    return not mine["pending"] and root_of(mine["section_sha"]) == want
 
 
 def newer(doc: dict, mine: dict) -> bool:
@@ -542,6 +553,7 @@ def _apply_section(db: sqlite3.Connection, t: str, rows: list[dict], refs, chang
             (t, pid) for pid, was in old.items() if pid not in new or new[pid] != was)
     if t == "users":
         # Owner decision keep-and-deny: an older Control's copy never deletes an owner (CASCADE takes Cell rows).
+        db.executemany("UPDATE users SET username = '#missing:' || id WHERE id = ?", gone)
         db.executemany(f"DELETE FROM {MISSING} WHERE user_id = ?", [(r["id"],) for r in rows])
         changes.setdefault("owners_missing", []).extend(k[0] for k in gone)
         gone = []
@@ -579,6 +591,8 @@ def _apply_person(db: sqlite3.Connection, name: str, rows: dict, refs, changes: 
     kind, pid = _person(name)
     present = _tables(db)
     for t in rows:
+        if t not in present and rows[t]:
+            raise ValueError(f"{name}: missing Cell table {t}")
         if PEOPLE.get(t, ("",))[0] != kind or any(r.get(PEOPLE[t][1]) != pid for r in rows[t]):
             raise ValueError(f"{name}: rows of {t} are not this person's")
     for t, (k, col) in PEOPLE.items():
@@ -593,100 +607,102 @@ def _local_people(db: sqlite3.Connection) -> set[str]:
             for (v,) in db.execute(f'SELECT DISTINCT "{col}" FROM "{t}"')}
 
 
-def _apply2(db: sqlite3.Connection, doc: dict, mine: dict, repair: bool) -> dict[str, Any]:
+class _RootMismatch(Exception):
+    pass
+
+
+def _apply_tx(db: sqlite3.Connection, doc: dict, repair: bool) -> dict[str, Any]:
+    mine = meta(db)
+    same = (doc["epoch"], doc["version"]) == (mine["epoch"], mine["version"])
+    if (mine["repair_needed"] and not repair) or not (newer(doc, mine) or (repair and same)):
+        return {"applied": False, "changed": [], "root_ok": None}
     sections = doc.get("sections") or {}
-    full = root_of({n: s["sha256"] for n, s in sections.items()}) == doc["root_sha"]
-    changed = sorted(n for n in sections if repair or sections[n].get("sha256") != mine["section_sha"].get(n))
-    missing = [n for n in changed if not isinstance(sections[n].get("rows"), (list, dict))]
-    if missing:
-        raise ValueError(f"answer lacks rows for changed sections {missing[:5]}")
-    for n in changed:
-        if n in PEOPLE:
-            raise ValueError(f"section {n!r} must come per person")
-    changes: dict[str, Any] = {}
-    touched: set[str] = set()
-    db.execute("BEGIN IMMEDIATE")
-    try:
-        db.execute("PRAGMA defer_foreign_keys=ON")
-        db.execute("UPDATE agency_copy_gate SET open = 1")
-        refs = _local_no_action_refs(db)
+    previous = mine["section_sha"]
+    if repair and doc.get("format") != FORMAT2 and not sections:
+        raise ValueError("full format-1 answer lacks sections")
+    if doc.get("format") == FORMAT2:
+        expected_root = doc["root_sha"]
+        if not isinstance(expected_root, str):
+            raise _RootMismatch
+        full = root_of({n: s["sha256"] for n, s in sections.items()}) == expected_root
+        if repair and not full:
+            raise _RootMismatch
         drop = set(doc.get("removed") or []) - set(sections)
         if full:
-            drop |= (set(mine["section_sha"]) | _local_people(db)) - set(sections)
-        for n in sorted(drop):
-            if n.startswith(GRANTS):
-                _apply_person(db, n, {}, refs, changes, touched)
+            drop |= (set(previous) | _local_people(db)) - set(sections)
+        drop_people = sorted(n for n in drop if n.startswith(GRANTS))
+        changed = sorted(n for n, sec in sections.items() if repair
+                         or sec["sha256"] != previous.get(n) or n in mine["pending"])
         for n in changed:
-            if n.startswith(GRANTS):
-                _apply_person(db, n, sections[n]["rows"], refs, changes, touched)
-            elif n in COPIED:
-                _apply_section(db, n, sections[n]["rows"], refs, changes)
-                touched.add(n)
-        _mark_missing(db, doc, changes)
-        db.executemany("DELETE FROM agency_copy_sections WHERE name = ?", [(n,) for n in sorted(drop)])
-        db.executemany("INSERT INTO agency_copy_sections (name, sha256) VALUES (?, ?) ON CONFLICT (name)"
-                       " DO UPDATE SET sha256 = excluded.sha256", [(n, sections[n]["sha256"]) for n in changed])
-        ok = root_ok(db, doc["root_sha"])
-        now = _now()
-        db.execute("UPDATE cell_meta SET copy_epoch = ?, copy_version = ?, applied_at = ?, confirmed_at = ?,"
-                   " grant_gen = ?", (doc["epoch"], doc["version"], now, now if ok else mine["confirmed_at"],
-                                      doc["grant_gen"]))
-        db.execute("UPDATE agency_copy_gate SET open = 0")
-        db.execute("COMMIT")
-    except BaseException:
-        db.execute("ROLLBACK")
-        raise
-    if ok:
-        _note(now, doc["grant_gen"])
+            if n in PEOPLE:
+                raise ValueError(f"section {n!r} must come per person")
+    else:
+        expected_root = None
+        drop = set(previous) - set(sections)
+        drop_people = []
+        changed = [n for n in COPIED if n in sections
+                   and (repair or sections[n]["sha256"] != previous.get(n) or n in mine["pending"])]
+    for n in changed:
+        if not isinstance(sections[n].get("rows"), dict if n.startswith(GRANTS) else list):
+            raise ValueError(f"answer lacks rows for changed section {n}")
+    changes: dict[str, Any] = {}
+    touched: set[str] = set()
+    shas = []
+    db.execute("PRAGMA defer_foreign_keys=ON")
+    db.execute("UPDATE agency_copy_gate SET open = 1")
+    refs = _local_no_action_refs(db)
+    for n in drop_people:
+        _apply_person(db, n, {}, refs, changes, touched)
+    for n in changed:
+        rows = sections[n]["rows"]
+        sha = sections[n]["sha256"]
+        if n.startswith(GRANTS):
+            _apply_person(db, n, rows, refs, changes, touched)
+        elif n in COPIED:
+            _apply_section(db, n, rows, refs, changes)
+            touched.add(n)
+        else:
+            sha = _UNMATERIALIZED + sha
+        shas.append((n, sha))
+    _mark_missing(db, doc, changes)
+    db.executemany("DELETE FROM agency_copy_sections WHERE name = ?", [(n,) for n in sorted(drop)])
+    db.executemany("INSERT INTO agency_copy_sections (name, sha256) VALUES (?, ?) ON CONFLICT (name)"
+                   " DO UPDATE SET sha256 = excluded.sha256", shas)
+    if expected_root is not None and not root_ok(db, expected_root):
+        raise _RootMismatch
+    if repair:
+        db.execute("DELETE FROM agency_copy_repair")
+    now = _now()
+    db.execute("UPDATE cell_meta SET copy_epoch = ?, copy_version = ?, applied_at = ?, confirmed_at = ?, grant_gen = ?",
+               (doc["epoch"], doc["version"], now, now, doc["grant_gen"]))
+    db.execute("UPDATE agency_copy_gate SET open = 0")
     return {"applied": True, "changed": changed, "removed": sorted(drop), "tables": sorted(touched),
-            "root_ok": ok, **changes}
+            "root_ok": True, "confirmed_at": now, **changes}
 
 
 def apply(path: str, doc: dict, repair: bool = False) -> dict[str, Any]:
-    with contextlib.closing(_connect(path)) as db:
-        mine = meta(db)
-        same = (doc["epoch"], doc["version"]) == (mine["epoch"], mine["version"])
-        if not (newer(doc, mine) or (repair and same)):
-            return {"applied": False, "changed": []}
-        if doc.get("format") == FORMAT2:
-            return _apply2(db, doc, mine, repair)
-        sections = doc.get("sections") or {}
-        changed = [t for t in COPIED if t in sections and sections[t].get("sha256") != mine["section_sha"].get(t)]
-        missing = [t for t in changed if not isinstance(sections[t].get("rows"), list)]
-        if missing:
-            raise ValueError(f"answer lacks rows for changed sections {missing}")
-        changes: dict[str, Any] = {}
+    with contextlib.closing(_connect(path)) as db, db:
         db.execute("BEGIN IMMEDIATE")
+        db.execute("SAVEPOINT copy_rows")
         try:
-            db.execute("PRAGMA defer_foreign_keys=ON")
-            db.execute("UPDATE agency_copy_gate SET open = 1")
-            refs = _local_no_action_refs(db)
-            for t in changed:
-                _apply_section(db, t, sections[t]["rows"], refs, changes)
-            _mark_missing(db, doc, changes)
-            db.executemany("DELETE FROM agency_copy_sections WHERE name = ?",
-                           [(n,) for n in sorted(set(mine["section_sha"]) - set(sections))])
-            db.executemany("INSERT INTO agency_copy_sections (name, sha256) VALUES (?, ?) ON CONFLICT (name)"
-                           " DO UPDATE SET sha256 = excluded.sha256", [(t, sections[t]["sha256"]) for t in changed])
-            now = _now()
-            db.execute("UPDATE cell_meta SET copy_epoch = ?, copy_version = ?, applied_at = ?,"
-                       " confirmed_at = ?, grant_gen = ?",
-                       (doc["epoch"], doc["version"], now, now, doc["grant_gen"]))
-            db.execute("UPDATE agency_copy_gate SET open = 0")
-            db.execute("COMMIT")
-        except BaseException:
-            db.execute("ROLLBACK")
-            raise
-    _note(now, doc["grant_gen"])
-    return {"applied": True, "changed": changed, "tables": changed, **changes}
+            result = _apply_tx(db, doc, repair)
+        except _RootMismatch:
+            db.execute("ROLLBACK TO copy_rows")
+            db.execute("INSERT OR IGNORE INTO agency_copy_repair VALUES (1)")
+            return {"applied": False, "changed": [], "root_ok": False}
+    if result["applied"]:
+        _note(result.pop("confirmed_at"), doc["grant_gen"])
+    return result
 
 
 def confirm(path: str, doc: dict) -> bool:
-    with contextlib.closing(_connect(path)) as db:
+    with contextlib.closing(_connect(path)) as db, db:
+        db.execute("BEGIN IMMEDIATE")
         mine = meta(db)
-        if (doc["epoch"], doc["version"]) != (mine["epoch"], mine["version"]):
+        if mine["repair_needed"] or (doc["epoch"], doc["version"]) != (mine["epoch"], mine["version"]):
             return False
-        if doc.get("format") == FORMAT2 and not root_ok(db, doc["root_sha"]):
+        if mine["pending"] or (doc.get("format") == FORMAT2 and not root_ok(db, doc["root_sha"])):
+            db.execute("INSERT OR IGNORE INTO agency_copy_repair VALUES (1)")
             return False
         now = _now()
         db.execute("UPDATE cell_meta SET confirmed_at = ?, grant_gen = ?", (now, doc["grant_gen"]))
@@ -857,53 +873,61 @@ async def poll_forever(path: str) -> None:
     url = os.environ["OI_CELL_CONTROL_URL"].rstrip("/") + "/fleet/agency-copy"
     key = os.environ.get("OI_CELL_COPY_KEY", "")
     backoff = 0.5
-    full, repaired = False, None
+    failed_full = None
     pending = _RuntimeReload()
     async with httpx.AsyncClient(timeout=HOLD_S + 15, headers={"Authorization": f"Bearer {key}"}) as client:
         while True:
+            full = False
             await pending.run_due(path)
             try:
                 mine, max_emp = await asyncio.to_thread(lambda: (meta_at(path), max_employee_id(path)))
                 since = f"{mine['epoch'] or 0}.{mine['version'] or 0}"
-                have = ",".join(f"{t}:{s}" for t, s in sorted(mine["section_sha"].items()) if t in FIELDS)
+                have = ",".join(f"{t}:{s}" for t, s in sorted(mine["section_sha"].items())
+                                if t in FIELDS and t not in mine["pending"])
                 params = {"since": since, "have": have, "max_emp": max_emp, "accept": FORMAT2,
                           "hold": pending.hold_cap()}
+                full = mine["repair_needed"] and failed_full is None
                 if full:
-                    params |= {"full": 1, "hold": 0}
+                    params |= {"since": "0.0", "have": "", "full": 1, "hold": 0}
+                elif failed_full is not None:
+                    params["since"] = f"{failed_full[0]}.{failed_full[1]}"
                 r = await client.get(url, params=params)
                 r.raise_for_status()
                 doc = r.json()
                 at = (doc["epoch"], doc["version"])
-                bad, was_full, full = False, full, False
-                if was_full and doc.get("format") == FORMAT2:
-                    result = await asyncio.to_thread(apply, path, doc, True)
-                    repaired = at
+                same = at == (mine["epoch"], mine["version"])
+                if failed_full is not None:
+                    if at == failed_full:
+                        await asyncio.sleep(5)
+                    else:
+                        failed_full = None
+                    continue
+                if full or not same:
+                    result = await asyncio.to_thread(apply, path, doc, full)
+                    ok = result["root_ok"]
+                    if ok is None:
+                        log.warning("agency copy: control answered older %s.%s than ours %s; kept ours",
+                                    doc["epoch"], doc["version"], since)
+                        await asyncio.sleep(5)
+                        continue
                     _applied(path, doc, result, pending, mine["epoch"])
-                    if result.get("root_ok") is False:
-                        log.error("AGENCY COPY ROOT MISMATCH after a full copy at %s.%s; not confirmed", *at)
-                elif at == (mine["epoch"], mine["version"]):
-                    bad = not await asyncio.to_thread(confirm, path, doc) and doc.get("format") == FORMAT2
-                elif newer(doc, mine):
-                    result = await asyncio.to_thread(apply, path, doc)
-                    _applied(path, doc, result, pending, mine["epoch"])
-                    bad = result.get("root_ok") is False
                 else:
-                    log.warning("agency copy: control answered older %s.%s than ours %s; kept ours",
-                                doc["epoch"], doc["version"], since)
-                    await asyncio.sleep(5)
-                if bad and repaired != at:
-                    log.warning("agency copy root hash differs from control at %s.%s; fetching the full copy", *at)
-                    full = True
-                elif bad:
-                    log.error("AGENCY COPY ROOT MISMATCH at %s.%s after one full copy; not confirmed", *at)
+                    ok = await asyncio.to_thread(confirm, path, doc)
+                if ok is False:
+                    if full:
+                        failed_full = at
+                        log.error("AGENCY COPY ROOT MISMATCH after a full copy at %s.%s; not confirmed", *at)
+                    else:
+                        log.warning("agency copy root hash differs from control at %s.%s; fetching the full copy", *at)
                 backoff = 0.5
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                delay = backoff
+                backoff = min(backoff * 2, 300.0 if full else 5.0)
                 log.error("AGENCY COPY NOT APPLIED: %s: %s; kept the old version, retrying in %.1fs",
-                          type(e).__name__, e, backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 5.0)
+                          type(e).__name__, e, delay)
+                await asyncio.sleep(delay)
 
 
 def meta_at(path: str) -> dict[str, Any]:

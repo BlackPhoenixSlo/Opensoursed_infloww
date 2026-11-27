@@ -227,10 +227,10 @@ const COMMON_NAV: NavNode[] = [
   {
     label: "Creators",
     icon: UserSquareLine,
-    chatterHidden: true,
     children: [
-      { label: "Manage creators", href: "/creators" },
-      { label: "Custom proxy", href: "/creators/proxy" },
+      { label: "Manage creators", href: "/creators", chatterHidden: true },
+      { label: "Custom proxy", href: "/creators/proxy", chatterHidden: true },
+      { label: "Leak tracker", href: "/creators/leaks", flag: "leak_tracker" },
     ],
   },
   {
@@ -250,19 +250,29 @@ const COMMON_NAV: NavNode[] = [
  * Scripts, Message pro, Vault pro). Scripts, Message pro and Vault pro are
  * our built pages, which serve a Fansly account through the relay's Fansly
  * shim (they read the platform-scoped account list). Infloww embeds
- * fansly.com for the Fansly Manager pages; we build only the flagged ones
- * below, gated by their OnlyFans counterpart's permission so existing grants
- * cover both platforms.
+ * fansly.com for the Fansly Manager pages; we show the Fansly mirror, bar the
+ * four Built pages, each entry flagged and gated by its OnlyFans counterpart's
+ * permission so existing grants cover both platforms.
  */
 export const FANSLY_NAV: NavNode[] = [
   {
     label: "Fansly Manager",
     icon: Heart,
     children: [
+      { label: "Homepage", href: "/fansly-manager/home", flag: "fansly_manager", permission: "/of-manager/home" },
+      { label: "Profile", href: "/fansly-manager/profile", flag: "fansly_manager", permission: "/of-manager/profile" },
+      { label: "Subscriptions", href: "/fansly-manager/subscriptions", flag: "fansly_manager", permission: "/of-manager/collections" },
+      { label: "Media Vault", href: "/fansly-manager/vault", flag: "fansly_manager", permission: "/of-manager/vault" },
       { label: "Scheduled Posts", href: "/fansly-manager/scheduled", flag: "fansly_manager", permission: "/of-manager/queue" },
       { label: "Lists", href: "/fansly-manager/lists", flag: "fansly_manager", permission: "/of-manager/collections" },
+      { label: "Bookmarks", href: "/fansly-manager/bookmarks", flag: "fansly_manager", permission: "/of-manager/collections/bookmarks/all" },
+      { label: "Messages", href: "/fansly-manager/messages", flag: "fansly_manager", permission: "/of-manager/messages" },
       { label: "Notifications", href: "/fansly-manager/notifications", flag: "fansly_manager", permission: "/of-manager/notifications" },
+      { label: "Creator Dashboard", href: "/fansly-manager/creator", flag: "fansly_manager", permission: "/of-manager/statistics" },
       { label: "Earning Statistics", href: "/fansly-manager/earning-statistics", flag: "fansly_manager", permission: "/analytics/creator-reports" },
+      { label: "Profile Statistics", href: "/fansly-manager/statistics", flag: "fansly_manager", permission: "/of-manager/statistics" },
+      { label: "Tracking Links", href: "/fansly-manager/tracking-links", flag: "fansly_manager", permission: "/of-manager/statistics" },
+      { label: "Settings", href: "/fansly-manager/settings", flag: "fansly_manager", permission: "/of-manager/settings" },
     ],
   },
   { label: "Scripts", href: "/growth/scripts", icon: ScrollText }, // Infloww: /fansly/scripts
@@ -354,6 +364,12 @@ const PERMISSION_OF: ReadonlyMap<string, string> = new Map(
     .flatMap((l) => (l.permission ? [[l.href, l.permission] as const] : [])),
 );
 
+// A flagged page with no `permission` alias answers to its flag alone: the Relay folds the role gate into it.
+const FLAG_PAGES: ReadonlySet<string> = new Set(
+  SIDEBAR.flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]))
+    .flatMap((l) => (l.flag && !l.permission ? [l.href] : [])),
+);
+
 export const CHATTER_OPT_IN_PAGES: ReadonlySet<string> = new Set(
   SIDEBAR.flatMap((n) => (isGroup(n) && n.chatterOptIn ? n.children.filter((c) => !c.notOptIn).map((c) => c.href) : [])),
 );
@@ -379,6 +395,7 @@ function keep(
   if (n.flag && !f.flags?.[n.flag]) return false;
   if (n.chatterHidden && f.chatterOnly) return false;
   if (f.chatterOnly && n.href && CHATTER_OPT_IN_PAGES.has(n.href) && !f.grantedPages?.has(n.href)) return false;
+  if (n.href && FLAG_PAGES.has(n.href)) return true;
   const page = n.permission ?? n.href;
   if (f.grantedPages && page && PERMISSION_PAGES.has(page) && !f.grantedPages.has(page)) return false;
   return true;
@@ -394,7 +411,7 @@ export function deniedPage(pathname: string, grantedPages: Set<string> | null): 
     const hit = href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
     if (hit && (!page || href.length > page.length)) page = href;
   }
-  return page && !grantedPages.has(page) ? page : null;
+  return page && !grantedPages.has(page) && !FLAG_PAGES.has(page) ? page : null;
 }
 
 export function sidebarHref(pathname: string, grantedPages: Set<string> | null = null): string {

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+from side_effect_gate import ListAudience
+
 log = logging.getLogger("of-relay.of_paging")
 
 LIST_PAGE = 100
@@ -9,8 +11,12 @@ ROSTER_PAGE = 50  # OF caps subscriber pages low; offset math is len-based
 MAX_PAGES = 200
 
 
+def _items(r) -> list:
+    return (r.get("list") or []) if isinstance(r, dict) else (r or [])
+
+
 def take_page(r, seen: set) -> tuple[list[dict], int, bool]:
-    items = (r.get("list") or []) if isinstance(r, dict) else (r or [])
+    items = _items(r)
     rows: list[dict] = []
     for it in items:
         if not isinstance(it, dict):
@@ -92,12 +98,41 @@ def list_size(client, list_id) -> int | None:
         return None
 
 
+def _valid_id(row) -> int | None:
+    uid = row.get("id") if isinstance(row, dict) else None
+    if isinstance(uid, int) and not isinstance(uid, bool):
+        return uid
+    if isinstance(uid, str) and uid.isascii() and uid.isdigit():
+        return int(uid)
+    return None
+
+
+def _one_page_member_ids(client, list_id, page: int) -> tuple[set[int], bool]:
+    r = client.list_users_in(list_id, limit=page, offset=0)
+    items = _items(r)
+    got = [_valid_id(it) for it in items]
+    ids = {i for i in got if i is not None}
+    complete = isinstance(r, dict) and r.get("hasMore") is False and None not in got
+    return ids, not complete
+
+
+def list_audience(client, list_id) -> ListAudience:
+    try:
+        ids, cut = list_member_ids(client, list_id)
+    except Exception as e:  # noqa: BLE001 — an unreadable list is an incomplete audience
+        log.info("list_audience list=%s: members unreadable (%s)", list_id, e)
+        return ListAudience(str(list_id), frozenset(), False)
+    return ListAudience(str(list_id), frozenset(str(i) for i in ids), not cut)
+
+
 def list_member_ids(client, list_id, **paging) -> tuple[set[int], bool]:
+    if page := getattr(client, "platform_list_page", None):
+        return _one_page_member_ids(client, list_id, page)
     pages: list = []
 
     def fetch(off):
         r = client.list_users_in(list_id, limit=LIST_PAGE, offset=off)
-        items = (r.get("list") or []) if isinstance(r, dict) else (r or [])
+        items = _items(r)
         pages[:] = [*pages[-1:], [it.get("id") for it in items if isinstance(it, dict)]]
         return r
     ids, incomplete = ids_from_pages(fetch, **paging)

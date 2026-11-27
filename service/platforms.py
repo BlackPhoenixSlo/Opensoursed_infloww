@@ -22,6 +22,7 @@ class Lack(str, Enum):
     RENEWAL_STATE = "RENEWAL_STATE"
     LAPSE_DETECTION = "LAPSE_DETECTION"
     RETURN_DETECTION = "RETURN_DETECTION"
+    PROMOTION_TYPE = "PROMOTION_TYPE"
 
 
 def lack_reason(lack: Lack) -> str:

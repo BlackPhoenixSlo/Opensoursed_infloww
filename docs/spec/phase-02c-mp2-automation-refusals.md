@@ -158,7 +158,7 @@ bad = [(p, k, b, v) for p, kinds in kv.items() for k, branches in kinds.items() 
 assert not bad, bad
 EOF
 $N venv/bin/python scripts/comment_budget.py --check
-test "$($N venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
+test "$(PYTHONPATH=. $N venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
 test -d app/node_modules/vitest || fail "vitest not installed; run-tests.sh would skip the frontend"
 $N scripts/run-tests.sh
 # manual: owner grants PLATFORM_LIVE_CHECK=<owner aid>:nudge_online:fan=<Proof fan id> on a non-prod relay, confirms Fansly's own UI shows the Proof fan online while lastSeenAt is inside 5 minutes (a mismatch keeps the grant off), runs a nudge fire, confirms one DM arrives on the Proof fan and the run reads ok; without the grant it reads skipped/platform_lacks:nudge_online

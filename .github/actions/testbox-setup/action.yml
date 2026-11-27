@@ -1,0 +1,30 @@
+name: Testbox setup
+description: Toolchain for Blacksmith Testbox runs
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with: {python-version: '3.12', cache: pip}
+    - run: python -m venv venv && venv/bin/pip install -q -r requirements.txt pytest
+      shell: bash
+    - uses: pnpm/action-setup@v4
+      with: {version: 10.33.2}
+    - uses: actions/setup-node@v4
+      with: {node-version: 22, cache: pnpm, cache-dependency-path: app/pnpm-lock.yaml}
+    - run: pnpm install --frozen-lockfile
+      shell: bash
+      working-directory: app
+    # testbox run uses a plain ssh shell: setup-* PATH additions don't reach it, and
+    # scripts calling bare python3 expect the project venv
+    - name: Expose toolchain to testbox shell
+      shell: bash
+      run: |
+        sudo ln -sf "$(which node)" /usr/local/bin/node
+        printf '#!/bin/sh\nexec "%s" "$@"\n' "$(which pnpm)" | sudo tee /usr/local/bin/pnpm >/dev/null
+        sudo chmod +x /usr/local/bin/pnpm
+        for b in python python3; do
+          printf '#!/bin/sh\nexec "%s" "$@"\n' "$PWD/venv/bin/python" | sudo tee /usr/local/bin/$b >/dev/null
+          sudo chmod +x /usr/local/bin/$b
+        done
+        sudo apt-get update -qq && sudo apt-get install -y -qq shfmt ffmpeg
+        venv/bin/python -m playwright install --with-deps chromium

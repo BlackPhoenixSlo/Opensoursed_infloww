@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -56,7 +56,7 @@ class ListAudience:
 
 
 LIVE_CHECK_ENV = "PLATFORM_LIVE_CHECK"
-LIVE_CHECK_LANES: frozenset[str] = frozenset()
+LIVE_CHECK_LANES: frozenset[str] = frozenset({"priority_mass"})
 _LIST_TARGET_METHODS = frozenset({"delete_list"})
 _WARNED: set[str] = set()
 _BAD_PART = re.compile(r"[:=\s]")
@@ -118,6 +118,28 @@ def live_check(account_id: str, method: str, audience: frozenset[str] | ListAudi
 
 def _lacks(method: str) -> str:
     return f"{PLATFORM_LACKS_PREFIX}{method}"
+
+
+def _delete_list_gated(account_id: str) -> bool:
+    from platforms import for_account
+
+    return is_live_check_name(for_account(account_id), "delete_list")
+
+
+def _delete_list_ungranted(account_id: str, list_id: Any) -> str | None:
+    targets = live_check_targets(account_id, "delete_list")
+    granted = bool(targets) if list_id is None else ListTarget(str(list_id)) in targets
+    return None if granted else _lacks("delete_list")
+
+
+def delete_list_ungranted(account_id: str, list_id: Any = None) -> str | None:
+    return _delete_list_ungranted(account_id, list_id) if _delete_list_gated(account_id) else None
+
+
+def delete_list_refusal(account_id: str, list_id: Any, read: Callable[[], ListAudience]) -> str | None:
+    if not _delete_list_gated(account_id):
+        return None
+    return _delete_list_ungranted(account_id, list_id) or live_check(account_id, "delete_list", read())
 
 
 def is_live_check_name(platform: platforms.Platform, name: str) -> bool:

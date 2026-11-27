@@ -20,8 +20,8 @@ Add creator › sign-in › **Try Browserbase login**: the creator's OnlyFans em
 password; the proxy is the flow's Proxy selection (the card has no picker of its own).
 It needs no extension, so on a phone it is the sign-in step's only form (Paste cURL is
 desktop-only). `POST /admin/login/remote/start {backend:"browserbase", proxy,
-proxy_label}` (`service/remote_login.py`) creates a Browserbase session on
-Browserbase's managed proxies (`proxies: true`), drives it over CDP with Playwright's
+proxy_label}` (`service/remote_login.py`) creates a Browserbase session with no proxy
+(no `proxies` key: it runs on Browserbase's own network), drives it over CDP with Playwright's
 `connect_over_cdp`, and fills in OnlyFans' login form. Any Cloudflare / captcha / 2FA
 check is solved by a person in Browserbase's live view, shown in the card while the job
 runs; `solveCaptchas` is always false. Once logged in, the login extension's own
@@ -48,8 +48,11 @@ paste-curl path.
   the same visibility check as binding one (another user's is a 404).
 
 - Needs `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` in the relay's env (503
-  without them), on a plan that includes proxies.
-- The login itself runs on Browserbase's network; our proxy is never sent to
+  without them).
+- The login itself runs on Browserbase's own network with no proxy (owner 2026-11-27: OnlyFans'
+  login form loaded the same without Browserbase's managed proxies, which billed ~$12/GB, 4 MB for
+  one form load; a submitted login without them was untested; proxy-health `watch:bb_login_failed`
+  flags blocked logins); our proxy is never sent to
   Browserbase (the owner's call). For OnlyFans it is attached to the account before the session is
   saved, so all later traffic for the account egresses through it, as with an
   extension-captured login. (Sending our proxy as Browserbase's external proxy was dropped: IPRoyal ISP
@@ -61,7 +64,7 @@ paste-curl path.
 - `backend` defaults to `"local"`, which this build refuses (501): no local browser.
 - The session lives about 5 minutes (Browserbase's default); the login, the human's
   part included, must land within about 3¾ minutes; the rest is kept for the capture.
-- `service/scripts/browserbase_of_smoketest.py` creates the same managed-proxy session,
+- `service/scripts/browserbase_of_smoketest.py` creates the same no-proxy session,
   prints its egress IP and checks that OnlyFans' login form renders (exit 0 on PASS, 2
   when the session is refused, 1 otherwise);
   `service/scripts/browserbase_of_login_attended.py` (env `OF_EMAIL`, `OF_PASSWORD`)

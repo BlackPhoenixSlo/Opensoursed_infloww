@@ -150,6 +150,7 @@ _FEATURE_LABELS = {
     "gen_info": "Gen-Info",
     "full_ai_persona": "Full AI persona draft",
     "ultra_plan": "Ultra planning", "ultra_judge": "Ultra AI pick",
+    "support_summary": "Support summary",
 }
 
 
@@ -675,6 +676,7 @@ async def chat(
     tools: list[dict] | None = None,
     tool_choice: str | dict | None = None,
     max_tokens: int | None = None,
+    api_key: str | None = None,
 ) -> LLMResult:
     if user_id is not None and account_id is not None:
         raise LLMConfigError("chat() bills an account OR an agency, not both")
@@ -693,8 +695,8 @@ async def chat(
                              "(the Anthropic adapter is deferred)")
     stored_effort = "" if reasoning_effort else await _account_effort(account_id, mdl)
     effort = _resolve_effort(mdl, reasoning_effort, stored=stored_effort)
-    api_key = (await _user_api_key(user_id, prov, purpose) if user_id is not None
-               else await _tenant_api_key(account_id, prov, purpose))
+    api_key = api_key or (await _user_api_key(user_id, prov, purpose) if user_id is not None
+                          else await _tenant_api_key(account_id, prov, purpose))
 
     url = prov.base_url.rstrip("/") + ("/messages" if native else "/chat/completions")
     endpoint = httpx.URL(url).path
