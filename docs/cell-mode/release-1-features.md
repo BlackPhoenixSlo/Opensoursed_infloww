@@ -133,7 +133,7 @@ Per-Relay tools. Perf log upload names several Creators: a down Cell's Creators 
 
 Say "yes, Release 1 features signed" in the build chat.
 We record your name, the date and the table's fingerprint
-(short form: `755d4a26b840c275`).
+(short form: `85262cde2eaf22b0`).
 Any change to the table needs a new yes.
 
 ## What is in each part
@@ -307,13 +307,16 @@ Generated from `service/cell_features.json` by
 
 </details>
 
-<details><summary>Leak tracker (off; 8 routes, 2 jobs)</summary>
+<details><summary>Leak tracker (off; 11 routes, 2 jobs)</summary>
 
 - `DELETE /admin/leaks/watches/{account_id}`
 - `GET /admin/leaks/all`
+- `GET /admin/leaks/offer-video/{part}`
 - `GET /admin/leaks/roster`
 - `GET /admin/leaks/setup`
 - `GET /admin/leaks/watches/{account_id}`
+- `GET /admin/leaks/watches/{account_id}/offer`
+- `POST /admin/leaks/watches/{account_id}/offer-snooze`
 - `POST /admin/leaks/watches/{account_id}/tracking`
 - `PUT /admin/leaks/key`
 - `PUT /admin/leaks/watches/{account_id}`

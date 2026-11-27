@@ -167,7 +167,7 @@ export function LeakTracker() {
       <div data-leak-view={shown?.id ?? "all"}>
         {shown ? (
           <LeakCreator
-            key={shown.id}
+            key={`${accountId ?? "all"}:${shown.id}`}
             creatorId={shown.id}
             name={shown.nickname || shown.id}
             canWrite={data.can_write}

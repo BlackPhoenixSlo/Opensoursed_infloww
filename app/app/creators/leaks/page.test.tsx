@@ -430,6 +430,25 @@ describe("/creators/leaks", () => {
     expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-b", { accountId: "acc-b" });
   });
 
+  it("tracking the first Creator refreshes All Models without a reload", async () => {
+    let saved = false;
+    serve(setup({ key: "set", brand: "Example Removal" }), {
+      "/admin/leaks/all": () => (saved ? asAll("leaks") : NO_LEAKS),
+      "/admin/leaks/watches/acc-b": () => (saved ? tracked() : untracked()),
+    });
+    relayPut.mockImplementation(async () => { saved = true; return { synced: true }; });
+    renderWithProviders(<Page />, new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } }));
+    await waitFor(() => expect(screen.getByRole("region", { name: "All Models" }).textContent).toContain("No Leaks found yet."));
+    await pick("Creator B");
+    fireEvent.click(screen.getByRole("button", { name: "Track this Creator" }));
+    await screen.findByLabelText(/^Handle/);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(saveIn());
+    await waitFor(() => expect(relayPut).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("of-all-creators-row"));
+    expect(await screen.findByRole("list", { name: "All Leaks" })).toBeTruthy();
+  });
+
   it("with no live identity the handle is typed and sent unverified", async () => {
     serve(setup({ key: "set" }), { "/admin/leaks/watches/acc-b": untracked({ username: "", display_name: "", verified: false }) });
     relayPut.mockResolvedValue({ synced: true });
@@ -650,6 +669,29 @@ describe("/creators/leaks", () => {
 
 describe("/creators/leaks lists the Leaks", () => {
   const KEY_REFUSED = () => new RelayError(409, { detail: { error: "key_invalid", message: "Key no longer valid" } }, "Key no longer valid");
+
+  it("switching Agency closes the Start removal popup", async () => {
+    const offer = { brand: "Example Removal", contact_url: "https://removal.example/contact", angle: "came_back", n: 1 };
+    const removal = { status: "none", view: "offer", notices_updated_at: "2026-11-27T04:05:00Z", stale: false, counts: null };
+    const scenes = { google: [], google_images: [], mega: [], forum: [], x: [] };
+    window.history.replaceState({}, "", "/creators/leaks?open=acc-a");
+    serve(setup({ key: "set" }), {
+      "/admin/leaks/roster": MERGED,
+      "/admin/leaks/watches/acc-a": { ...drill(CREATOR_LEAKS), removal, offer },
+      "/admin/leaks/watches/acc-a/offer": { offer, preview_leak: null, video: null, scenes, last_checked_at: null },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(["leak-tracker", "setup", "acc-b"], setup({ key: "set" }));
+    client.setQueryData(["leak-tracker", "roster", "acc-b"], MERGED);
+    const { rerender } = renderWithProviders(<Page />, client);
+    const pane = await screen.findByRole("region", { name: "Creator A" });
+    fireEvent.click(await within(pane).findByRole("button", { name: "Contact us to start removal" }));
+    expect(await screen.findByRole("dialog", { name: "Start removal with Example Removal" })).toBeTruthy();
+    scopeAccount = "acc-b";
+    rerender(<Page />);
+    await screen.findByRole("region", { name: "Creator A" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 
   it("?open= selects that Creator in the main pane, with no dialog or sheet", async () => {
     window.history.replaceState({}, "", "/creators/leaks?open=acc-a");

@@ -217,7 +217,7 @@ TABLES = {
         ""),
     "leak_watch": ("",
         "id agency_user_id account_id watch_id on platform username verified display_name aliases_json instagram x "
-        "consent_at consent_by synced_at synced_paused created_at updated_at",
+        "consent_at consent_by synced_at synced_paused offer_snoozed_until created_at updated_at",
         ""),
     "leak_watch_tombstone": ("",
         "watch_id agency_user_id account_id tenant_id requested_at attempts last_error created_at",

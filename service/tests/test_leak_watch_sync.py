@@ -253,6 +253,7 @@ def case_a_row_saved_while_the_service_was_down_is_pushed_by_the_next_run_and_re
             ((watch_id, body),) = t.pushed().items()
             assert body["username"] == "miavale" and body["paused"] is False and body["account_id"] == CREATOR
             t.by_watch["leaks"], t.by_watch[watch_id] = _golden("creator_leaks"), _golden("creator_one")
+            t.by_watch["me"] = _golden("me")
             assert OWNER_A.get(f"/admin/leaks/watches/{CREATOR}").json()["synced"] is True
             t.calls.clear()
             asyncio.run(leak_tracker.sync_watches())

@@ -22,10 +22,10 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
       whose kind is in _PROXY_PACED_KINDS (the ledger's `transactions`) resolves it (once a page)
       and takes the Creator's slot AND that exit's, both free, both stamped at once; any other
       walk's, the Creator's only (never resolved).
-  absorb_429(account_id, call, *, send_deadline=None)
-      OF's 429 closes the Creator's gate. After a cooldown, one probe goes:
-      sends first, then reads, then walk pages, oldest first within each class.
-      A successful probe opens the gate and spaces out queued requests.
+  absorb_429(account_id, call, *, prio, send_deadline=None)
+      OF's 429 closes the Creator's gate; after a cooldown one probe goes. Its success starts recovery: every request
+      takes a slot, PAGE_GAP_S apart, halving per CLEAN_STEP_S clean down to a floor a 429 in recovery leaves, then free.
+      Slot order: a person's reads, a person's sends (sooner the longer they wait; _next), then the rest, oldest first.
       Reads have READ_BUDGET_S to wait (read_budget(s): s). Sends pass an absolute dispatch deadline.
   upstream(exc) / allow_s(text) / asked_wait(header, allow)
       The one reader of OF's answer behind an exception: (status, body, Retry-After header);
@@ -108,6 +108,15 @@ READ_BUDGET_S = 45.0
 LIST_READ_BUDGET_S = 3.0  # owner: a chat-list read waits <= 5 s total (gate + chats_page in-page retry)
 SEND_BUDGET_S = 55.0  # leaves room for the OF POST before Cloudflare's origin deadline
 MAX_READ_WAITERS = 16
+SEND_AFTER_READS = 4
+SEND_ALTERNATE_S = 5.0
+SEND_FIRST_S = 20.0
+CLEAN_STEP_S = 20.0
+MIN_GAP_S = 0.125
+REFLOOR_S = 60.0
+FLOOR_HOLD_S = 120.0
+USER_READ, PERSON_SEND, BACKGROUND = 0, 1, 2
+CF_WINDOW_S = 300.0  # OF's Cloudflare limit counts wall-clock windows of this length; allowance returns at the next one
 RETRY_HEADER_MAX_S = 120.0
 POLL_S = 0.25
 USER_WINDOW_S = 10.0
@@ -138,7 +147,16 @@ class _Gate:
     probing: bool = False
     next_at: float = 0.0
     closed_at: float = 0.0
-    queue: set[tuple[int, int]] = field(default_factory=set)
+    queue: dict[tuple[int, int, bool], float] = field(default_factory=dict)
+    reads_run: int = 0
+    gap: float | None = None
+    floor: float | None = None
+    clean_since: float = 0.0
+    fail_gap: float | None = None
+    left_at: float = float("-inf")
+    left_gap: float = 0.0
+    window: int | None = None
+    hold_until: float = float("-inf")
     last_429: BaseException | None = None
 
 
@@ -250,7 +268,7 @@ def paced(account_id: Any, call: Callable[[], Any], proxy_key: Callable[[], str]
 def _walk_attempt(aid: str, keys: tuple[str, ...], call: Callable[[], Any]) -> Any:
     with _gates_lock:
         g = _gates.setdefault(aid, _Gate())
-    me = (2, next(_tickets))
+    me = (BACKGROUND, next(_tickets), False)
     try:
         while True:
             with _gates_lock:
@@ -261,16 +279,30 @@ def _walk_attempt(aid: str, keys: tuple[str, ...], call: Callable[[], Any]) -> A
             time.sleep(delay)
     finally:
         with _gates_lock:
-            g.queue.discard(me)
+            g.queue.pop(me, None)
+
+
+_wall = time.time
 
 
 def _close(aid: str, g: _Gate, e: BaseException, now: float) -> None:
+    _step(g, now)
+    if not g.closed:
+        g.fail_gap = g.gap if g.gap is not None else g.left_gap if now - g.left_at <= REFLOOR_S else None
     if g.closed and now - g.cool_until > COOLDOWNS_S[-1]:
         g.step = 0  # nobody probed for a whole top cooldown: start the ladder again
-    cool = max(COOLDOWNS_S[min(g.step, len(COOLDOWNS_S) - 1)], retry_after(e) or 0.0)
+    window = int(_wall() // CF_WINDOW_S)
+    if g.window not in (None, window):
+        g.step = 0
+    g.window = window
+    if "1015" in (upstream(e)[1] or ""):
+        g.hold_until = now + CF_WINDOW_S - _wall() % CF_WINDOW_S
+    ladder = COOLDOWNS_S[min(g.step, len(COOLDOWNS_S) - 1)]
+    cool = max(min(ladder, CF_WINDOW_S - _wall() % CF_WINDOW_S + 1.0), retry_after(e) or 0.0)
     if not g.closed:
         g.closed_at = now
     g.closed, g.probing, g.last_429 = True, False, e
+    g.reads_run = 0
     g.cool_until = now + cool
     g.step += 1
     g.epoch += 1
@@ -282,31 +314,73 @@ def _open(aid: str, g: _Gate, now: float) -> None:
              len(g.queue))
     g.closed = g.probing = False
     g.epoch += 1
-    g.next_at = now + PAGE_GAP_S + random.uniform(0.0, JITTER_S)
+    g.floor = None if g.fail_gap is None else min(PAGE_GAP_S, 2 * g.fail_gap)
+    g.gap, g.clean_since = PAGE_GAP_S, now
+    g.next_at = now + _slot(g.gap)
     if not g.queue:
         g.step = 0
 
 
+def _slot(gap: float) -> float:
+    return gap * (1.0 + random.uniform(0.0, JITTER_S) / PAGE_GAP_S) if PAGE_GAP_S else gap
+
+
+def _step(g: _Gate, now: float) -> None:
+    while g.gap is not None and not g.closed:
+        at_floor = g.floor is not None and g.gap <= g.floor
+        at = max(g.clean_since + (FLOOR_HOLD_S if at_floor else CLEAN_STEP_S), g.hold_until)
+        if now < at:
+            return
+        if at_floor:
+            g.floor = g.floor / 2 if g.floor / 2 >= MIN_GAP_S else None
+        gap = g.gap / 2 if g.floor is None else max(g.gap / 2, g.floor)
+        if gap < MIN_GAP_S:
+            g.left_at, g.left_gap = at, g.gap
+            g.gap, g.step, g.reads_run = None, 0, 0
+            return
+        g.gap, g.clean_since = gap, at
+
+
+def _reads_full(g: _Gate, prio: int, now: float) -> bool:
+    _step(g, now)
+    return (g.closed or g.gap is not None) and sum(
+        read and (prio != USER_READ or p == USER_READ) for p, _, read in g.queue) >= MAX_READ_WAITERS
+
+
+def _next(g: _Gate, now: float) -> tuple[int, int, bool]:
+    if sends := [t for t in g.queue if t[0] == PERSON_SEND]:
+        send = min(sends)
+        waited = now - g.queue[send]
+        if g.reads_run >= (0 if waited > SEND_FIRST_S else 1 if waited > SEND_ALTERNATE_S else SEND_AFTER_READS):
+            return send
+    return min(g.queue)
+
+
 def _admit(
-    g: _Gate, me: tuple[int, int], now: float, pace_keys: tuple[str, ...] = (),
+    g: _Gate, me: tuple[int, int, bool], now: float, pace_keys: tuple[str, ...] = (),
 ) -> tuple[str, float]:
-    queued = g.closed or bool(g.queue)
-    if queued:
-        g.queue.add(me)
+    _step(g, now)
+    if g.closed or g.gap is not None:
+        g.queue.setdefault(me, now)
         if g.closed and g.cool_until > now:
             return "wait", g.cool_until - now
-        if g.probing or min(g.queue) != me:
+        if g.probing or _next(g, now) != me:
             return "wait", POLL_S if g.closed else max(g.next_at - now, POLL_S)
-    if not g.closed and (queued or pace_keys) and g.next_at > now:
-        return "wait", g.next_at - now
+        if not g.closed and g.next_at > now:
+            return "wait", g.next_at - now
     if pace_keys and (delay := _turn(*pace_keys)):
+        g.queue.pop(me, None)
         return "wait", delay
-    g.queue.discard(me)
+    if g.queue.pop(me, None) is not None:
+        if me[0] == PERSON_SEND:
+            g.reads_run = 0
+        elif me[0] == USER_READ:
+            g.reads_run = g.reads_run + 1 if any(t[0] == PERSON_SEND for t in g.queue) else 0
     if g.closed:
         g.probing = True
         return "probe", 0.0
-    if queued:
-        g.next_at = now + PAGE_GAP_S + random.uniform(0.0, JITTER_S)
+    if g.gap is not None:
+        g.next_at = now + _slot(g.gap)
         if not g.queue:
             g.step = 0
     return "go", 0.0
@@ -353,14 +427,14 @@ class SendDispatchExpired(Exception):
 
 def absorb_429(account_id: Any, call: Callable[[], Any], *,
                sleep: Callable[[float], Any] = time.sleep, clock: Callable[[], float] = time.monotonic,
-               send_deadline: float | None = None) -> Any:
+               prio: int, send_deadline: float | None = None) -> Any:
     if account_id is None:
         return call()
     aid = str(account_id)
     with _gates_lock:
         g = _gates.setdefault(aid, _Gate())
     send = send_deadline is not None
-    me = (0 if send else 1, next(_tickets))
+    me = (prio, next(_tickets), not send)
     t0 = clock()
     budget = _READ_BUDGET.get()
     deadline = send_deadline if send else t0 + (READ_BUDGET_S if budget is None else budget)
@@ -370,8 +444,7 @@ def absorb_429(account_id: Any, call: Callable[[], Any], *,
             with _gates_lock:
                 now = clock()
                 last = g.last_429 if g.closed or g.queue else None
-                full = (not send and me not in g.queue and
-                        sum(priority == 1 for priority, _ in g.queue) >= MAX_READ_WAITERS)
+                full = not send and me not in g.queue and _reads_full(g, prio, now)
                 if full or (now >= deadline and (send or own is not None or last is not None)):
                     break
                 action, delay = _admit(g, me, now)
@@ -402,7 +475,7 @@ def absorb_429(account_id: Any, call: Callable[[], Any], *,
         raise SendDispatchExpired() from None
     finally:
         with _gates_lock:
-            g.queue.discard(me)
+            g.queue.pop(me, None)
 
 
 async def walk(account_id: Any, kind: str, run: Callable[[], Awaitable[Any]]) -> Any:

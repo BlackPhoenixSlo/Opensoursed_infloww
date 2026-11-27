@@ -71,6 +71,23 @@ def case_get_absorbs_429():
         assert _lane_free()
 
 
+def case_entry_point_decides_the_gate_class():
+    seen = []
+    real = of_pacing.absorb_429
+
+    def spy(aid, call, **kw):
+        seen.append((kw["prio"], kw.get("send_deadline") is not None))
+        return real(aid, call, **kw)
+    with patch.object(of_pacing, "absorb_429", spy):
+        for method, prio, send in [("GET", "user", False), ("GET", "background", False),
+                                   ("POST", "user", True), ("POST", "background", True)]:
+            of_pacing._gates.clear()
+            call, _ = _calls(0)
+            assert _run(method, call, prio, send=send) == {"ok": True}
+    assert seen == [(of_pacing.USER_READ, False), (of_pacing.BACKGROUND, False),
+                    (of_pacing.PERSON_SEND, True), (of_pacing.PERSON_SEND, True)], seen
+
+
 def case_get_past_budget_answers_429():
     of_pacing.READ_BUDGET_S = 0.025
     of_pacing._gates.clear()

@@ -4,13 +4,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
 
-concurrency:
-  group: comment-budget-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   check:
-    if: github.event.action != 'edited' || github.event.changes.title
+    concurrency:
+      group: comment-budget-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +21,7 @@ jobs:
           else
             echo "gate off in this repo"
           fi
-          if git diff --name-only "origin/$GITHUB_BASE_REF...HEAD" | grep -qE '^(scripts/comment[_-]|scripts/tests/(test_comment|comment_gate)|app/pnpm-lock\.yaml$|\.github/workflows/comment-budget\.yml$)'; then
+          if git diff --name-only --no-renames "origin/$GITHUB_BASE_REF...HEAD" | grep -qE '^(scripts/comment[_-]|scripts/tests/(test_comment|comment_gate)|app/pnpm-lock\.yaml$|\.github/workflows/comment-budget\.yml$)'; then
             echo "gate_changed=1" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.gate.outputs.on == '1'
@@ -43,7 +41,9 @@ jobs:
           curl -fsSL -o /usr/local/bin/shfmt https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64
           echo "76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf  /usr/local/bin/shfmt" | sha256sum -c -
           chmod +x /usr/local/bin/shfmt
-          pip install -q pytest pytest-xdist
+      - name: Test dependencies
+        if: steps.gate.outputs.on == '1' && steps.gate.outputs.gate_changed == '1'
+        run: pip install -q pytest pytest-xdist
       - name: Check
         if: steps.gate.outputs.on == '1'
         env:
@@ -53,11 +53,9 @@ jobs:
         run: |
           test -f scripts/comment-budget.json || { echo "::error::scripts/comment-budget.json removed"; exit 1; }
           rc=0
+          python3 scripts/comment_budget.py --check || rc=1
           if [ -n "$GATE_CHANGED" ]; then
-            python3 scripts/comment_budget.py --check || rc=1
             python3 -m pytest -q -n auto scripts/tests/test_comment_gate.py scripts/tests/test_comment_budget.py || rc=1
-          else
-            python3 scripts/comment_budget.py --check --changed-only || rc=1
           fi
           exit "$rc"
       - name: Equality (prune batches)

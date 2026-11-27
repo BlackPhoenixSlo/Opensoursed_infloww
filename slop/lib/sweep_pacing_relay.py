@@ -112,11 +112,13 @@ def wire(app, loopback, _relay) -> None:
 
     async def failover(request: Request) -> dict:
         loopback(request)
+        import account_health
         import proxies
         import proxy_health
         label = (await request.json())["label"]
         moved = await asyncio.to_thread(proxies.failover_pool, label, bad=set(), geo=proxy_health.last_geo,
-                                        verify=proxy_health.verify_pick)
+                                        verify=proxy_health.verify_pick,
+                                        deactivated=account_health.write_gate_snapshot())
         return {"moved": moved}
 
     app.add_api_route("/__slop/sweep-pacing/knobs", knobs, methods=["POST"])

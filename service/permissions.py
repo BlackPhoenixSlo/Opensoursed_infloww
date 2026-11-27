@@ -118,6 +118,12 @@ def leak_writer(ctx: AgencyContext, roles: dict[str, Any]) -> bool:
     return ctx.is_owner or _owner_or_admin(_leak_role(ctx, roles))
 
 
+def removal_offer_viewer(ctx: AgencyContext, roles: dict[str, Any]) -> bool:
+    if ctx.is_owner:
+        return True
+    return ctx.employee_id is not None and (roles.get("assignments") or {}).get(str(ctx.employee_id)) == "admin"
+
+
 def denied_actions(ctx: AgencyContext, roles: dict[str, Any]) -> set[str]:
     if ctx.is_owner or not enforced(roles):
         return set()

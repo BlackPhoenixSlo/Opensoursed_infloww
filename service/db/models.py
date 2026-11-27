@@ -1852,6 +1852,7 @@ class LeakWatch(Base):
     consent_by: Mapped[str] = mapped_column(String, nullable=False)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime)
     synced_paused: Mapped[bool | None] = mapped_column(Boolean)
+    offer_snoozed_until: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = _ts_now()
     updated_at: Mapped[datetime] = _ts_now()
 

@@ -23,7 +23,7 @@ from agency_context import AgencyContext, agency_contexts
 from automations._knobs import test_mode
 from db.engine import get_session
 from db.models import LeakTrackerTenant, LeakWatch, LeakWatchTombstone
-from permissions import leak_page_granted, leak_writer
+from permissions import leak_page_granted, leak_writer, removal_offer_viewer
 from send_ops import cells
 from tenant_keys import NON_LLM_PROVIDERS, TRACKER_PROVIDER as PROVIDER, get_key, set_keys
 
@@ -65,6 +65,7 @@ class Gates:
     ctx: AgencyContext
     key: str
     can_write: bool
+    offer_viewer: bool
 
 
 def _loopback(host: str) -> bool:
@@ -108,7 +109,8 @@ async def require_gates(request: Request, *, need_key: bool) -> Gates:
     if not deployment_on():
         raise _not_found()
     try:
-        contexts = await agency_contexts(account_id=request.headers.get("x-account-id") or None)
+        contexts = await agency_contexts(
+            account_id=request.headers.get("x-account-id") or request.query_params.get("account_id") or None)
     except HTTPException:
         raise _not_found() from None
     if len(contexts) != 1:
@@ -122,7 +124,7 @@ async def require_gates(request: Request, *, need_key: bool) -> Gates:
     key = await get_key(ctx.agency_user_id, PROVIDER)
     if need_key and not key:
         raise _not_found()
-    return Gates(ctx=ctx, key=key, can_write=leak_writer(ctx, roles))
+    return Gates(ctx=ctx, key=key, can_write=leak_writer(ctx, roles), offer_viewer=removal_offer_viewer(ctx, roles))
 
 
 class Unreachable(Exception):
@@ -184,6 +186,32 @@ async def call(agency_user_id: str | None, key: str, method: str, path: str, jso
     if r.status_code >= 500:
         raise Unreachable()
     return r
+
+
+async def open_stream(agency_user_id: str, key: str, path: str,
+                      byte_range: str | None) -> tuple[httpx.AsyncClient, httpx.Response]:
+    base = tracker_url()
+    if base is None:
+        raise Unreachable()
+    client = httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False)
+    req = client.build_request("GET", base + path, headers={
+        "Authorization": f"Bearer {key}", "Accept-Encoding": "identity", **({"Range": byte_range} if byte_range else {})})
+    for name in ("user-agent", "accept"):
+        req.headers.pop(name, None)
+    try:
+        r = await client.send(req, stream=True)
+    except BaseException as e:
+        await client.aclose()
+        if isinstance(e, httpx.HTTPError):
+            raise Unreachable() from None
+        raise
+    if r.status_code == 401:
+        await r.aclose()
+        await client.aclose()
+        _invalid.add(agency_user_id)
+        drop_copies(agency_user_id)
+        raise KeyRefused()
+    return client, r
 
 
 async def read(agency_user_id: str, key: str, path: str, parse: Callable[[Any], Any], *,

@@ -44,6 +44,7 @@ def _enrol_two(t: Tracker) -> None:
     _rewatch(CREATOR, MIA_W)
     _rewatch(SECOND, ROWAN_W)
     t.routes[CREATOR_ONE["path"]] = CREATOR_ONE
+    t.routes["/v1/me"] = ME
 
 
 def _as_account(golden: dict, account: str) -> list[dict]:
@@ -194,7 +195,7 @@ def case_the_drill_in_lists_the_watch_leaks_with_their_events_page_by_page():
     assert (body["next_cursor"], body["stale"]) == (None, False), body
     assert sorted((u.path, sorted(u.params.items())) for u in urls) == [
         (CREATOR_ONE["path"], []), (MIA_LEAKS, [("cursor", "MjAyNi0xMS0yMFQwOTowNjowMFp8bGtfMDAwMw"), ("limit", "2")]),
-        (MIA_LEAKS, [("limit", "2")])], urls
+        (MIA_LEAKS, [("limit", "2")]), ("/v1/me", [])], urls
     assert nxt.status_code == 200, nxt.text
 
 

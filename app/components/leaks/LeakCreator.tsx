@@ -12,6 +12,8 @@ import type { LeakLane } from "./leakCoverage";
 import { LeakPages } from "./LeakList";
 import { useLeakPages } from "./leakRead";
 import { headerFacts, NOT_CHECKED, NOT_TRACKED, pausedLabel, viewerZone, type LeakPage, type LeakRosterRow } from "./leakView";
+import { RemovalArea } from "./RemovalArea";
+import type { Removal, RemovalOffer } from "./removalOffer";
 import { TrackingSwitch } from "./TrackingSwitch";
 
 type LeakWatchRead = LeakPage & {
@@ -20,6 +22,8 @@ type LeakWatchRead = LeakPage & {
   suggested: IdentityStart | null;
   synced: boolean;
   lanes: LeakLane[] | null;
+  removal: Removal | null;
+  offer: RemovalOffer | null;
 };
 
 const EMPTY: IdentityStart = { username: "", verified: false, display_name: "" };
@@ -77,6 +81,7 @@ export function LeakCreator({ creatorId, name, canWrite, brand, row, onDeleted }
               ))}
             </dl>
           )}
+          <RemovalArea creatorId={creatorId} removal={w.removal} offer={w.offer} />
           {!w.synced && (
             <p role="status" className="mt-1 text-[14px] text-muted">
               Saved. It reaches {brand || "the removal service"} on the next sync.

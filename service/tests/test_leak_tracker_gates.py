@@ -145,14 +145,20 @@ def _all_404(client, label: str, headers: dict | None = None) -> None:
 REFUSED = {"PUT /admin/leaks/key": {"owner": 422, "writer": 403, "reader": 403},
            "PUT /admin/leaks/watches/{account_id}": {"owner": 422, "writer": 422, "reader": 403},
            "POST /admin/leaks/watches/{account_id}/tracking": {"owner": 422, "writer": 422, "reader": 403},
-           "DELETE /admin/leaks/watches/{account_id}": {"owner": 200, "writer": 200, "reader": 403}}
+           "POST /admin/leaks/watches/{account_id}/offer-snooze": {"owner": 422, "writer": 422, "reader": 403},
+           "DELETE /admin/leaks/watches/{account_id}": {"owner": 200, "writer": 200, "reader": 403},
+           "GET /admin/leaks/watches/{account_id}/offer": {"owner": 404, "writer": 404, "reader": 404},
+           "GET /admin/leaks/offer-video/{part}": {"owner": 404, "writer": 404, "reader": 404}}
+SNOOZE = "POST /admin/leaks/watches/{account_id}/offer-snooze"
 
 
 def _all_reached(client, label: str, headers: dict | None = None, *, writes: bool = True,
-                 creator: str = "creator_a") -> None:
+                 creator: str = "creator_a", offers: bool = True) -> None:
     who = "owner" if client in (OWNER_A, OWNER_B) else "writer" if writes else "reader"
     for name, r in _routes(client, headers, creator):
         want = REFUSED[name][who] if name in REFUSED else 200
+        if name == SNOOZE and who == "writer" and not offers:
+            want = 403
         assert r.status_code == want, f"{label}: {name} -> {r.status_code} {r.text}, want {want}"
 
 
@@ -355,28 +361,28 @@ SAVED_ADMIN = {"id": "admin", "name": "Admin", "description": "", "scope": "all"
 
 def case_role_table():
     rows = [
-        ("built-in Owner", _roles({EMP_A: "owner"}), True, True),
-        ("built-in Admin", _roles({EMP_A: "admin"}), True, True),
-        ("saved Admin object", _roles({EMP_A: "admin"}, [SAVED_ADMIN]), True, True),
-        ("Team Leader default", _roles({EMP_A: "team-leader"}), True, False),
-        ("saved Team Leader, no tick", _roles({EMP_A: "team-leader"}, [SAVED_TL]), False, False),
-        ("saved Team Leader, ticked", _roles({EMP_A: "team-leader"}, [SAVED_TL_TICKED]), True, False),
-        ("Chatter", _roles({EMP_A: "chatter"}), False, False),
-        ("Creator", _roles({EMP_A: "creator"}), False, False),
-        ("custom role with the page", _roles({EMP_A: "role-leaks"}, [CUSTOM_WITH]), True, False),
-        ("custom role without the page", _roles({EMP_A: "role-closer"}, [CUSTOM_WITHOUT]), False, False),
-        ("custom role disabled", _roles({EMP_A: "role-leaks"}, [{**CUSTOM_WITH, "disabled": True}]), False, False),
-        ("no role", _roles({}), False, False),
-        ("unknown role id", _roles({EMP_A: "role-gone"}), False, False),
-        ("enforcement off", _roles({EMP_A: "team-leader"}, enforce=False), False, False),
-        ("enforcement off, Admin", _roles({EMP_A: "admin"}, enforce=False), False, False),
+        ("built-in Owner", _roles({EMP_A: "owner"}), True, True, False),
+        ("built-in Admin", _roles({EMP_A: "admin"}), True, True, True),
+        ("saved Admin object", _roles({EMP_A: "admin"}, [SAVED_ADMIN]), True, True, True),
+        ("Team Leader default", _roles({EMP_A: "team-leader"}), True, False, False),
+        ("saved Team Leader, no tick", _roles({EMP_A: "team-leader"}, [SAVED_TL]), False, False, False),
+        ("saved Team Leader, ticked", _roles({EMP_A: "team-leader"}, [SAVED_TL_TICKED]), True, False, False),
+        ("Chatter", _roles({EMP_A: "chatter"}), False, False, False),
+        ("Creator", _roles({EMP_A: "creator"}), False, False, False),
+        ("custom role with the page", _roles({EMP_A: "role-leaks"}, [CUSTOM_WITH]), True, False, False),
+        ("custom role without the page", _roles({EMP_A: "role-closer"}, [CUSTOM_WITHOUT]), False, False, False),
+        ("custom role disabled", _roles({EMP_A: "role-leaks"}, [{**CUSTOM_WITH, "disabled": True}]), False, False, False),
+        ("no role", _roles({}), False, False, False),
+        ("unknown role id", _roles({EMP_A: "role-gone"}), False, False, False),
+        ("enforcement off", _roles({EMP_A: "team-leader"}, enforce=False), False, False, False),
+        ("enforcement off, Admin", _roles({EMP_A: "admin"}, enforce=False), False, False, False),
     ]
     try:
         with _on():
-            for label, roles, passes, writes in rows:
+            for label, roles, passes, writes, offers in rows:
                 _agency("agency_a_owner", roles=roles)
                 if passes:
-                    _all_reached(CHATTER_A, label, writes=writes)
+                    _all_reached(CHATTER_A, label, writes=writes, offers=offers)
                     body = CHATTER_A.get("/admin/leaks/setup").json()
                     assert body == {"key": "set", "masked": None, "is_owner": False, "can_write": writes,
                                     "brand": None}, f"{label}: {body}"

@@ -22,7 +22,7 @@ const PILL_CLASS: Record<LeakPill, string> = {
 
 const NOT_REACHABLE_LEAKS = "The removal service is not reachable. Leaks show again once it answers.";
 
-function Pill({ pill }: { pill: LeakPill }) {
+export function Pill({ pill }: { pill: LeakPill }) {
   return (
     <span data-pill={pill} className={cn("rounded-full px-2 py-0.5 text-[12px] font-medium", PILL_CLASS[pill])}>
       {PILL_LABEL[pill]}

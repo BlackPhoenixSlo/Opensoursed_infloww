@@ -3,12 +3,15 @@
   "path": "/v1/me",
   "request": null,
   "response": {
+    "accepting_new": true,
     "brand": "Example Removal",
     "contact_url": "https://removal.example/contact",
     "creators_max": 5,
     "creators_used": 2,
     "label": "Example Agency",
-    "tenant_id": "tn_example0001"
+    "notices_updated_at": null,
+    "tenant_id": "tn_example0001",
+    "video": null
   },
   "status": 200
 }

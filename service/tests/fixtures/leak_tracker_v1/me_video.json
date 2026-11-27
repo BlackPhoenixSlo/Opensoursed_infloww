@@ -1,0 +1,46 @@
+{
+  "method": "GET",
+  "path": "/v1/me",
+  "request": null,
+  "response": {
+    "accepting_new": true,
+    "brand": "Example Removal",
+    "contact_url": "https://removal.example/contact",
+    "creators_max": 5,
+    "creators_used": 2,
+    "label": "Example Agency",
+    "notices_updated_at": null,
+    "tenant_id": "tn_example0001",
+    "video": {
+      "cues": [
+        {
+          "kind": "google",
+          "t_s": 3
+        },
+        {
+          "kind": "google_images",
+          "t_s": 9.5
+        },
+        {
+          "kind": "mega",
+          "t_s": 16
+        },
+        {
+          "kind": "forum",
+          "t_s": 22
+        },
+        {
+          "kind": "x",
+          "t_s": 28
+        },
+        {
+          "kind": "end",
+          "t_s": 40
+        }
+      ],
+      "duration_s": 42,
+      "has_poster": true
+    }
+  },
+  "status": 200
+}

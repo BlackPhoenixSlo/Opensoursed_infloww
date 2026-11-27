@@ -75,7 +75,7 @@ class Tracker:
             assert request.url.path == want, request.url
         assert request.method == answer["method"], request.method
         if "raw" in answer:
-            return httpx.Response(answer["status"], content=answer["raw"])
+            return httpx.Response(answer["status"], content=answer["raw"], headers=answer.get("headers"))
         return httpx.Response(answer["status"], json=answer["response"])
 
     def bearers(self) -> list[str]:
@@ -427,8 +427,8 @@ def case_the_suggestion_is_the_live_identity_verified_or_empty_unverified():
     empty = {"username": "", "display_name": "", "verified": False}
     with _tracker() as t, _live({CREATOR: MIA_LIVE, FANSLY: MIA_LIVE}):
         body = OWNER_A.get(f"/admin/leaks/watches/{CREATOR}").json()
-        assert body == {"tracked": False, "identity": None, "synced": False, "lanes": None, "today": None, "leaks": [],
-                        "next_cursor": None, "stale": False, "fetched_at": None,
+        assert body == {"tracked": False, "identity": None, "synced": False, "lanes": None, "today": None,
+                        "removal": None, "offer": None, "leaks": [], "next_cursor": None, "stale": False, "fetched_at": None,
                         "suggested": {"username": "miavale", "display_name": "Mia Vale", "verified": True}}, body
         body = OWNER_A.get(f"/admin/leaks/watches/{SECOND}").json()
         assert body["suggested"] == empty, "no live session: typed and unverified"
@@ -585,8 +585,9 @@ def case_the_tracking_switch_pauses_and_resumes_keeping_the_row_and_calls_nothin
             (before.watch_id, before.username, before.aliases_json, before.consent_at, before.synced_at, False)
         for path, name in [(f"/v1/creators/{row.watch_id}/leaks", "creator_leaks"), (f"/v1/creators/{row.watch_id}", "creator_one")]:
             t.routes[path] = {**_golden(name), "path": path}
+        t.routes["/v1/me"] = ME
         assert OWNER_A.get(f"/admin/leaks/watches/{CREATOR}").json()["identity"]["on"] is False
-        assert [c.method for c in t.calls] == ["GET", "GET"], "the hourly sync pushes the paused bit"
+        assert [c.method for c in t.calls] == ["GET", "GET", "GET"], "the hourly sync pushes the paused bit"
         t.calls.clear()
         assert (_track(True).status_code, _watches()[0].on) == (200, True)
         assert t.calls == []
@@ -643,7 +644,7 @@ def _rewatch(account: str, watch_id: str) -> None:
 
 def _service(watch_id: str) -> dict:
     (c,) = [c for c in CREATORS["response"]["creators"] if c["watch_id"] == watch_id]
-    return {k: v for k, v in c.items() if k not in ("watch_id", "account_id")}
+    return {k: c[k] for k in UNKNOWN}
 
 
 def _local(account: str, name: str, username: str, *, on: bool = True) -> dict:
@@ -951,6 +952,7 @@ def case_delete_drops_that_watch_from_the_read_cache_only():
         t.routes["/v1/creators"] = CREATORS
         for path, name in [(f"/v1/creators/{MIA_W}/leaks", "creator_leaks"), (f"/v1/creators/{MIA_W}", "creator_one")]:
             t.routes[path] = {**_golden(name), "path": path}
+        t.routes["/v1/me"] = ME
         _roster()
         assert OWNER_A.get(f"/admin/leaks/watches/{CREATOR}").json()["tracked"] is True
         agency = IDS["agency_a_owner"]

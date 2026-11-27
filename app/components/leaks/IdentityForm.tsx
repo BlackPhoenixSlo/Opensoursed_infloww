@@ -49,6 +49,7 @@ export function IdentityForm({ creatorId, tracked, start, brand, trimmed, onDone
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["leak-tracker", "roster"] });
       void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId] });
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "all"] });
       onDone();
     },
     onError: (e: Error) => {

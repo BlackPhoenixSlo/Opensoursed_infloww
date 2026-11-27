@@ -19,6 +19,7 @@ _REAL = {k: getattr(of_pacing, k) for k in _KNOBS}
 def _knobs(**kw):
     for k, v in _REAL.items():
         setattr(of_pacing, k, kw.get(k, v))
+    of_pacing._wall = lambda: 0.0
     of_pacing._next_at.clear()
     of_pacing._last_user.clear()
     of_pacing._gates.clear()
@@ -226,7 +227,7 @@ class _Clock:
         self.t += d
 
 
-def _absorb(answers, clock, send=False):
+def _absorb(answers, clock, send=False, prio=None):
     it, n = iter(answers), []
 
     def call():
@@ -237,6 +238,8 @@ def _absorb(answers, clock, send=False):
         return a
     try:
         got = of_pacing.absorb_429("a1", call, send_deadline=clock() + of_pacing.SEND_BUDGET_S if send else None,
+                                     prio=prio if prio is not None else
+                                     of_pacing.PERSON_SEND if send else of_pacing.USER_READ,
                                      sleep=clock.sleep, clock=clock)
     except Exception as e:
         got = type(e)
@@ -269,10 +272,12 @@ def case_absorb_429_table():
     clock = _Clock()
     assert _absorb([E(), E(), "ok"], clock) == (3, "ok") and clock.slept == [3.0, 5.0]
     g = of_pacing._gates["a1"]
-    assert not g.closed and g.step == 0 and not g.queue, g
+    assert not g.closed and g.step == 0 and g.gap == of_pacing.PAGE_GAP_S and not g.queue, g
     clock.slept.clear()
-    assert _absorb(["ok"], clock) == (1, "ok") and clock.slept == [], "open gate: sent at once"
-    assert _absorb([E(), "ok"], clock) == (2, "ok") and clock.slept == [3.0], "ladder reset after success"
+    assert _absorb(["ok"], clock) == (1, "ok") and clock.slept == [5.0], "recovering: one slot"
+    clock.t += 200.0
+    clock.slept.clear()
+    assert _absorb([E(), "ok"], clock) == (2, "ok") and clock.slept == [3.0], "ladder reset once recovery is left"
 
 
 def case_send_retry_cutoff_after_oversleep():
@@ -289,7 +294,7 @@ def case_send_retry_cutoff_after_oversleep():
 
     try:
         of_pacing.absorb_429("a1", call, send_deadline=clock() + of_pacing.SEND_BUDGET_S,
-                             sleep=sleep, clock=clock)
+                             prio=of_pacing.PERSON_SEND, sleep=sleep, clock=clock)
     except _E429:
         pass
     assert sent == [1000.0]
@@ -330,14 +335,15 @@ async def case_walk_rechecks_gate_and_probes():
 async def case_walk_yields_to_queued_send_and_drain():
     _knobs(PAGE_GAP_S=1.0, JITTER_S=0.0)
     clock = _Clock()
-    gate = of_pacing._Gate(closed=True, last_429=_E429(), queue={(0, -1)})
+    send = (of_pacing.PERSON_SEND, -1, False)
+    gate = of_pacing._Gate(closed=True, last_429=_E429(), queue={send: clock.t})
     of_pacing._gates["a1"] = gate
     sent = []
 
     def sleep(delay):
         clock.sleep(delay)
         if not sent:
-            assert of_pacing._admit(gate, (0, -1), clock()) == ("probe", 0.0)
+            assert of_pacing._admit(gate, send, clock()) == ("probe", 0.0)
             sent.append(("send", clock()))
             of_pacing._open("a1", gate, clock())
 
@@ -402,7 +408,7 @@ def case_cancelled_probe_and_waiter_release():
         if n == 2:
             of_pacing._gates["a1"].cool_until += 3
         try:
-            of_pacing.absorb_429("a1", invoke, sleep=sleep, clock=clock)
+            of_pacing.absorb_429("a1", invoke, prio=of_pacing.USER_READ, sleep=sleep, clock=clock)
         except Cancel:
             pass
         else:
@@ -463,9 +469,22 @@ def case_read_waiter_cap():
     clock = _Clock()
     g = of_pacing._gates.setdefault("a1", of_pacing._Gate(
         closed=True, cool_until=clock.t + 3, last_429=_E429()))
-    g.queue.update((1, ticket) for ticket in range(-of_pacing.MAX_READ_WAITERS, 0))
+    g.queue.update(((of_pacing.USER_READ, ticket, True), clock.t) for ticket in range(-of_pacing.MAX_READ_WAITERS, 0))
+    g.queue[(of_pacing.PERSON_SEND, 0, False)] = clock.t
     assert _absorb(["read"], clock) == (0, _E429)
-    assert clock.slept == [] and len(g.queue) == of_pacing.MAX_READ_WAITERS
+    assert _absorb(["read"], clock, prio=of_pacing.BACKGROUND) == (0, _E429)
+    assert clock.slept == [] and len(g.queue) == of_pacing.MAX_READ_WAITERS + 1
+
+
+def case_background_reads_never_fill_a_persons_read_slots():
+    _knobs()
+    clock = _Clock()
+    g = of_pacing._gates.setdefault("a1", of_pacing._Gate(
+        closed=True, cool_until=clock.t + 3, last_429=_E429()))
+    g.queue.update(((of_pacing.BACKGROUND, ticket, True), clock.t) for ticket in range(-20, 0))
+    assert _absorb(["bg"], clock, prio=of_pacing.BACKGROUND) == (0, _E429) and clock.slept == []
+    assert _absorb(["read"], clock) == (1, "read") and clock.slept == [3.0], clock.slept
+    assert len(g.queue) == 20 and not g.closed
 
 
 def case_accountless_bypasses_gate():
@@ -476,7 +495,7 @@ def case_accountless_bypasses_gate():
         raise _E429()
 
     try:
-        of_pacing.absorb_429(None, fail, sleep=clock.sleep, clock=clock)
+        of_pacing.absorb_429(None, fail, prio=of_pacing.USER_READ, sleep=clock.sleep, clock=clock)
     except _E429:
         pass
     assert "None" not in of_pacing._gates
@@ -487,7 +506,7 @@ def case_gate_one_probe():
     clock = _Clock()
     assert _absorb([_E429()], clock) == (1, _E429)
     assert of_pacing._gates["a1"].closed
-    assert of_pacing.absorb_429("a2", lambda: "b", sleep=clock.sleep, clock=clock) == "b"
+    assert of_pacing.absorb_429("a2", lambda: "b", prio=of_pacing.USER_READ, sleep=clock.sleep, clock=clock) == "b"
     assert not clock.slept, "another Creator never waits on a1's gate"
 
     cools, gap = (0.06, 0.1, 0.16), 0.03
@@ -517,7 +536,7 @@ def case_gate_one_probe():
 
     def worker():
         go.wait()
-        out.append(of_pacing.absorb_429("a1", call))
+        out.append(of_pacing.absorb_429("a1", call, prio=of_pacing.USER_READ))
     of_pacing._close = close
     try:
         ts = [threading.Thread(target=worker) for _ in range(10)]
@@ -538,7 +557,7 @@ def case_gate_one_probe():
     assert drained[0] - closes[-1] >= cools[-1] / 2, "the probe waits the cooldown"
     assert min(b - a for a, b in zip(drained, drained[1:])) >= gap / 2, "the queue drains paced"
     g = of_pacing._gates["a1"]
-    assert not g.closed and not g.queue and g.step == 0, g
+    assert not g.closed and not g.queue and g.step == 0 and g.gap == gap, g
 
 
 def case_walk_waits_cooling():
@@ -837,6 +856,363 @@ def case_bare_client_unpaced():
     asyncio.run(of_pacing.walk("a1", "k", job))
     assert len(sent) == 3 and sent[-1] - sent[0] < 0.2, sent
     assert not of_pacing._next_at, of_pacing._next_at
+
+
+_KINDS = {
+    "read": (of_pacing.USER_READ, True, "READ_BUDGET_S"),
+    "send": (of_pacing.PERSON_SEND, False, "SEND_BUDGET_S"),
+    "bg_read": (of_pacing.BACKGROUND, True, "READ_BUDGET_S"),
+    "bg_send": (of_pacing.BACKGROUND, False, "SEND_BUDGET_S"),
+    "walk": (of_pacing.BACKGROUND, False, None),
+}
+
+
+def _gate_sim(arrivals, of=None, ever=None, slots=None, gate=None):
+    import heapq
+
+    clock = _Clock()
+    g = of_pacing._gates.setdefault("a1", of_pacing._Gate(**(gate or {})))
+    of_pacing._close("a1", g, _E429(), clock.t)
+    events = []
+    for n, (at, kind) in enumerate(arrivals):
+        prio, read, budget = _KINDS[kind]
+        born = clock.t + at
+        heapq.heappush(events, (born, n, kind, (prio, n, read), born,
+                                None if budget is None else born + getattr(of_pacing, budget)))
+    log, dropped = [], []
+    with patch.object(of_pacing.time, "monotonic", clock):
+        while events:
+            t, n, kind, me, born, deadline = heapq.heappop(events)
+            clock.t = t
+            if me[2] and me not in g.queue and of_pacing._reads_full(g, me[0], t):
+                dropped.append((kind, n))
+                continue
+            action, delay = of_pacing._admit(g, me, t, ("a1",) if kind == "walk" else ())
+            if ever is not None and me in g.queue:
+                ever.add(n)
+            if action == "wait":
+                if deadline is not None and t + delay >= deadline:
+                    g.queue.pop(me, None)
+                    dropped.append((kind, n))
+                else:
+                    heapq.heappush(events, (t + delay, n, kind, me, born, deadline))
+                continue
+            hit = of is not None and of(t, action)
+            log.append((t - 1000.0, kind, n, t - born, "429" if hit else action))
+            if slots is not None:
+                slots.append((t - 1000.0, g.gap if action == "go" else None, g.floor))
+            if hit:
+                of_pacing._close("a1", g, _E429(), t)
+                heapq.heappush(events, (t, n, kind, me, born, deadline))
+            elif action == "probe":
+                of_pacing._open("a1", g, t)
+                g.probing = False
+    return log, dropped
+
+
+def _fail_probes(k):
+    left = [k]
+
+    def of(_t, action):
+        if action == "probe" and left[0]:
+            left[0] -= 1
+            return True
+        return False
+    return of
+
+
+def _waits(log, kind):
+    return [w for _, k, _, w, a in log if k == kind and a != "429"]
+
+
+_FIRST_STEP_S = of_pacing.COOLDOWNS_S[0] + of_pacing.CLEAN_STEP_S
+
+
+def _steady(send_every, others, horizon=90.0):
+    return [(i * send_every, "send") for i in range(int(horizon / send_every))] + others
+
+
+def case_steady_sends_after_one_429_never_starve_reads_or_walks():
+    for send_every, others in [
+        (1.25, [(0.5, "read"), (0.6, "walk"), (30.0, "read"), (30.1, "walk")]),
+        (1.0, [(0.5, "read"), (0.6, "walk")]),
+        (0.9, [(0.5, "read"), (0.6, "walk"), (10.0, "read"), (10.1, "walk")]),
+        (1.0, [(20.0, "read"), (20.1, "walk")]),
+    ]:
+        _knobs(JITTER_S=0.0)
+        log, dropped = _gate_sim(_steady(send_every, others))
+        reads, walks, sends = _waits(log, "read"), _waits(log, "walk"), _waits(log, "send")
+        assert not dropped, dropped
+        assert len(reads) == sum(k == "read" for _, k in others) and max(reads) <= 3.0, (send_every, reads)
+        assert len(walks) == sum(k == "walk" for _, k in others) and max(walks) <= _FIRST_STEP_S + 10.0, walks
+        assert max(sends) <= 10.0 and max(sends[-30:]) <= 1.0, (send_every, sends)
+        assert not of_pacing._gates["a1"].closed
+
+
+def case_closed_gate_probes_user_read_first():
+    _knobs(JITTER_S=0.0)
+    log, dropped = _gate_sim([(0.1, "bg_read"), (0.2, "walk"), (0.3, "bg_send"), (0.4, "send"),
+                              (0.5, "read"), (0.6, "read")])
+    assert not dropped and [(k, a) for _, k, _, _, a in log] == [
+        ("read", "probe"), ("read", "go"), ("send", "go"), ("bg_read", "go"), ("walk", "go"),
+        ("bg_send", "go")], log
+
+
+def case_steady_person_sends_reads_wait_one_gap():
+    _knobs(JITTER_S=0.0)
+    others = [(5.0 + 10 * i, "read") for i in range(8)] + [(0.6, "walk"), (30.1, "walk"), (60.1, "walk")]
+    log, dropped = _gate_sim(_steady(1.0, others))
+    reads, sends, walks = _waits(log, "read"), _waits(log, "send"), _waits(log, "walk")
+    assert not dropped, dropped
+    assert len(reads) == 8 and max(reads) <= of_pacing.PAGE_GAP_S, reads
+    assert len(sends) == 90 and max(sends) < of_pacing.SEND_BUDGET_S, sends
+    assert len(walks) == 3 and max(walks) <= _FIRST_STEP_S + 10.0, walks
+
+
+def case_read_flood_lets_a_person_send_through_after_4_reads():
+    for send_at in (1.0, 6.0, 12.3):
+        _knobs(JITTER_S=0.0)
+        log, dropped = _gate_sim([(0.5 * i, "read") for i in range(80)] + [(send_at, "send"), (0.7, "walk")])
+        sent = next(t for t, k, *_ in log if k == "send")
+        ahead = [t for t, k, *_ in log if k == "read" and send_at < t < sent]
+        reads = _waits(log, "read")
+        assert len(ahead) <= of_pacing.SEND_AFTER_READS, (send_at, ahead)
+        assert ("send", 80) not in dropped and max(reads) < of_pacing.READ_BUDGET_S, (dropped, reads)
+
+
+def case_repeated_429_probes_user_read_before_send():
+    _knobs(JITTER_S=0.0)
+    log, _ = _gate_sim([(0.2, "send"), (0.5, "read")], _fail_probes(2))
+    assert [k for _, k, *_ in log] == ["read", "read", "read", "send"], log
+    _knobs(JITTER_S=0.0)
+    log, dropped = _gate_sim([(0.2, "send"), (0.5, "read"), (40.0, "read")], _fail_probes(5))
+    assert [(k, n) for _, k, n, *_ in log] == [("read", 1)] * 3 + [("send", 0)] * 2 + [("read", 2)], log
+    assert dropped == [("read", 1), ("send", 0)], dropped
+    assert of_pacing._gates["a1"].reads_run == 0
+
+
+def case_background_never_jumps_a_person():
+    _knobs(JITTER_S=0.0)
+    log, _ = _gate_sim([(0.1, "bg_read"), (0.2, "bg_read"), (0.3, "bg_read"), (0.4, "bg_read"), (3.5, "read"),
+                        (3.6, "bg_read")])
+    assert [k for _, k, *_ in log] == ["bg_read", "read", "bg_read", "bg_read", "bg_read", "bg_read"], log
+    for arrivals in (_steady(1.0, [(5.0 + 10 * i, "read") for i in range(8)] + [(2.0 + 7 * i, "bg_read")
+                                                                                   for i in range(12)]),
+                     [(0.5 * i, "bg_read") for i in range(10)] + [(1.1, "send"), (4.2, "read"), (4.3, "send")]):
+        log, _ = _gate_sim(arrivals)
+        at = {n: (t, t - w, k) for t, k, n, w, _ in log}
+        for tb, bb, kb in at.values():
+            if kb.startswith("bg"):
+                assert all(tp <= tb for tp, bp, kp in at.values() if kp in ("read", "send") and bp <= bb), (tb, bb)
+
+
+def _pressure(send_every, horizon, extra=()):
+    return ([(0.5 * i, "read") for i in range(int(horizon / 0.5))] + _steady(send_every, [], horizon)
+            + [(2.0 * i + 0.3, "bg_read") for i in range(int(horizon / 2.0))] + list(extra))
+
+
+def _live(horizon, read_every=1.0, send_every=4.0, extra=()):
+    return ([(read_every * i + 0.5, "read") for i in range(int(horizon / read_every))]
+            + [(send_every * i + 0.2, "send") for i in range(int(horizon / send_every))]
+            + [(2.0 * i + 0.3, "bg_read") for i in range(int(horizon / 2.0))] + list(extra))
+
+
+class _Bucket:
+    # Guess fitted to the 2026-11-27 live probes: 1.5/s for 60 s clean, 2.5/s 429 after ~40 s, 4/s within seconds.
+    def __init__(self, rate=1.6, cap=500.0):
+        self.rate, self.cap, self.tokens, self.at, self.hits = rate, cap, 0.0, 1000.0, []
+
+    def __call__(self, t, _action):
+        self.tokens = min(self.cap, self.tokens + (t - self.at) * self.rate)
+        self.at = t
+        if self.tokens < 1.0:
+            self.tokens = 0.0
+            self.hits.append(t - 1000.0)
+            return True
+        self.tokens -= 1.0
+        return False
+
+
+def _jitters():
+    for jitter in (0.0, of_pacing.JITTER_S):
+        _knobs(JITTER_S=jitter)
+        of_pacing.random.seed(7)
+        yield jitter
+
+
+def case_live_load_after_a_429_draws_at_most_one_more():
+    for jitter in _jitters():
+        of = _Bucket()
+        arrivals = _live(60.0)
+        log, dropped = _gate_sim(arrivals, of=of)
+        reads, sends = _waits(log, "read"), _waits(log, "send")
+        assert len(of.hits) <= 1, (jitter, of.hits)
+        assert not [d for d in dropped if d[0] in ("read", "send")], (jitter, dropped)
+        assert len(reads) + len(sends) == sum(k in ("read", "send") for _, k in arrivals)
+        assert max(reads) <= 12.0 and max(sends) <= 8.0, (jitter, max(reads), max(sends))
+
+
+def case_live_load_for_10_minutes_never_expires_a_send():
+    for jitter in _jitters():
+        of = _Bucket()
+        log, dropped = _gate_sim(_live(600.0), of=of)
+        sends = _waits(log, "send")
+        assert len(of.hits) <= 4 and not [d for d in dropped if d[0] == "send"], (jitter, of.hits)
+        assert max(sends) <= 25.0, (jitter, max(sends))
+
+
+def case_light_load_leaves_recovery_by_itself():
+    _knobs()
+    log, dropped = _gate_sim([(3.0 * i, "read") for i in range(60)], of=_Bucket())
+    g = of_pacing._gates["a1"]
+    left = of_pacing.COOLDOWNS_S[0] + 4 * of_pacing.CLEAN_STEP_S
+    assert g.left_at - 1000.0 == left and g.gap is None and g.step == 0, (g.left_at - 1000.0, g)
+    after = [w for t, _, _, w, a in log if t >= left]
+    assert not dropped and after and max(after) == 0.0, after
+
+
+def case_a_429_in_recovery_floors_at_twice_its_gap():
+    for jitter in _jitters():
+        of, slots = _Bucket(), []
+        _gate_sim(_live(600.0), of=of, slots=slots)
+        hit, gap = next((t, gp) for t, gp, _ in slots if t in of.hits and gp is not None)
+        floor = min(of_pacing.PAGE_GAP_S, 2 * gap)
+        reopen = next(t for t, gp, _ in slots if t > hit and gp is None)
+        end = reopen + of_pacing.CLEAN_STEP_S + of_pacing.FLOOR_HOLD_S
+        held = [(t, gp, fl) for t, gp, fl in slots if reopen < t < end and gp is not None]
+        nxt = min([t for t in of.hits if t > hit] + [end])
+        assert gap < of_pacing.PAGE_GAP_S and {fl for t, _, fl in held if t < nxt} == {floor}, (jitter, hit, gap)
+        assert min(gp for _, gp, _ in held) >= floor, (jitter, hit)
+        assert len([t for t in of.hits if hit < t <= held[-1][0]]) <= 2, (jitter, hit, of.hits)
+
+
+def _order(sends):
+    _knobs(JITTER_S=0.0)
+    arrivals = [(0.25 * i, "read") for i in range(160)] + [(3.1 + 0.01 * i, "send") for i in range(sends)]
+    log, dropped = _gate_sim(arrivals, gate={"left_at": 999.0, "left_gap": 0.5})
+    assert of_pacing._gates["a1"].floor is None or not [d for d in dropped if d[0] == "send"], dropped
+    return "".join("S" if k == "send" else "R" for _, k, _, _, a in log if a == "go")
+
+
+def case_send_order_4_reads_then_1_to_1_then_first():
+    for sends, want in [
+        (1, "RRRRS" + "R" * 8),
+        (6, "RRRRS" + "RS" * 5 + "R" * 8),
+        (30, "RRRRS" + "RS" * 7 + "R" + "S" * 22 + "R" * 8),
+    ]:
+        got = _order(sends)
+        assert got.startswith(want), (sends, got[:len(want) + 4])
+    for jitter in _jitters():
+        log, dropped = _gate_sim(_live(600.0, read_every=0.5, send_every=1.0), of=_Bucket())
+        assert len(_waits(log, "send")) == 600 and not [d for d in dropped if d[0] == "send"], jitter
+        assert max(_waits(log, "send")) < of_pacing.SEND_BUDGET_S, jitter
+
+
+def case_no_admission_jumps_the_slot_clock():
+    for jitter in _jitters():
+        slots = []
+        walks = [(0.6 + 5 * i, "walk") for i in range(3)]
+        _gate_sim(_live(600.0, extra=walks) + [(30.0 + 0.4 * i, "send") for i in range(20)], of=_Bucket(),
+                  slots=slots)
+        for (a, gap, _), (b, *_) in zip(slots, slots[1:]):
+            assert gap is None or b - a >= gap - 1e-9, (jitter, a, b, gap)
+        assert sum(gap is not None for _, gap, _ in slots) > 500, len(slots)
+
+
+def case_429_while_recovering_loses_nothing():
+    _knobs(JITTER_S=0.0)
+    walks = [(0.6 + 5 * i, "walk") for i in range(3)]
+    arrivals = _live(120.0, extra=walks)
+    ever: set[int] = set()
+    fired: list[float] = []
+
+    def of(t, action):
+        if action == "go" and t - 1000.0 >= 30.0 and not fired:
+            fired.append(t)
+            return True
+        return False
+    log, dropped = _gate_sim(arrivals, of=of, ever=ever)
+    probes = [t for t, *_, a in log if a == "probe"]
+    hits = [n for _, _, n, _, a in log if a == "429"]
+    assert len(probes) == 2 and len(hits) == 1 and hits[0] in ever, (probes, hits)
+    assert {n for _, _, n, _, a in log if a != "429"} >= {hits[0]}
+    for kind in ("send", "walk"):
+        want = {n for n, (_, k) in enumerate(arrivals) if k == kind}
+        assert want == {n for _, k, n, _, a in log if k == kind and a != "429"}, kind
+    lost = ever - {n for _, _, n, _, a in log if a != "429"}
+    assert all(arrivals[n][1] == "bg_read" for n in lost), "only background reads may run out of budget"
+    assert not of_pacing._gates["a1"].queue and not of_pacing._gates["a1"].closed
+
+
+def _every(k):
+    n = [0]
+
+    def of(_t, _action):
+        n[0] += 1
+        return n[0] % k == 0
+    return of
+
+
+def case_light_load_under_repeated_429_keeps_the_first_cooldown():
+    arrivals = [(10.0 * i + 0.2, "send") for i in range(36)] + [(5.0 * i + 0.5, "read") for i in range(72)]
+    for every in (3, 10, 30):
+        for _ in _jitters():
+            log, dropped = _gate_sim(arrivals, of=_every(every))
+            waits = _waits(log, "send") + _waits(log, "read")
+            assert not dropped and len(waits) == len(arrivals), (every, dropped)
+            assert max(waits) <= of_pacing.COOLDOWNS_S[1] + 2 * of_pacing.PAGE_GAP_S, (every, max(waits))
+
+
+def case_cooldown_never_outlasts_the_cloudflare_window():
+    for wall, step, text, want in [(290.0, 5, "Error 1015", 11.0), (100.0, 5, "Error 1015", 34.0),
+                                   (299.5, 0, "Error 1015", 1.5), (298.0, 0, "Please allow 9 seconds", 9.0)]:
+        _knobs()
+        of_pacing._wall = lambda: wall
+        g = of_pacing._gates.setdefault("a1", of_pacing._Gate(step=step))
+        of_pacing._close("a1", g, _E429(text), 1000.0)
+        assert g.cool_until - 1000.0 == want, (wall, step, g.cool_until - 1000.0)
+
+
+def case_ladder_restarts_in_a_new_cloudflare_window():
+    _knobs()
+    g = of_pacing._gates.setdefault("a1", of_pacing._Gate())
+    for wall, want in [(100.0, 3), (110.0, 5), (130.0, 8), (301.0, 3), (310.0, 5)]:
+        of_pacing._wall = lambda: wall
+        of_pacing._close("a1", g, _E429("Error 1015"), 1000.0 + wall)
+        assert g.cool_until - (1000.0 + wall) == want, (wall, g.cool_until - 1000.0 - wall)
+
+
+def case_no_speed_up_before_the_cloudflare_window_ends():
+    for text, steps in [("Error 1015", [(1150.0, 1.0), (1199.0, 1.0), (1200.5, 0.5), (1220.5, 0.25)]),
+                        ("Please allow 1 seconds", [(1022.0, 1.0), (1024.0, 0.5), (1044.0, 0.25)])]:
+        _knobs()
+        of_pacing._wall = lambda: 100.0
+        g = of_pacing._gates.setdefault("a1", of_pacing._Gate())
+        of_pacing._close("a1", g, _E429(text), 1000.0)
+        of_pacing._open("a1", g, 1003.0)
+        for now, want in steps:
+            of_pacing._step(g, now)
+            assert g.gap == want, (text, now, g.gap)
+
+
+def case_walks_progress_once_person_load_drops():
+    for jitter in _jitters():
+        walks = [(0.6 + 5 * i, "walk") for i in range(3)]
+        log, dropped = _gate_sim(_live(60.0, extra=walks), of=_Bucket())
+        done = [t for t, k, *_ in log if k == "walk"]
+        assert len(done) == 3 and max(done) <= 60.0 + 30.0, (jitter, done)
+
+
+def case_open_gate_never_expires_a_person_send():
+    for send_every in (5.0, 1.0, 0.5):
+        _knobs()
+        log, dropped = _gate_sim(_pressure(send_every, 600.0, [(0.6 + 5 * i, "walk") for i in range(3)]))
+        sends, walks = _waits(log, "send"), _waits(log, "walk")
+        assert not [d for d in dropped if d[0] in ("send", "walk")], (send_every, dropped)
+        assert len(sends) == int(600.0 / send_every) and max(sends[-30:]) == 0.0, (send_every, sends[-30:])
+        assert max(sends) < of_pacing.SEND_BUDGET_S / 2, (send_every, max(sends))
+        left = of_pacing.COOLDOWNS_S[0] + 4 * of_pacing.CLEAN_STEP_S
+        assert len(walks) == 3 and max(walks) <= left, (send_every, walks)
 
 
 try:

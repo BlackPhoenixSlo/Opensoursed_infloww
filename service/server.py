@@ -2073,13 +2073,14 @@ def _proxy(call, *, client: OFClient | None = None, send: bool = False, started:
     loaded: list[OFClient] = []
     loaded_token = _proxy_clients.set(loaded)
     req = _request_ctx.get()
+    background = _current_priority() == "background"
     try:
         if req is not None:
             try:
                 aid = _resolve_account_id(req)
             except HTTPException:
                 aid = None
-            if _current_priority() != "background":
+            if not background:
                 token = INTERACTIVE_READ.set(True)
         def _attempt():
             with _priority_lane(aid):
@@ -2105,11 +2106,13 @@ def _proxy(call, *, client: OFClient | None = None, send: bool = False, started:
 
             guard = PRE_DISPATCH.set(_before_send)
             try:
-                return of_pacing.absorb_429(aid, _attempt, send_deadline=send_deadline, clock=_time_mod.monotonic)
+                return of_pacing.absorb_429(
+                    aid, _attempt, prio=of_pacing.PERSON_SEND, send_deadline=send_deadline, clock=_time_mod.monotonic)
             finally:
                 PRE_DISPATCH.reset(guard)
         if getattr(req, "method", None) == "GET":
-            return of_pacing.absorb_429(aid, _attempt)
+            return of_pacing.absorb_429(
+                aid, _attempt, prio=of_pacing.BACKGROUND if background else of_pacing.USER_READ)
         return _attempt()
     except of_pacing.SendDispatchExpired as e:
         raise HTTPException(status_code=504, detail="Send window expired before dispatch.") from e
