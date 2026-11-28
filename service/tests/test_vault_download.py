@@ -12,6 +12,7 @@ import time  # noqa: E402
 import uuid  # noqa: E402
 from datetime import datetime  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 import admission  # noqa: E402
 import automation_executor as ax  # noqa: E402
@@ -301,6 +302,27 @@ class _PacedClient(_Client):
     def vault_media_by_id(self, media_id: int):
         kind = ROWS[int(media_id)][0]
         return self._paced(int(media_id), lambda: _payload(int(media_id), kind, ROWS[int(media_id)][1], sig=SIG_NEW))
+
+
+def case_vault_read_pacing_timeout_is_503():
+    owner = _login("/auth/login", "ownerd")
+    for suffix in ("/resign", ""):
+        for media_id in (201, 203):
+            c = _use(_PacedClient())
+            c.too_many = 0
+            gate = of_pacing._Gate(closed=True, cool_until=time.monotonic() + 0.2)
+            with patch.dict(of_pacing._gates, {AID: gate}), patch.object(of_pacing, "READ_BUDGET_S", 0):
+                r = owner.get(f"/admin/vault-ai/download{suffix}",
+                              params={"account_id": AID, "media_id": media_id})
+            assert r.status_code == 503, (suffix, media_id, r.status_code, r.text)
+            assert r.json() == {"detail": {
+                "upstream_status": "timeout",
+                "upstream_body": str(of_pacing.ReadPacingExpired()),
+            }}, r.text
+            assert c.reads == [] and not gate.queue
+            assert len(c.resps) == (1 if suffix == "" and media_id == 201 else 0)
+            assert all(resp.closed for resp in c.resps)
+            assert admission.VAULT_DOWNLOAD.busy == 0
 
 
 def case_resigns_paced_and_429_retried():

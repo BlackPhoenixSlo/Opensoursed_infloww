@@ -319,6 +319,12 @@ def _run_login(job: RemoteLoginJob, password: str) -> None:
     _serve(job, secrets=(password,), body=_body)
 
 
+class LoginFailure(RuntimeError):
+    def __init__(self, message: str, *, kind: decide.LoginKind = "other"):
+        super().__init__(message)
+        self.kind = kind
+
+
 def _serve(job: RemoteLoginJob, *, secrets: tuple[str | None, ...],
            body: Callable[[Any, Any], None]) -> None:
     log.info("remote login %s started platform=%s", job.id, job.platform)
@@ -329,7 +335,10 @@ def _serve(job: RemoteLoginJob, *, secrets: tuple[str | None, ...],
         job.set_state(STATE_CANCELLED, "cancelled")
     except Exception as e:  # noqa: BLE001
         msg = scrub(f"{type(e).__name__}: {e}", *secrets, *job.secrets())
-        log.warning("remote login %s failed platform=%s: %s", job.id, job.platform, msg)
+        kind: decide.LoginKind = "timed_out" if isinstance(e, TimeoutError) else "other"
+        if isinstance(e, LoginFailure):
+            kind = e.kind
+        log.warning("remote login %s failed platform=%s kind=%s: %s", job.id, job.platform, kind, msg)
         job.fail(msg)
     finally:
         if not job.is_terminal():
@@ -354,7 +363,10 @@ def _bb_connected(job: RemoteLoginJob, p, session: dict[str, Any]):
         lv = _bb_live_view_url(sid)
         with job._lock:
             job.live_view_url = lv
-        browser = p.chromium.connect_over_cdp(session["connectUrl"])
+        try:
+            browser = p.chromium.connect_over_cdp(session["connectUrl"])
+        except Exception as e:  # noqa: BLE001
+            raise LoginFailure(f"couldn't connect to Browserbase: {e}", kind="session") from None
         try:
             context = browser.contexts[0]
             page = context.pages[0] if context.pages else context.new_page()
@@ -374,7 +386,7 @@ def _open_site(job: RemoteLoginJob, context, page) -> None:
         context.add_init_script(js)
     err = open_site(page, login.HOME)
     if err:
-        raise RuntimeError(f"couldn't open {login.SITE} in the remote browser: {err}")
+        raise LoginFailure(f"couldn't open {login.SITE} in the remote browser: {err}", kind="page_load")
     job.set_state(STATE_STARTING, "browser ready" if job.live_view_url else
                   "browser ready (live view unavailable — challenges cannot be solved)")
 
@@ -430,9 +442,9 @@ def _bb_create_session() -> dict[str, Any]:
     try:
         session = _bb_request("/sessions", "POST", _bb_session_payload(project_id))
     except RuntimeError as e:
-        raise RuntimeError(f"couldn't start a Browserbase session: {e}") from None
+        raise LoginFailure(f"couldn't start a Browserbase session: {e}", kind="session") from None
     if not session.get("connectUrl") or not session.get("id"):
-        raise RuntimeError("Browserbase session-create returned no id/connectUrl")
+        raise LoginFailure("Browserbase session-create returned no id/connectUrl", kind="session")
     return session
 
 
@@ -468,7 +480,7 @@ def goto(page, url: str, wait_until: str = "domcontentloaded") -> None:
         log.info("navigation to %s did not settle: %s", url, type(e).__name__)
 
 
-class LoginFormError(RuntimeError):
+class LoginFormError(LoginFailure):
     pass
 
 
@@ -478,8 +490,10 @@ def _type_credentials(page, email: str, password: str, login: LoginDriver) -> No
 
 
 def form_missing(page, site: str, wait_s: float) -> LoginFormError:
-    why = " (a human-verification challenge is on screen)" if detect_challenge(page) else ""
-    return LoginFormError(f"the {site} login form did not appear within {wait_s:.0f}s{why}")
+    challenge = detect_challenge(page)
+    why = " (a human-verification challenge is on screen)" if challenge else ""
+    return LoginFormError(f"the {site} login form did not appear within {wait_s:.0f}s{why}",
+                          kind="challenge" if challenge else "no_form")
 
 
 def await_form(page, field, site: str, wait_s: float) -> None:
@@ -627,9 +641,9 @@ def _drive_until_logged_in(job: RemoteLoginJob, page, context) -> str:
         if isinstance(eff, decide.Cancel):
             raise _Cancelled()
         if isinstance(eff, decide.Expire):
-            raise TimeoutError(TIMED_OUT)
+            raise LoginFailure(TIMED_OUT, kind=eff.kind)
         if isinstance(eff, decide.Fail):
-            raise LoginFormError(eff.message)
+            raise LoginFailure(eff.message, kind=eff.kind)
         if isinstance(eff, decide.LoggedIn):
             return eff.uid
         if isinstance(eff, decide.Show):

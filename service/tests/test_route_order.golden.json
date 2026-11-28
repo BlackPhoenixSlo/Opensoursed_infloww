@@ -1,4 +1,4 @@
-{"openapi_sha1": "62343215b28f770f55c5333826047a6c317a74b0",
+{"openapi_sha1": "917818f16a854dc663c761f72d7f8a485110584b",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -282,8 +282,10 @@
   ["GET", "/admin/leaks/watches/{account_id}", "get_watch"],
   ["GET", "/admin/leaks/watches/{account_id}/offer", "get_offer"],
   ["GET", "/admin/leaks/offer-video/{part}", "get_offer_video"],
+  ["GET", "/admin/leaks/watches/{account_id}/leaks/{leak_id}/thumb", "get_thumb"],
   ["PUT", "/admin/leaks/watches/{account_id}", "put_watch"],
   ["POST", "/admin/leaks/watches/{account_id}/tracking", "post_tracking"],
+  ["POST", "/admin/leaks/watches/{account_id}/refresh", "post_refresh"],
   ["POST", "/admin/leaks/watches/{account_id}/offer-snooze", "post_offer_snooze"],
   ["DELETE", "/admin/leaks/watches/{account_id}", "delete_watch"],
   ["GET", "/admin/s4s/profiles", "list_profiles"],

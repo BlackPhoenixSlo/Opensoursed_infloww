@@ -202,7 +202,7 @@ None. Phase 3 (generator) depends on this Phase being merged to main first; Phas
 - Twin-local commits or a landing deploy that carry the copy: neither generates it (ticket 06 review, partial accept).
 - The generator's NOTICE.md and stage-then-swap: Phase 3 (ticket 06 edit 4, ticket 03 (c)).
 - Fansly tests reading page files only inside `it.skipIf(!existsSync(dir))` bodies, route/nav/identity tests on fixtures: Phase 3/4 (ticket 06 edit 5); listed so they are not dropped.
-- Public's missing-page iframe 404 and `fansly_manager` off by default hiding nav: Phase 4 (ticket 06 edit 6).
+- Public's missing-page iframe 404: a build without the mirror reads `fansly_manager` as off and hides the nav (`useFlags`); elsewhere the flag is on unless stored false.
 - Running a public sync, deploy-all or AE deploy: the coordinator ships after the loop (map header).
 - `docs/soak/01-setup-inventory.md`'s list of what the export check refuses: a dated inventory, not a live reference.
 - Any capture, generator or app code: Phases 2-4.

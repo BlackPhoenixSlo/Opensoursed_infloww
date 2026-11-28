@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit
@@ -99,7 +100,8 @@ async def download_resign(
     row = await _row_media(account_id, media_id)
     failed_u = u if u and _cdn_host(u) and _u_ok(u, row, unrestricted) else full_url(row)
     if failed_u:
-        fresh = await cdn_resign.resign(account_id, media_id, failed_u, client, PACE_KIND)
+        with _read_budget():
+            fresh = await cdn_resign.resign(account_id, media_id, failed_u, client, PACE_KIND)
     else:
         got = await _paced(account_id, lambda: vault_stills.resolve_fresh(account_id, media_id, client))
         fresh = full_url(got.media)
@@ -112,8 +114,18 @@ async def download_resign(
 PACE_KIND = "vault_download"
 
 
-def _paced(account_id: str, run):
-    return of_pacing.walk(account_id, PACE_KIND, run)
+@contextmanager
+def _read_budget():
+    with of_pacing.read_budget(of_pacing.READ_BUDGET_S):
+        try:
+            yield
+        except of_pacing.ReadPacingExpired as e:
+            raise HTTPException(status_code=503, detail={"upstream_status": "timeout", "upstream_body": str(e)}) from e
+
+
+async def _paced(account_id: str, run):
+    with _read_budget():
+        return await of_pacing.walk(account_id, PACE_KIND, run)
 
 
 def _close(r: Any) -> None:
@@ -180,7 +192,8 @@ async def download(
             async def get(x: str):
                 return await run_in_threadpool(client.http.get, x, timeout=client.timeout_s, stream=True)
 
-            r, fetched_url = await cdn_resign.fetch(account_id, media_id, url, client, get, PACE_KIND)
+            with _read_budget():
+                r, fetched_url = await cdn_resign.fetch(account_id, media_id, url, client, get, PACE_KIND)
             resigned = fetched_url != fetch_u
         except HTTPException:
             raise

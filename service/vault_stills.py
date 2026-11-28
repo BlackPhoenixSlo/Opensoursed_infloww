@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse, Response
 
 import automation_executor as ax
+import of_pacing
 import vault_mirror
 from db.engine import get_session
 from db.models import VaultItem
@@ -138,6 +139,8 @@ def _resolve_fresh_sync(client: Any, media_id: int) -> _Resolved:
     try:
         m = client.vault_media_by_id(media_id)
         return _Resolved(m if isinstance(m, dict) else None, False)
+    except of_pacing.ReadPacingExpired:
+        raise
     except Exception as e:  # noqa: BLE001
         resp = getattr(e, "response", None)
         return _Resolved(None, getattr(resp, "status_code", None) == 404)

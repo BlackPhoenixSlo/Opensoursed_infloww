@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "path": "/v1/watches/w_miavale_0103/refresh",
+  "request": null,
+  "response": {
+    "next_refresh_at": "2026-11-28T12:00:00Z",
+    "queued_at": "2026-11-27T12:00:00Z",
+    "watch_id": "w_miavale_0103"
+  },
+  "status": 202
+}

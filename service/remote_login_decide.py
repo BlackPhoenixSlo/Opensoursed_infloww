@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Union
+from dataclasses import dataclass, replace
+from typing import Literal, Optional, Union
+
+LoginKind = Literal["challenge", "timed_out", "refused", "session", "page_load", "no_form", "other"]
 
 STATE_TYPING = "typing"
 STATE_CHALLENGE = "challenge"
@@ -27,6 +29,7 @@ def typing_msg(site: str) -> str:
 @dataclass(frozen=True)
 class Drive:
     otp_sent_at: Optional[float] = None
+    challenge: bool = False
 
 
 @dataclass(frozen=True)
@@ -55,7 +58,7 @@ class Cancel:
 
 @dataclass(frozen=True)
 class Expire:
-    pass
+    kind: LoginKind
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ class LoggedIn:
 @dataclass(frozen=True)
 class Fail:
     message: str
+    kind: LoginKind
 
 
 @dataclass(frozen=True)
@@ -99,9 +103,10 @@ def login_step(state: Drive, ev: Event, verify_s: float = OTP_VERIFY_S, *, site:
     if ev.cancel:
         return state, Cancel()
     if ev.expired:
-        return state, Expire()
+        return state, Expire("challenge" if state.challenge else "timed_out")
     if ev.uid:
         return state, LoggedIn(ev.uid)
+    state = replace(state, challenge=ev.challenge and not ev.otp)
     sent = state.otp_sent_at
     if ev.otp:
         if ev.code is not None:
@@ -114,7 +119,7 @@ def login_step(state: Drive, ev: Event, verify_s: float = OTP_VERIFY_S, *, site:
             return Drive(None), AskAgain(otp_rejected(site))
         return state, Idle()
     if ev.refused:
-        return state, Fail(f"{site} refused the login: {ev.refused}")
+        return state, Fail(f"{site} refused the login: {ev.refused}", "refused")
     if ev.challenge:
         return state, Show(STATE_CHALLENGE, CHALLENGE_MSG)
     if ev.shown != STATE_TYPING:

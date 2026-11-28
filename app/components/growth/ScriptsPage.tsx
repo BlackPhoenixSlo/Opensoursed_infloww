@@ -270,7 +270,7 @@ export default function ScriptsPage() {
   const fillLeft = activeKey ? fill.left[activeKey] : undefined;
 
   const list = (
-    <div className="flex-1 min-w-0">
+    <div className="flex-1 min-w-0 min-h-0 md:overflow-y-auto">
       {view === "sequences" && activeSeq && (
         <div className="px-4 py-3 border-b border-border">
           <div className="flex items-center gap-2 flex-wrap">
@@ -458,7 +458,7 @@ export default function ScriptsPage() {
   );
 
   return (
-    <div className="flex flex-col min-h-[calc(100dvh-var(--shell-top,3.5rem))]">
+    <div className="flex flex-col min-h-[calc(100dvh-var(--shell-top,3.5rem))] md:h-[calc(var(--vvh)-var(--chrome-top))] md:min-h-0">
       <InflowwPageHeader
         title="Scripts"
         className="h-auto min-h-12 flex-wrap gap-y-2 px-3 py-2 sm:h-12 sm:flex-nowrap sm:px-6 sm:py-0"
@@ -493,10 +493,10 @@ export default function ScriptsPage() {
           accounts, value: allModels ? null : accountId, onChange: pickCreator,
           all: { pick: () => dispatch({ type: "allModels" }) },
         }}
-        className="flex flex-col"
+        className="flex flex-col min-h-0"
       >
         {allModels ? (
-          <AllModelsView accounts={accounts} />
+          <div className="min-h-0 flex-1 md:overflow-y-auto"><AllModelsView accounts={accounts} /></div>
         ) : (
         <>
         <div className="min-h-14 px-3 sm:px-6 py-2 sm:py-0 flex flex-wrap items-center gap-y-2 border-b border-border">
@@ -570,7 +570,7 @@ export default function ScriptsPage() {
         ) : sideKind === null ? (
           list
         ) : (
-          <div className="flex flex-1 flex-col md:flex-row">
+          <div className="flex flex-1 min-h-0 flex-col md:flex-row">
             <Sidebar
               kind={sideKind}
               items={sideKind === "tag" ? tagItems : seqItems}

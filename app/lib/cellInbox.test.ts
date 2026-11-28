@@ -101,15 +101,17 @@ describe("bundleChats", () => {
         { accountId: "10", read: "chats", body: { list: [], hasMore: false } },
         { accountId: "11", read: "chats", status: 504, detail: { upstream_status: "bundle_deadline" } },
         { accountId: "12", read: "*", status: 404, detail: "not on this screen" },
+        { accountId: "13", read: "chats", status: 404, detail: { error: "unknown_account", message: "Unknown account_id '13'" } },
+        { accountId: "14", read: "chats", status: 404, detail: "Not Found" },
       ],
       partial: ["onlyfans:11", "onlyfans:12"],
     });
-    expect(got).toEqual({ chats: [{ accountId: "10", body: { list: [], hasMore: false } }], failed: ["11", "12"],
-      partial: ["11", "12"] });
+    expect(got).toEqual({ chats: [{ accountId: "10", body: { list: [], hasMore: false } }], failed: ["11", "12", "13", "14"],
+      partial: ["11", "12"], gone: ["12", "13"] });
   });
 
   it("a junk body is no rows, nothing failed", () => {
-    expect(bundleChats(null)).toEqual({ chats: [], failed: [], partial: [] });
+    expect(bundleChats(null)).toEqual({ chats: [], failed: [], partial: [], gone: [] });
   });
 });
 

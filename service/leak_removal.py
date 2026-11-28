@@ -131,9 +131,12 @@ def _newest_seen(leak: dict[str, Any]) -> str:
 
 def overlay_scenes(leaks: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     out: dict[str, list[dict[str, Any]]] = {k: [] for k in SCENES}
-    visible = sorted((x for x in leaks if x.get("pill") in VISIBLE), key=lambda x: x["leak_id"])
-    for leak in sorted(visible, key=_newest_seen, reverse=True):
+    ordered = sorted(leaks, key=lambda x: x["leak_id"])
+    for leak in sorted(ordered, key=_newest_seen, reverse=True):
         kind = _scene(leak)
+        pill = leak.get("pill")
+        if pill not in VISIBLE and not (kind == "mega" and pill == "listed"):
+            continue
         if kind and len(out[kind]) < SCENE_MAX.get(kind, SCENE_DEFAULT_MAX):
             out[kind].append({k: leak[k] for k in ("leak_id", "leak_site", "kind", "title", "pill")} | {"preview": None})
     return out

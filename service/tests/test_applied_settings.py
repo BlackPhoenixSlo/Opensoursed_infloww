@@ -48,14 +48,15 @@ PROMPT = "Fixture translator prompt, never shown to a chatter"
 ALL_OPT_IN = ["/growth/auto-funnel", "/growth/auto-mass", "/growth/auto-post", "/growth/auto-reply",
               "/growth/auto-story", "/growth/gen-info"]
 
-FLAGS_OFF = {"fansly_manager": False, "leak_tracker": False}
+FLAGS_DEFAULT = {"fansly_manager": True, "leak_tracker": False}
+FANSLY_OFF = {**FLAGS_DEFAULT, "fansly_manager": False}
 NO_LAYOUT = {"creator_cols": None}
 
 DEFAULTS = {
     "preferences": {"tz": None, "report_tz": None, "week_start": "monday", "hide_trial_popup": False},
     "messaging": {"ai_translation": True},
     "permissions": {"enforced": True, "pages": None, "scope": "all", "opt_in": ALL_OPT_IN, "denied_actions": [], "denied_cards": []},
-    "flags": FLAGS_OFF,
+    "flags": FLAGS_DEFAULT,
     "reports": NO_LAYOUT,
 }
 ROLES_OFF = {**DEFAULTS, "permissions": {**DEFAULTS["permissions"], "enforced": False}}
@@ -104,7 +105,7 @@ def case_owner_reads_its_agency_and_is_never_role_checked():
         "preferences": AGENCY_A_PREFS,
         "messaging": {"ai_translation": False},
         "permissions": {"enforced": True, "pages": None, "scope": "all", "opt_in": ALL_OPT_IN, "denied_actions": [], "denied_cards": []},
-        "flags": FLAGS_OFF,
+        "flags": FLAGS_DEFAULT,
         "reports": NO_LAYOUT,
     }
 
@@ -118,7 +119,7 @@ def case_chatter_reads_its_agency_and_its_own_role():
         "preferences": AGENCY_A_PREFS,
         "messaging": {"ai_translation": False},
         "permissions": {"enforced": True, "pages": ["/messages-pro"], "scope": "self", "opt_in": [], "denied_actions": [], "denied_cards": []},
-        "flags": FLAGS_OFF,
+        "flags": FLAGS_DEFAULT,
         "reports": NO_LAYOUT,
     }
     assert _applied(CHATTER_A) == want
@@ -151,7 +152,7 @@ def case_two_agency_chatter_with_no_creator_gets_no_zone_strictest_translation_a
         "messaging": {"ai_translation": False},
         "permissions": {"enforced": True, "pages": None, "scope": "self", "opt_in": [], "denied_actions": [],
                         "denied_cards": CHATTER_HIDDEN_CARDS},
-        "flags": FLAGS_OFF,
+        "flags": FLAGS_DEFAULT,
         "reports": NO_LAYOUT,
     }
     assert _mirror_count("chatter_ab") == 2
@@ -179,7 +180,7 @@ def case_two_agency_chatter_follows_the_creator_in_scope():
                                                     "/of-manager/messages", "/of-manager/notifications"],
                         "scope": "self", "opt_in": [],
                         "denied_actions": [], "denied_cards": CHATTER_HIDDEN_CARDS},
-        "flags": FLAGS_OFF,
+        "flags": FLAGS_DEFAULT,
         "reports": NO_LAYOUT,
     }
     assert _applied(CHATTER_AB, "creator_b") == {**CHATTER_DEFAULTS, "preferences": AGENCY_B_PREFS}
@@ -204,7 +205,7 @@ def case_two_agency_chatter_with_both_enforcing_gets_the_union_of_granted_pages(
             "permissions": {"enforced": True,
                             "pages": ["/analytics/employee-reports", "/messages-pro"],
                             "scope": "self", "opt_in": [], "denied_actions": [], "denied_cards": []},
-            "flags": FLAGS_OFF,
+            "flags": FLAGS_DEFAULT,
             "reports": NO_LAYOUT,
         }
         assert _applied(CHATTER_AB, "creator_b")["permissions"] == {
@@ -257,7 +258,7 @@ def case_a_stored_invalid_field_reads_as_its_default():
             "preferences": {"tz": None, "report_tz": "Asia/Tokyo", "week_start": "monday", "hide_trial_popup": False},
             "messaging": {"ai_translation": True},
             "permissions": {"enforced": True, "pages": None, "scope": "all", "opt_in": ALL_OPT_IN, "denied_actions": [], "denied_cards": []},
-            "flags": FLAGS_OFF,
+            "flags": FLAGS_DEFAULT,
             "reports": NO_LAYOUT,
         }
     finally:
@@ -266,25 +267,30 @@ def case_a_stored_invalid_field_reads_as_its_default():
         _put(OWNER_B, "roles", {"enforce": False})
 
 
-def case_a_flag_stored_on_reads_on_for_the_agencys_owner_and_chatters_only():
-    _put(OWNER_A, "flags", {"fansly_manager": True})
+def case_fansly_manager_is_on_unless_the_agency_stored_it_false():
+    _put(OWNER_A, "flags", {"fansly_manager": False})
     try:
-        assert _applied(OWNER_A)["flags"] == {**FLAGS_OFF, "fansly_manager": True}
-        assert _applied(CHATTER_A)["flags"] == {**FLAGS_OFF, "fansly_manager": True}
-        assert _applied(CHATTER_AB, "creator_a")["flags"] == {**FLAGS_OFF, "fansly_manager": True}
-        assert _applied(OWNER_B)["flags"] == FLAGS_OFF
-        assert _applied(CHATTER_AB)["flags"] == FLAGS_OFF
-        _put(OWNER_B, "flags", {"fansly_manager": True})
-        assert _applied(CHATTER_AB)["flags"] == {**FLAGS_OFF, "fansly_manager": True}
+        assert _applied(OWNER_A)["flags"] == FANSLY_OFF
+        assert _applied(CHATTER_A)["flags"] == FANSLY_OFF
+        assert _applied(CHATTER_AB, "creator_a")["flags"] == FANSLY_OFF
+        assert _applied(OWNER_B)["flags"] == FLAGS_DEFAULT
+        assert _applied(CHATTER_AB, "creator_b")["flags"] == FLAGS_DEFAULT
+        assert _applied(CHATTER_AB)["flags"] == FANSLY_OFF
+        _put(OWNER_A, "flags", {"fansly_manager": True})
+        assert _applied(CHATTER_AB)["flags"] == FLAGS_DEFAULT
+        _put(OWNER_A, "flags", {})
+        _put(OWNER_B, "flags", {"fansly_manager": False})
+        assert _applied(CHATTER_AB)["flags"] == FANSLY_OFF
+        assert _applied(CHATTER_AB, "creator_a")["flags"] == FLAGS_DEFAULT
     finally:
         _put(OWNER_A, "flags", {})
         _put(OWNER_B, "flags", {})
 
 
-def case_a_stored_invalid_flag_reads_off():
-    fx.store_blob(IDS["agency_a_owner"], "flags", {"fansly_manager": "yes"})
+def case_a_stored_invalid_flag_reads_as_missing():
+    fx.store_blob(IDS["agency_a_owner"], "flags", {"fansly_manager": "yes", "leak_tracker": "no"})
     try:
-        assert _applied(OWNER_A)["flags"] == FLAGS_OFF
+        assert _applied(OWNER_A)["flags"] == FLAGS_DEFAULT
     finally:
         _put(OWNER_A, "flags", {})
 

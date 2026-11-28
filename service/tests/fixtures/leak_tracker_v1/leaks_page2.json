@@ -15,6 +15,7 @@
         "leak_site": "example-leaks.test",
         "origin_status": "live",
         "pill": "live",
+        "preview": null,
         "sources": [
           "google_web"
         ],
@@ -33,6 +34,7 @@
         "leak_site": "example-leaks.test",
         "origin_status": "gone",
         "pill": "cached",
+        "preview": null,
         "sources": [
           "google_web"
         ],

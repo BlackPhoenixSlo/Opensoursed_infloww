@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import nullcontext
 from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.engine import get_session
 from db.models import Account, AccountHealth, User, UserAccount, UserLlmKey
@@ -198,10 +200,10 @@ async def key_overview(registry: dict[str, bool],
     )
 
 
-async def get_key(user_id: str, provider: str) -> str:
+async def get_key(user_id: str, provider: str, *, session: AsyncSession | None = None) -> str:
     if not user_id or not provider:
         return ""
-    async with get_session() as s:
+    async with (get_session() if session is None else nullcontext(session)) as s:
         val = await s.scalar(
             select(UserLlmKey.api_key).where(
                 UserLlmKey.user_id == user_id,
@@ -212,7 +214,8 @@ async def get_key(user_id: str, provider: str) -> str:
 
 
 async def set_keys(user_id: str, values: dict[str, str | None], *,
-                   known: tuple[str, ...] | list[str] = TENANT_KEY_PROVIDERS) -> None:
+                   known: tuple[str, ...] | list[str] = TENANT_KEY_PROVIDERS,
+                   session: AsyncSession | None = None) -> None:
     cleaned: dict[str, str] = {}
     for prov, raw in values.items():
         if prov not in known:
@@ -229,7 +232,7 @@ async def set_keys(user_id: str, values: dict[str, str | None], *,
     if not cleaned:
         return
     now = datetime.utcnow()
-    async with get_session() as s:
+    async with (get_session() if session is None else nullcontext(session)) as s:
         for prov, val in cleaned.items():
             stmt = sqlite_insert(UserLlmKey).values(
                 user_id=user_id, provider=prov, api_key=val, updated_at=now,

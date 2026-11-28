@@ -239,6 +239,7 @@ def _roles(raw: dict[str, Any], errors: list[Error]) -> dict[str, Any]:
 
 
 FLAGS = ("fansly_manager", "leak_tracker")
+DEFAULT_ON_FLAGS = frozenset({"fansly_manager"})
 
 
 def _flags(raw: dict[str, Any], errors: list[Error]) -> dict[str, Any]:

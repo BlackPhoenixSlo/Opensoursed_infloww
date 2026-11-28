@@ -113,6 +113,8 @@ async def _position(account_id: str, media_id: int) -> tuple[int, _Key] | None:
 async def _read_page(account_id: str, offset: int, client: Any) -> _Page | None:
     try:
         resp = await asyncio.to_thread(client.vault_media, limit=PAGE, offset=offset, type="all", sort="asc")
+    except of_pacing.ReadPacingExpired:
+        raise
     except Exception as e:  # noqa: BLE001
         log.info("cdn_resign account=%s page=%s failed: %s", account_id, offset, e)
         return None

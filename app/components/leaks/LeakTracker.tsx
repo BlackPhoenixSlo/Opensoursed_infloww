@@ -14,11 +14,13 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { relay, RelayError } from "@/lib/relay";
 
+import { leakKeys } from "./leakKeys";
 import { LeakCreator } from "./LeakCreator";
 import { AllLeaks } from "./LeakList";
-import { rosterChips, todayStrip } from "./leakCoverage";
+import { PreviewStrip } from "./LeakPreviewTiles";
+import { rosterChips, weekStrip } from "./leakCoverage";
 import { leakRead } from "./leakRead";
-import { LeakTodayStrip } from "./LeakTodayStrip";
+import { LeakWeekStrip } from "./LeakWeekStrip";
 import { rosterNotes, viewerZone, type LeakRoster } from "./leakView";
 
 const TITLE = "Leak tracker";
@@ -30,6 +32,7 @@ export type LeakSetup = {
   can_write: boolean;
   brand: string | null;
   source: "own" | "instance" | null;
+  previews: boolean;
 };
 
 function KeyCard({ setup, accountId }: { setup: LeakSetup; accountId: string | null }) {
@@ -37,7 +40,7 @@ function KeyCard({ setup, accountId }: { setup: LeakSetup; accountId: string | n
   const save = useMutation({
     mutationFn: (key: string) => relay.put<Pick<LeakSetup, "key" | "masked" | "brand" | "source">>("/admin/leaks/key", { key }, { accountId }),
     onSuccess: (res) => {
-      qc.setQueriesData<LeakSetup>({ queryKey: ["leak-tracker", "setup"] }, (prev) => (prev ? { ...prev, ...res } : prev));
+      qc.setQueriesData<LeakSetup>({ queryKey: leakKeys.setupRoot }, (prev) => (prev ? { ...prev, ...res } : prev));
     },
   });
   const submit = (e: FormEvent<HTMLFormElement>) => {
@@ -94,12 +97,12 @@ export function LeakTracker() {
   const { accountId } = useScope();
   const on = flags?.leak_tracker === true;
   const setup = useQuery<LeakSetup>({
-    queryKey: ["leak-tracker", "setup", accountId],
+    queryKey: leakKeys.setup(accountId),
     queryFn: () => relay.get<LeakSetup>("/admin/leaks/setup", { accountId }),
     enabled: on,
   });
   const roster = useQuery<LeakRoster>({
-    queryKey: ["leak-tracker", "roster", accountId],
+    queryKey: leakKeys.roster(accountId),
     queryFn: () => leakRead<LeakRoster>(qc, "/admin/leaks/roster", accountId),
     enabled: on && setup.data?.key === "set",
   });
@@ -108,13 +111,16 @@ export function LeakTracker() {
   const pathname = usePathname();
   const search = useSearchParams();
   const open = search.get("open");
-  const choose = (id: string | null) => {
+  const setParams = (patch: Record<string, string | null>) => {
     const params = new URLSearchParams(search.toString());
-    if (id) params.set("open", id);
-    else params.delete("open");
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null) params.delete(k);
+      else params.set(k, v);
+    }
     const query = params.toString();
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   };
+  const choose = (id: string | null) => setParams(id ? { open: id } : { open: null, view: null });
 
   if (!flags || (on && setup.isPending)) return <div className="p-4"><TableSkeleton rows={6} /></div>;
   const data = setup.data;
@@ -160,17 +166,17 @@ export function LeakTracker() {
   const names = Object.fromEntries(accounts.map((a) => [a.id, a.nickname || a.id]));
   const visible = new Set(accounts.map((a) => a.id));
   const rows = roster.data.rows.filter((r) => visible.has(r.account_id));
-  const strip = todayStrip(rows);
+  const strip = weekStrip(rows);
   const chips = rosterChips(rows);
   return (
     <PageFrame
       title={TITLE}
       creators={{ accounts, notes, chips, value: shown?.id ?? null, onChange: choose, all: { pick: () => choose(null), label: "All Models", row: true } }}
     >
-      {strip && <LeakTodayStrip strip={strip} />}
+      {strip && <LeakWeekStrip strip={strip} />}
       {data.is_owner && <KeyCard setup={data} accountId={accountId} />}
       {down && <p role="status" className="mb-4 text-[14px] text-muted">{down}</p>}
-      <LeakDisclaimer brand={data.brand} />
+      <LeakDisclaimer brand={data.brand} previews={data.previews} />
       <div data-leak-view={shown?.id ?? "all"}>
         {shown ? (
           <LeakCreator
@@ -180,11 +186,17 @@ export function LeakTracker() {
             name={shown.nickname || shown.id}
             canWrite={data.can_write}
             brand={data.brand}
+            previews={data.previews}
+            view={search.get("view") === "google" ? "google" : "list"}
+            onView={(v) => setParams({ view: v === "google" ? v : null })}
             row={roster.data.rows.find((r) => r.account_id === shown.id)}
             onDeleted={() => choose(null)}
           />
         ) : (
-          <AllLeaks accountId={accountId} names={names} onPick={choose} />
+          <>
+            {data.previews && <PreviewStrip accountId={accountId} names={names} onOpen={(id) => setParams({ open: id, view: "google" })} />}
+            <AllLeaks accountId={accountId} names={names} onPick={choose} />
+          </>
         )}
       </div>
     </PageFrame>

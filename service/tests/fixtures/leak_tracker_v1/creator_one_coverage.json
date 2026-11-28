@@ -1,0 +1,112 @@
+{
+  "method": "GET",
+  "path": "/v1/creators/w_miavale_0101",
+  "request": null,
+  "response": {
+    "account_id": "acc-2001",
+    "counts": {
+      "cached": 0,
+      "came_back_30d": 0,
+      "found_on_first_scan": 0,
+      "gone": 0,
+      "listed": 0,
+      "live": 0,
+      "new_today": 0,
+      "not_checked": 0
+    },
+    "first_daily_at": "2026-11-21T03:15:00Z",
+    "lanes": [
+      {
+        "cadence": "weekly",
+        "lane": "origin_probe",
+        "last_attempt_at": "2026-11-24T04:01:00Z",
+        "last_success_at": "2026-11-24T04:01:00Z",
+        "next_attempt_on": "2026-12-01",
+        "reason": null,
+        "state": "ok",
+        "trimmed": []
+      },
+      {
+        "cadence": "weekly",
+        "lane": "mega_lookup",
+        "last_attempt_at": "2026-11-24T04:02:00Z",
+        "last_success_at": "2026-11-21T03:02:00Z",
+        "next_attempt_on": "2026-12-01",
+        "reason": "lane_failed",
+        "state": "failed",
+        "trimmed": []
+      },
+      {
+        "cadence": "weekly",
+        "lane": "listing_recheck",
+        "last_attempt_at": "2026-11-24T04:02:00Z",
+        "last_success_at": "2026-11-24T04:02:00Z",
+        "next_attempt_on": "2026-12-01",
+        "reason": null,
+        "state": "ok",
+        "trimmed": []
+      },
+      {
+        "cadence": "weekly",
+        "lane": "google_full",
+        "last_attempt_at": "2026-11-24T04:10:00Z",
+        "last_success_at": "2026-11-24T04:10:00Z",
+        "next_attempt_on": "2026-12-01",
+        "reason": "cap_tenant_month",
+        "state": "reduced",
+        "trimmed": [
+          {
+            "field": "alias:0",
+            "value": "mia.vale.x"
+          },
+          {
+            "field": "x",
+            "value": "itsmiavale"
+          },
+          {
+            "field": "instagram",
+            "value": "mia.vale.official"
+          }
+        ]
+      },
+      {
+        "cadence": "weekly",
+        "lane": "registry_crawl",
+        "last_attempt_at": null,
+        "last_success_at": null,
+        "next_attempt_on": null,
+        "reason": null,
+        "state": "never",
+        "trimmed": []
+      }
+    ],
+    "last_checked_at": "2026-11-24T04:15:00Z",
+    "next_check_at": "2026-12-01T04:00:00Z",
+    "next_refresh_at": "2026-11-25T04:00:00Z",
+    "offer_counts": {
+      "cached": 0,
+      "came_back_30d": 0,
+      "live_30d": 0,
+      "new_7d": 0,
+      "visible": 0
+    },
+    "paused": false,
+    "paused_since": null,
+    "preview_leak": null,
+    "removal": null,
+    "seeded": true,
+    "service_status": "none",
+    "service_status_since": null,
+    "taken_down": null,
+    "this_week": {
+      "came_back": 0,
+      "first_scan": 0,
+      "gone": 0,
+      "new": 0,
+      "since": "2026-11-21",
+      "state": "partial"
+    },
+    "watch_id": "w_miavale_0101"
+  },
+  "status": 200
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -8,15 +9,18 @@ from typing import Any, Callable
 from urllib.parse import unquote, urlencode, urlsplit
 
 import anyio
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import select
+from starlette.types import Receive, Scope, Send
 
 import agency_scope
 import leak_removal
 import leak_tracker
 import platforms
 import relay_host
+import runtime_switches
 from agency_context import AgencyContext
 from audit_log import credential_write
 from auth import require_actor_account_ids
@@ -25,6 +29,8 @@ from db.engine import get_session
 from db.models import Account, LeakWatch
 from leak_tracker import HANDLE, NAME_MAX
 from secrets_store import mask
+
+log = logging.getLogger("of-relay.leak_tracker_api")
 
 NOT_ACCEPTED = "Key not accepted"
 OTHER_TENANT = "Key belongs to another tracker account"
@@ -41,6 +47,9 @@ NOT_REACHABLE = "The removal service is not reachable"
 PENDING = ("A Leak watch delete is still pending at the removal service and needs a valid key to finish. "
            "Replace the key instead of clearing it, or try again later")
 WATCH_DELETED = "The removal service already deleted this watch; save again to track this Creator anew"
+TRACKING_OFF = "Tracking is off for this Creator"
+REFRESHED = "Refreshed recently"
+TRY_SHORTLY = "Try again shortly"
 
 INSTAGRAM = re.compile(r"[A-Za-z0-9_.]{1,30}")
 X_HANDLE = re.compile(r"[A-Za-z0-9_]{1,15}")
@@ -78,7 +87,7 @@ async def get_setup(request: Request) -> dict[str, Any]:
     g = await leak_tracker.require_gates(request, need_key=False)
     agency = g.ctx.agency_user_id
     out = {"key": "missing", "masked": None, "is_owner": g.ctx.is_owner, "can_write": g.can_write, "brand": None,
-           "source": None}
+           "source": None, "previews": previews_on()}
     if not g.key:
         return out
     out["source"] = "instance" if g.instance else "own"
@@ -115,9 +124,7 @@ async def put_key(request: Request) -> dict[str, Any]:
     agency = g.ctx.agency_user_id
     key = raw.strip()
     if not key:
-        if await leak_tracker.pending(agency):
-            raise HTTPException(status_code=409, detail=PENDING)
-        await leak_tracker.store_key(agency, "")
+        await leak_tracker.store_key(agency, "", pending_message=PENDING)
         inst, _ = await leak_tracker.agency_key(agency)
         if not inst:
             return {"key": "missing", "masked": None, "brand": None, "source": None}
@@ -204,6 +211,8 @@ def _identity(body: Any) -> dict[str, Any]:
 
 
 def _http(e: leak_tracker.Refused) -> HTTPException:
+    if e.kind == "not_found":
+        return leak_tracker.not_found()
     if e.kind == "key_invalid":
         return HTTPException(status_code=409, detail=KEY_INVALID)
     if e.kind == "creator_cap":
@@ -216,12 +225,13 @@ def _http(e: leak_tracker.Refused) -> HTTPException:
     if e.kind == "unbound":
         return HTTPException(status_code=503, detail=UNREACHABLE)
     return HTTPException(status_code=409, detail={"handle_taken": HANDLE_TAKEN, "account_taken": ACCOUNT_TAKEN,
-                                                  "watch_deleted": WATCH_DELETED, "exists": ALREADY_TRACKED}[e.kind])
+                                                  "watch_deleted": WATCH_DELETED, "exists": ALREADY_TRACKED,
+                                                  "watch_paused": TRACKING_OFF}[e.kind])
 
 
-SERVICE_FIELDS = ("seeded", "paused", "paused_since", "last_checked_at", "next_check_at", "counts")
+SERVICE_FIELDS = ("seeded", "paused", "paused_since", "last_checked_at", "next_check_at", "next_refresh_at", "counts")
 UNKNOWN = {"seeded": False, "paused": False, "paused_since": None, "last_checked_at": None, "next_check_at": None,
-           "counts": None, "today": None}
+           "next_refresh_at": None, "counts": None, "this_week": None}
 
 
 COUNTS = ("live", "cached", "gone", "listed", "not_checked", "new_today", "found_on_first_scan", "came_back_30d")
@@ -231,7 +241,7 @@ def _shaped(c: dict[str, Any]) -> bool:
     counts = c.get("counts")
     return (isinstance(c.get("seeded"), bool) and isinstance(c.get("paused"), bool)
             and all(c.get(k) is None or isinstance(c.get(k), str)
-                    for k in ("paused_since", "last_checked_at", "next_check_at"))
+                    for k in ("paused_since", "last_checked_at", "next_check_at", "next_refresh_at"))
             and (counts is None or isinstance(counts, dict) and all(type(counts.get(k)) is int for k in COUNTS)))
 
 
@@ -239,11 +249,12 @@ DAY_STATES = frozenset({"pending", "complete", "partial", "coverage_reduced", "p
 DAY_COUNTS = ("new", "first_scan", "came_back", "gone")
 
 
-def _today(x: Any) -> dict[str, Any] | None:
-    if not isinstance(x, dict) or not isinstance(x.get("day"), str) or x.get("state") not in DAY_STATES \
+def _this_week(x: Any) -> dict[str, Any] | None:
+    if not isinstance(x, dict) or not isinstance(x.get("since"), str) or not isinstance(x.get("state"), str) \
+            or x["state"] not in DAY_STATES \
             or not all(type(x.get(k)) is int for k in DAY_COUNTS):
         return None
-    return {"day": x["day"], "state": x["state"], **{k: x[k] for k in DAY_COUNTS}}
+    return {"since": x["since"], "state": x["state"], **{k: x[k] for k in DAY_COUNTS}}
 
 
 def _by_watch(body: Any) -> dict[str, dict[str, Any]]:
@@ -281,20 +292,21 @@ async def get_roster(request: Request) -> dict[str, Any]:
         rows.append({"account_id": aid, "name": name, "platform": w.platform, "username": w.username,
                      "display_name": w.display_name, "on": w.on, "synced": leak_tracker.watch_synced(w),
                      "reachable": copy is not None,
-                     **({**{k: c.get(k) for k in SERVICE_FIELDS}, "today": _today(c.get("today"))} if c else UNKNOWN)})
+                     **({**{k: c.get(k) for k in SERVICE_FIELDS}, "this_week": _this_week(c.get("this_week"))} if c else UNKNOWN)})
     untracked = [{"account_id": aid, "name": name} for aid, name in names.items() if aid not in watches]
     return {"rows": rows, "untracked": untracked, "stale": bool(copy and copy.stale),
             "fetched_at": copy.fetched_at if copy else None}
 
 
 PAGE = 100
+STRIP = 12
 CURSOR_MAX = 512
 PILLS = frozenset({"live", "cached", "gone", "listed", "not_checked"})
 LEAK_TEXT = ("leak_id", "leak_site", "kind", "title", "first_seen_at")
 LEAK_WHEN = ("last_up_at", "last_probe_at", "origin_status")
 NO_LEAKS = {"leaks": [], "next_cursor": None, "stale": False, "fetched_at": None}
 PENDING_LEAKS = {**NO_LEAKS, "leaks": None}
-NO_DETAIL = {"lanes": None, "today": None, "removal": None, "offer": None}
+NO_DETAIL = {"lanes": None, "this_week": None, "next_refresh_at": None, "removal": None, "offer": None}
 
 
 def _cursor_ok(cursor: str | None) -> None:
@@ -302,8 +314,9 @@ def _cursor_ok(cursor: str | None) -> None:
         raise _invalid("cursor")
 
 
-def _query(watch_ids: list[str], cursor: str | None) -> str:
-    return urlencode([*(("watch_id", w) for w in watch_ids), ("limit", PAGE), *((("cursor", cursor),) if cursor else ())])
+def _query(watch_ids: list[str], cursor: str | None, preview: bool = False, limit: int | None = None) -> str:
+    return urlencode([*(("watch_id", w) for w in watch_ids), *((("preview_only", 1),) if preview else ()),
+                      ("limit", limit or PAGE), *((("cursor", cursor),) if cursor else ())])
 
 
 def _event(e: Any) -> dict[str, Any] | None:
@@ -335,7 +348,26 @@ def _leak(x: Any, extra: tuple[str, ...]) -> dict[str, Any] | None:
     return out
 
 
-def _page(body: Any, extra: tuple[str, ...], events: bool, preview: bool = False) -> dict[str, Any]:
+def previews_on() -> bool:
+    return runtime_switches.on("LEAK_TRACKER_PREVIEWS")
+
+
+VERTICALS = frozenset({"images", "videos"})
+
+
+def _preview(x: Any) -> dict[str, Any] | None:
+    if not isinstance(x, dict) or x.get("vertical") not in VERTICALS or not isinstance(x.get("seen_at"), str):
+        return None
+    return {"vertical": x["vertical"], "seen_at": x["seen_at"]}
+
+
+def _shown(page: dict[str, Any]) -> dict[str, Any]:
+    if page["leaks"] is None or previews_on():
+        return page
+    return {**page, "leaks": [{**x, "preview": None} for x in page["leaks"]]}
+
+
+def _page(body: Any, extra: tuple[str, ...], events: bool) -> dict[str, Any]:
     leaks = body.get("leaks") if isinstance(body, dict) else None
     cursor = body.get("next_cursor") if isinstance(body, dict) else None
     if not isinstance(leaks, list) or not (cursor is None or isinstance(cursor, str)):
@@ -347,8 +379,7 @@ def _page(body: Any, extra: tuple[str, ...], events: bool, preview: bool = False
         if events:
             raw = x.get("events")
             leak["events"] = [e for e in map(_event, raw) if e] if isinstance(raw, list) else []
-        if preview:
-            leak["preview"] = x.get("preview") if isinstance(x.get("preview"), dict) else None
+        leak["preview"] = _preview(x.get("preview"))
         out.append(leak)
     if leaks and not out:
         raise leak_tracker.ContractError()
@@ -363,18 +394,15 @@ def _drill_page(body: Any) -> dict[str, Any]:
     return _page(body, (), True)
 
 
-def _popup_page(body: Any) -> dict[str, Any]:
-    return _page(body, (), True, preview=True)
-
-
-LANES = ("origin_probe", "mega_lookup", "listing_recheck", "google_fresh", "google_full", "registry_crawl")
+LANES = ("origin_probe", "mega_lookup", "listing_recheck", "google_full", "registry_crawl")
 LANE_STATES = frozenset({"ok", "waiting", "reduced", "failed", "never", "paused"})
 LANE_TEXT = ("reason", "last_success_at", "last_attempt_at", "next_attempt_on")
 
 
 def _lane(x: Any) -> dict[str, Any] | None:
     if not isinstance(x, dict) or x.get("lane") not in LANES or x.get("cadence") not in ("daily", "weekly") \
-            or x.get("state") not in LANE_STATES or not all(x.get(k) is None or isinstance(x.get(k), str) for k in LANE_TEXT):
+            or not isinstance(x.get("state"), str) or x["state"] not in LANE_STATES \
+            or not all(x.get(k) is None or isinstance(x.get(k), str) for k in LANE_TEXT):
         return None
     trimmed = x.get("trimmed")
     return {"lane": x["lane"], "cadence": x["cadence"], "state": x["state"], **{k: x.get(k) for k in LANE_TEXT},
@@ -397,7 +425,8 @@ def _detail_of(body: Any) -> dict[str, Any]:
     lanes = body.get("lanes") if isinstance(body, dict) else None
     if not isinstance(lanes, list):
         raise leak_tracker.ContractError()
-    return {"lanes": [lane for lane in map(_lane, lanes) if lane], "today": _today(body.get("today")),
+    return {"lanes": [lane for lane in map(_lane, lanes) if lane], "this_week": _this_week(body.get("this_week")),
+            "next_refresh_at": _text(body.get("next_refresh_at")),
             "service_status": _text(body.get("service_status")),
             "removal": _ints(body.get("removal"), leak_removal.TRACK_COUNTS),
             "offer_counts": _ints(body.get("offer_counts"), leak_removal.OFFER_COUNTS),
@@ -430,15 +459,19 @@ async def _read_or_none(g: leak_tracker.Gates, path: str, parse: Callable[[Any],
         return None
 
 
-def _removal(g: leak_tracker.Gates, row: LeakWatch, detail: dict[str, Any], me: dict[str, Any]) -> dict[str, Any]:
+def _removal(g: leak_tracker.Gates, row: LeakWatch, detail: dict[str, Any], me: dict[str, Any], *,
+             detail_stale: bool) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     area = leak_removal.removal_view(detail.get("service_status"), me.get("notices_updated_at"), now)
+    area["stale"] = area["stale"] or detail_stale
     counts = detail.get("removal") if area["view"] in leak_removal.TRACK_VIEWS and not area["stale"] else None
     snoozed = row.offer_snoozed_until is not None and row.offer_snoozed_until > now.replace(tzinfo=None)
     offer = leak_removal.removal_offer(area["view"], owner_or_admin=g.offer_viewer, first_daily_at=detail.get("first_daily_at"),
                                        snoozed=snoozed, brand=me.get("brand"), contact_url=me.get("contact_url"),
                                        counts=detail.get("offer_counts"))
-    return {"removal": {**area, "notices_updated_at": me.get("notices_updated_at"), "counts": counts}, "offer": offer}
+    until = row.offer_snoozed_until.isoformat() + "Z" if snoozed and g.offer_viewer else None
+    return {"removal": {**area, "notices_updated_at": me.get("notices_updated_at"), "counts": counts,
+                        "offer_snoozed_until": until}, "offer": offer}
 
 
 async def _leaks(g: leak_tracker.Gates, path: str, parse: Callable[[Any], Any], cursor: str | None) -> dict[str, Any]:
@@ -451,45 +484,55 @@ async def _leaks(g: leak_tracker.Gates, path: str, parse: Callable[[Any], Any], 
 
 
 @router.get("/all")
-async def get_all(request: Request, cursor: str | None = None) -> dict[str, Any]:
+async def get_all(request: Request, cursor: str | None = None, preview: bool = False) -> dict[str, Any]:
     g = await leak_tracker.require_gates(request, need_key=True)
+    if preview and not previews_on():
+        raise leak_tracker.not_found()
+    if preview and cursor is not None:
+        raise _invalid("cursor")
     _cursor_ok(cursor)
     names = await _creators(g.ctx)
     watches = await _agency_watches(g.ctx.agency_user_id, names)
     accounts = {w.watch_id: w.account_id for w in watches if w.synced_at is not None}
     if not accounts:
         return PENDING_LEAKS if watches else NO_LEAKS
-    page = await _leaks(g, f"/v1/leaks?{_query(sorted(accounts), cursor)}", _all_page, cursor)
+    if preview:
+        page = {**await _leaks(g, f"/v1/leaks?{_query(sorted(accounts), None, preview=True, limit=STRIP)}", _all_page, None), "next_cursor": None}
+    else:
+        page = await _leaks(g, f"/v1/leaks?{_query(sorted(accounts), cursor)}", _all_page, cursor)
     if page["leaks"] is not None:
         page["leaks"] = [{**{k: v for k, v in x.items() if k != "watch_id"}, "account_id": accounts[x["watch_id"]]}
                          for x in page["leaks"] if x["watch_id"] in accounts]
-    return page
+    return _shown(page)
 
 
 @router.get("/watches/{account_id}")
-async def get_watch(account_id: str, request: Request, cursor: str | None = None) -> dict[str, Any]:
+async def get_watch(account_id: str, request: Request, cursor: str | None = None,
+                    preview: bool = False) -> dict[str, Any]:
     g = await leak_tracker.require_gates(request, need_key=True)
-    if account_id not in await _creators(g.ctx):
+    if account_id not in await _creators(g.ctx) or (preview and not previews_on()):
         raise leak_tracker.not_found()
     _cursor_ok(cursor)
     row = await leak_tracker.watch(g.ctx.agency_user_id, account_id)
     if row is not None:
-        path = f"/v1/creators/{row.watch_id}/leaks?{_query([], cursor)}"
+        path = f"/v1/leaks?{_query([row.watch_id], cursor, preview=True)}" if preview \
+            else f"/v1/creators/{row.watch_id}/leaks?{_query([], cursor)}"
         page, detail, me, extra = PENDING_LEAKS, None, None, NO_DETAIL
         try:
-            if row.synced_at is not None and cursor is None:
+            if row.synced_at is not None and cursor is None and not preview:
                 page, detail, me = await asyncio.gather(_leaks(g, path, _drill_page, None),
                                                         _read_or_none(g, f"/v1/creators/{row.watch_id}", _detail_of),
                                                         _read_or_none(g, "/v1/me", _me_of))
                 d = detail.body if detail else {}
-                extra = {"lanes": d.get("lanes"), "today": d.get("today"), **_removal(g, row, d, me.body if me else {})}
+                extra = {"lanes": d.get("lanes"), "this_week": d.get("this_week"), "next_refresh_at": d.get("next_refresh_at"),
+                         **_removal(g, row, d, me.body if me else {}, detail_stale=bool(detail and detail.stale))}
             elif row.synced_at is not None:
                 page = await _leaks(g, path, _drill_page, cursor)
         except leak_tracker.Gone:
             await leak_tracker.forget_watch(g.ctx.agency_user_id, row.watch_id)
         else:
             return {"tracked": True, "identity": leak_tracker.identity_out(row), "suggested": None,
-                    "synced": leak_tracker.watch_synced(row), **extra, **page,
+                    "synced": leak_tracker.watch_synced(row), **extra, **_shown(page),
                     "stale": page["stale"] or bool(detail and detail.stale)}
     live = await leak_tracker.live(account_id, platforms.for_account(account_id).key)
     suggested = {**live, "verified": True} if live else {"username": "", "display_name": "", "verified": False}
@@ -508,13 +551,13 @@ async def get_offer(account_id: str, request: Request) -> dict[str, Any]:
         detail, me, page = await asyncio.gather(
             _read(g, f"/v1/creators/{row.watch_id}", _detail_of, keep=False),
             _read(g, "/v1/me", _popup_me, keep=False),
-            _read(g, f"/v1/creators/{row.watch_id}/leaks?{_query([], None)}", _popup_page, keep=False))
+            _read(g, f"/v1/creators/{row.watch_id}/leaks?{_query([], None)}", _drill_page, keep=False))
     except leak_tracker.Gone:
         await leak_tracker.forget_watch(g.ctx.agency_user_id, row.watch_id)
         raise leak_tracker.not_found() from None
     if detail is None or me is None or page is None:
         raise HTTPException(status_code=503, detail=NOT_REACHABLE)
-    offer = _removal(g, row, detail.body, me.body)["offer"]
+    offer = _removal(g, row, detail.body, me.body, detail_stale=detail.stale)["offer"]
     if offer is None:
         raise leak_tracker.not_found()
     return {"offer": offer, "preview_leak": detail.body["preview_leak"], "video": me.body["video"],
@@ -528,21 +571,67 @@ PASSED = ("content-range", "accept-ranges", "content-length")
 _streams: dict[str, int] = {}
 
 
-class _HeldStream(StreamingResponse):
-    def __init__(self, release: Callable[[], Any], *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._release = release
+class _StreamLease:
+    def __init__(self, agency: str | None, counts: dict[str, int]) -> None:
+        self.agency = agency
+        self.counts = counts
+        self.client: httpx.AsyncClient | None = None
+        self.upstream: httpx.Response | None = None
+        if agency is not None:
+            counts[agency] = counts.get(agency, 0) + 1
 
-    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+    async def aclose(self) -> None:
+        agency, self.agency = self.agency, None
+        client, self.client = self.client, None
+        upstream, self.upstream = self.upstream, None
+        if agency is not None:
+            if self.counts[agency] == 1:
+                del self.counts[agency]
+            else:
+                self.counts[agency] -= 1
+        with anyio.CancelScope(shield=True):
+            try:
+                if upstream is not None:
+                    await upstream.aclose()
+            finally:
+                if client is not None:
+                    await client.aclose()
+
+
+class _HeldStream(StreamingResponse):
+    def __init__(self, lease: _StreamLease, upstream: httpx.Response, cap: int, ctype: str,
+                 passed: tuple[str, ...], for_s: float) -> None:
+        self._lease = lease
+        self._for_s = for_s
+
+        async def body():
+            sent = 0
+            async for chunk in upstream.aiter_bytes(CHUNK):
+                sent += len(chunk)
+                if sent > cap:
+                    break
+                yield chunk
+
+        kept = {k: v for k in passed if (v := upstream.headers.get(k))}
+        super().__init__(body(), status_code=upstream.status_code, media_type=ctype, headers={**kept, **CLOSED})
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
-            await super().__call__(scope, receive, send)
+            with anyio.move_on_after(self._for_s):
+                await super().__call__(scope, receive, send)
         finally:
-            await self._release()
+            await self._lease.aclose()
 
 
 def _closed(status: int, headers: dict[str, str] | None = None) -> Response:
     return JSONResponse(status_code=status, content={"detail": HTTPStatus(status).phrase},
                         headers={**CLOSED, **(headers or {})})
+
+
+def _type_and_size(upstream: httpx.Response, cap: int) -> tuple[str, bool]:
+    size = upstream.headers.get("content-length")
+    return ((upstream.headers.get("content-type") or "").split(";")[0].strip().lower(),
+            size is None or (size.isdigit() and int(size) <= cap))
 
 
 @router.get("/offer-video/{part}")
@@ -559,63 +648,84 @@ async def get_offer_video(part: str, request: Request) -> Response:
         byte_range = leak_removal.one_range(request.headers.getlist("range")) if part == "video" else None
     except ValueError:
         return _closed(416)
-    counted = part == "video"
-    if counted and _streams.get(agency, 0) >= STREAMS_MAX:
+    if part == "video" and _streams.get(agency, 0) >= STREAMS_MAX:
         return _closed(429)
-    if counted:
-        _streams[agency] = _streams.get(agency, 0) + 1
-    held = counted
-    client: Any = None
-    upstream: Any = None
-
-    async def release() -> None:
-        nonlocal held, client, upstream
-        if held:
-            held = False
-            _streams[agency] -= 1
-        shut, client, upstream = (upstream, client), None, None
-        with anyio.CancelScope(shield=True):
-            for one in shut:
-                if one is not None:
-                    await one.aclose()
-
-    streaming = False
+    lease = _StreamLease(agency if part == "video" else None, _streams)
+    response = None
     try:
         try:
-            client, upstream = await leak_tracker.open_stream(agency, g.key, f"/v1/offer-video/{part}", byte_range)
+            lease.client, upstream = await leak_tracker.open_stream(agency, g.key, f"/v1/offer-video/{part}", byte_range)
+            lease.upstream = upstream
         except leak_tracker.KeyRefused:
             return _closed(404)
         except leak_tracker.Unreachable:
             return _closed(503)
-        got = (upstream.headers.get("content-type") or "").split(";")[0].strip().lower()
-        size = upstream.headers.get("content-length")
+        got, size_ok = _type_and_size(upstream, cap)
         if upstream.status_code == 416:
             rng = upstream.headers.get("content-range")
             return _closed(416, {"Content-Range": rng} if rng else None)
-        if upstream.status_code not in (200, 206) or got != ctype or (size is not None and not (size.isdigit() and int(size) <= cap)):
+        if upstream.status_code not in (200, 206) or got != ctype or not size_ok:
             return _closed(404)
-        deadline = asyncio.get_running_loop().time() + STREAM_FOR_S
-        source = upstream
-
-        async def body():
-            sent = 0
-            try:
-                async for chunk in source.aiter_bytes(CHUNK):
-                    sent += len(chunk)
-                    if sent > cap or asyncio.get_running_loop().time() > deadline:
-                        break
-                    yield chunk
-            finally:
-                await release()
-
-        passed = {k: v for k in PASSED if (v := upstream.headers.get(k))}
-        out = _HeldStream(release, body(), status_code=upstream.status_code, media_type=ctype,
-                          headers={**passed, **CLOSED})
-        streaming = True
-        return out
+        response = _HeldStream(lease, upstream, cap, ctype, PASSED, STREAM_FOR_S)
+        return response
     finally:
-        if not streaming:
-            await release()
+        if response is None:
+            await lease.aclose()
+
+
+THUMB_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
+THUMB_MAX = 3 * 1024 * 1024
+THUMB_FOR_S = 30
+THUMBS_MAX = 6
+LEAK_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_thumbs: dict[str, int] = {}
+
+
+@router.get("/watches/{account_id}/leaks/{leak_id}/thumb")
+async def get_thumb(account_id: str, leak_id: str, request: Request) -> Response:
+    try:
+        g = await leak_tracker.require_gates(request, need_key=True)
+    except HTTPException:
+        return _closed(404)
+    agency = g.ctx.agency_user_id
+    if not previews_on() or leak_tracker.key_invalid(agency) or not LEAK_ID.fullmatch(leak_id) \
+            or account_id not in await _creators(g.ctx):
+        return _closed(404)
+    row = await leak_tracker.watch(agency, account_id)
+    if row is None or row.synced_at is None:
+        return _closed(404)
+    if _thumbs.get(agency, 0) >= THUMBS_MAX:
+        return _closed(429)
+    lease = _StreamLease(agency, _thumbs)
+    response = None
+    try:
+        try:
+            lease.client, upstream = await leak_tracker.open_stream(
+                agency, g.key, f"/v1/creators/{row.watch_id}/leaks/{leak_id}/thumb", None)
+            lease.upstream = upstream
+        except (leak_tracker.KeyRefused, leak_tracker.Unreachable) as e:
+            log.info("leak thumb refused: %s", "key" if isinstance(e, leak_tracker.KeyRefused) else "unreachable")
+            return _closed(404)
+        status = upstream.status_code
+        ctype, size_ok = _type_and_size(upstream, THUMB_MAX)
+        if status == 410:
+            try:
+                await upstream.aread()
+            except httpx.HTTPError:
+                log.info("leak thumb refused: 410 body unreadable")
+                return _closed(404)
+            if leak_tracker.gone(upstream):
+                await leak_tracker.forget_watch(agency, row.watch_id)
+                log.info("leak thumb refused: watch gone")
+                return _closed(404)
+        if status != 200 or ctype not in THUMB_TYPES or not size_ok:
+            log.info("leak thumb refused: %s", status if status != 200 else "type or size")
+            return _closed(429 if status == 429 else 404)
+        response = _HeldStream(lease, upstream, THUMB_MAX, ctype, ("content-length",), THUMB_FOR_S)
+        return response
+    finally:
+        if response is None:
+            await lease.aclose()
 
 
 @router.put("/watches/{account_id}")
@@ -665,6 +775,39 @@ async def post_tracking(account_id: str, request: Request) -> dict[str, Any]:
         row.on = on
         row.updated_at = datetime.utcnow()
     return {"on": on}
+
+
+@router.post("/watches/{account_id}/refresh")
+async def post_refresh(account_id: str, request: Request) -> Any:
+    g = await leak_tracker.require_gates(request, need_key=True)
+    if account_id not in await _creators(g.ctx):
+        raise leak_tracker.not_found()
+    if not g.can_write:
+        raise HTTPException(status_code=403, detail=WRITERS_ONLY)
+    agency = g.ctx.agency_user_id
+    row = await leak_tracker.watch(agency, account_id)
+    if row is None:
+        raise leak_tracker.not_found()
+    if not row.on:
+        raise HTTPException(status_code=409, detail=TRACKING_OFF)
+    try:
+        queued = await leak_tracker.refresh(agency, g.key, row.watch_id)
+    except leak_tracker.Gone:
+        await leak_tracker.forget_watch(agency, row.watch_id)
+        raise leak_tracker.not_found() from None
+    except leak_tracker.Unreachable:
+        raise HTTPException(status_code=503, detail=NOT_REACHABLE) from None
+    except leak_tracker.ContractError:
+        raise HTTPException(status_code=502, detail=UNREADABLE) from None
+    except leak_tracker.Cooldown as c:
+        return JSONResponse(status_code=429,
+                            headers={"Retry-After": str(c.retry_after_s)} if c.retry_after_s is not None else None,
+                            content={"detail": REFRESHED if c.next_refresh_at else TRY_SHORTLY,
+                                     "next_refresh_at": c.next_refresh_at})
+    except leak_tracker.Refused as e:
+        raise _http(e) from None
+    leak_tracker.drop_copies(agency)
+    return queued
 
 
 @router.post("/watches/{account_id}/offer-snooze")

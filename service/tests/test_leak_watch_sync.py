@@ -288,16 +288,26 @@ def case_the_pass_never_reads_the_live_identity_or_lists_creators():
     assert asked == []
 
 
-def case_a_429_or_refused_key_stops_that_agency_and_a_down_service_stops_the_run():
+def case_switch_off_during_a_push_stops_the_next_put():
+    _reset()
+    first = _row(CREATOR, synced_at=None)
+    _row(SECOND, synced_at=None)
+    with _tracker() as t:
+        t.during = lambda _: os.environ.update(LEAK_TRACKER_ENABLED="0")
+        _sync()
+        assert list(t.pushed()) == [first]
+
+
+def case_rate_limits_refusals_and_down_stop_only_the_affected_agency():
     refused = {**PUT_UPDATED, "status": 401, "response": ERR_401["response"]}
     for label, answer, want_pushed, want_synced in [
             ("429", LIMITED, "a1 a2 b", "a1 b"),
             ("401", refused, "a1 a2 b", "a1 b"),
-            ("connect error", DOWN, "a1 a2", "a1"),
-            ("connect timeout", httpx.ConnectTimeout("slow"), "a1 a2", "a1"),
-            ("502", {**LIMITED, "status": 502}, "a1 a2", "a1"),
-            ("503", {**LIMITED, "status": 503}, "a1 a2", "a1"),
-            ("504", {**LIMITED, "status": 504}, "a1 a2", "a1"),
+            ("connect error", DOWN, "a1 a2 b", "a1 b"),
+            ("connect timeout", httpx.ConnectTimeout("slow"), "a1 a2 b", "a1 b"),
+            ("502", {**LIMITED, "status": 502}, "a1 a2 b", "a1 b"),
+            ("503", {**LIMITED, "status": 503}, "a1 a2 b", "a1 b"),
+            ("504", {**LIMITED, "status": 504}, "a1 a2 b", "a1 b"),
             ("500", {**LIMITED, "status": 500}, "a1 a2 a3 b", "a1 a3 b"),
             ("read timeout", httpx.ReadTimeout("slow"), "a1 a2 a3 b", "a1 a3 b")]:
         _reset()

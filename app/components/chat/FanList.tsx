@@ -84,6 +84,7 @@ const OWE_REPLY_SCAN_CAP = 100;   // and never scan more than this many chats de
 // one search, not one per letter. 250 ms, as the PPV fan search, the GIF and
 // tag pickers and the in-thread search debounce.
 export const SEARCH_DEBOUNCE_MS = 250;
+export const CREATOR_UNKNOWN_LINE = "This Creator is disconnected. Reconnect it on the Creators page.";
 
 if (typeof window !== "undefined" && !(window as unknown as { __chatlistBuildLogged?: boolean }).__chatlistBuildLogged) {
   console.info("[ChatList] build chats-scroll-cap-v6 (rt-row-bubble) loaded");
@@ -825,7 +826,8 @@ export function FanList({
         {inbox.pending.size > 0 && (
           <p role="status" className="p-4 text-xs text-fg-dim">Loading inbox groups…</p>
         )}
-        {!q.isError && rows.length === 0 && q.isFetched && !groupFilling &&
+        {q.unknownAccount && <FanListEmpty text={CREATOR_UNKNOWN_LINE} />}
+        {!q.isError && !q.unknownAccount && rows.length === 0 && q.isFetched && !groupFilling &&
           inbox.failed.size === 0 && inbox.pending.size === 0 && <FanListEmpty />}
         {!q.isError && noneOnline && <FanListEmpty text="No Fans online now" />}
         {/* Skeleton rows during the cold first fetch — only when we have

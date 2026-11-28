@@ -1,0 +1,33 @@
+{
+  "method": "GET",
+  "path": "/v1/leaks?watch_id=w_miavale_0001&preview_only=1&limit=12",
+  "request": null,
+  "response": {
+    "leaks": [
+      {
+        "came_back": false,
+        "first_seen_at": "2026-11-27T04:03:00Z",
+        "found_on_first_scan": false,
+        "kind": "media",
+        "last_probe_at": null,
+        "last_up_at": null,
+        "leak_id": "lk_0005",
+        "leak_site": "example-leaks.test",
+        "origin_status": null,
+        "pill": "not_checked",
+        "preview": {
+          "seen_at": "2026-11-27T04:03:00Z",
+          "vertical": "images"
+        },
+        "sources": [
+          "google_images"
+        ],
+        "title": "miavale set 2",
+        "url": "https://pics.example-leaks.test/miavale/set-2",
+        "watch_id": "w_miavale_0001"
+      }
+    ],
+    "next_cursor": null
+  },
+  "status": 200
+}

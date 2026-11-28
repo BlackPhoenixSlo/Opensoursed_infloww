@@ -1,0 +1,99 @@
+{
+  "method": "GET",
+  "path": "/v1/creators/w_rowanash_0102",
+  "request": null,
+  "response": {
+    "account_id": "acc-2002",
+    "counts": {
+      "cached": 0,
+      "came_back_30d": 0,
+      "found_on_first_scan": 0,
+      "gone": 0,
+      "listed": 0,
+      "live": 0,
+      "new_today": 0,
+      "not_checked": 0
+    },
+    "first_daily_at": "2026-11-26T04:15:00Z",
+    "lanes": [
+      {
+        "cadence": "weekly",
+        "lane": "origin_probe",
+        "last_attempt_at": "2026-11-26T04:01:00Z",
+        "last_success_at": "2026-11-26T04:01:00Z",
+        "next_attempt_on": null,
+        "reason": null,
+        "state": "paused",
+        "trimmed": []
+      },
+      {
+        "cadence": "weekly",
+        "lane": "mega_lookup",
+        "last_attempt_at": "2026-11-26T04:02:00Z",
+        "last_success_at": "2026-11-26T04:02:00Z",
+        "next_attempt_on": null,
+        "reason": null,
+        "state": "paused",
+        "trimmed": []
+      },
+      {
+        "cadence": "weekly",
+        "lane": "listing_recheck",
+        "last_attempt_at": "2026-11-26T04:02:00Z",
+        "last_success_at": "2026-11-26T04:02:00Z",
+        "next_attempt_on": null,
+        "reason": null,
+        "state": "paused",
+        "trimmed": []
+      },
+      {
+        "cadence": "weekly",
+        "lane": "google_full",
+        "last_attempt_at": "2026-11-26T04:10:00Z",
+        "last_success_at": "2026-11-26T04:10:00Z",
+        "next_attempt_on": null,
+        "reason": null,
+        "state": "paused",
+        "trimmed": []
+      },
+      {
+        "cadence": "weekly",
+        "lane": "registry_crawl",
+        "last_attempt_at": null,
+        "last_success_at": null,
+        "next_attempt_on": null,
+        "reason": null,
+        "state": "paused",
+        "trimmed": []
+      }
+    ],
+    "last_checked_at": "2026-11-26T04:15:00Z",
+    "next_check_at": "2026-12-02T04:00:00Z",
+    "next_refresh_at": null,
+    "offer_counts": {
+      "cached": 0,
+      "came_back_30d": 0,
+      "live_30d": 0,
+      "new_7d": 0,
+      "visible": 0
+    },
+    "paused": true,
+    "paused_since": "2026-11-26T09:00:00Z",
+    "preview_leak": null,
+    "removal": null,
+    "seeded": true,
+    "service_status": "none",
+    "service_status_since": null,
+    "taken_down": null,
+    "this_week": {
+      "came_back": 0,
+      "first_scan": 0,
+      "gone": 0,
+      "new": 0,
+      "since": "2026-11-21",
+      "state": "paused"
+    },
+    "watch_id": "w_rowanash_0102"
+  },
+  "status": 200
+}

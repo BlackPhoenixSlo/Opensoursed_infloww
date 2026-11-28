@@ -31,7 +31,7 @@ def case_terminal_signals_win() -> None:
     for st in (Drive(), Drive(T - 3)):
         for ev, eff in [
             (Poll(T, cancel=True, expired=True, uid="7"), Cancel()),
-            (Poll(T, expired=True, uid="7", otp=True, code="123456"), Expire()),
+            (Poll(T, expired=True, uid="7", otp=True, code="123456"), Expire("timed_out")),
             (Poll(T, uid="7", otp=True, code="123456", challenge=True), LoggedIn("7")),
         ]:
             assert login_step(st, ev) == (st, eff), (st, ev)
@@ -39,7 +39,7 @@ def case_terminal_signals_win() -> None:
 
 def case_refused_login_is_a_terminal_effect() -> None:
     _, effect = login_step(Drive(), Poll(T, refused="Invalid password", challenge=True))
-    assert effect == decide.Fail("OnlyFans refused the login: Invalid password")
+    assert effect == decide.Fail("OnlyFans refused the login: Invalid password", "refused")
 
 
 def case_otp_prompt() -> None:
@@ -72,7 +72,8 @@ def case_typed() -> None:
 def case_challenge_and_typing() -> None:
     for st in (Drive(), Drive(T - 2)):
         for shown in (STATE_TYPING, STATE_CHALLENGE, STATE_OTP):
-            assert login_step(st, Poll(T, challenge=True, shown=shown)) == (st, Show(STATE_CHALLENGE, CHALLENGE_MSG))
+            assert login_step(st, Poll(T, challenge=True, shown=shown)) == (
+                Drive(st.otp_sent_at, challenge=True), Show(STATE_CHALLENGE, CHALLENGE_MSG))
         for shown, eff in [(STATE_TYPING, Idle()), (STATE_CHALLENGE, Show(STATE_TYPING, TYPING_MSG)),
                            (STATE_OTP, Show(STATE_TYPING, TYPING_MSG)), ("starting", Show(STATE_TYPING, TYPING_MSG))]:
             assert login_step(st, Poll(T, shown=shown)) == (st, eff), (st, shown)
@@ -87,6 +88,19 @@ def _run(polls: list) -> list:
             st, eff = login_step(st, Typed(True, ev.now))
         out.append(eff)
     return out
+
+
+def case_expiry_kind_tracks_current_challenge():
+    challenge = Poll(T, challenge=True)
+    for polls, kind in [
+        ([], "timed_out"),
+        ([challenge], "challenge"),
+        ([challenge, Poll(T + 1, otp=True, shown=STATE_CHALLENGE)], "timed_out"),
+        ([challenge, Poll(T + 1, shown=STATE_CHALLENGE)], "timed_out"),
+        ([challenge, Poll(T + 1, otp=True, code="123456")], "timed_out"),
+    ]:
+        effect = _run([*polls, Poll(T + 2, expired=True)])[-1]
+        assert effect == Expire(kind), (polls, effect)
 
 
 def case_wrong_code_then_right_code() -> None:
@@ -110,7 +124,7 @@ def case_cancel_while_checking_a_code() -> None:
     effs = _run([Poll(T, otp=True, shown=STATE_OTP), Poll(T + 1, otp=True, code="123456", shown=STATE_OTP),
                  Poll(T + 2, otp=True, shown=STATE_OTP), Poll(T + 3, cancel=True, otp=True, shown=STATE_OTP)])
     assert effs == [Idle(), TypeCode("123456"), Idle(), Idle(), Cancel()], effs
-    assert _run([Poll(T, otp=True, code="1234567", shown=STATE_OTP), Poll(T + 1, expired=True)])[-1] == Expire()
+    assert _run([Poll(T, otp=True, code="1234567", shown=STATE_OTP), Poll(T + 1, expired=True)])[-1] == Expire("timed_out")
 
 
 _harness.run()

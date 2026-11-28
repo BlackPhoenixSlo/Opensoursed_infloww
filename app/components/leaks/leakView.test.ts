@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   dayLabel, entryNote, headerFacts, LEGEND, nextCheck, pausedLabel, PILL_LABEL, rosterNotes, seenNote, timeline, untrack,
-  when, withoutCreator, type Leak, type LeakCounts, type LeakEvent, type LeakRoster, type LeakRosterRow,
+  when, withoutCreator, withSnooze, type Leak, type LeakCounts, type LeakEvent, type LeakRemovalPage, type LeakRoster,
+  type LeakRosterRow,
 } from "./leakView";
 
 const V1 = join(__dirname, "..", "..", "..", "service", "tests", "fixtures", "leak_tracker_v1");
@@ -23,12 +24,12 @@ const ZERO: LeakCounts = {
 const MIA_COUNTS: LeakCounts = {
   cached: 1, came_back_30d: 1, found_on_first_scan: 3, gone: 0, listed: 1, live: 1, new_today: 1, not_checked: 1,
 };
+const WEEK = { since: "2026-11-21", state: "complete", new: 1, first_scan: 0, came_back: 0, gone: 0 } as const;
 const row = (over: Partial<LeakRosterRow> = {}): LeakRosterRow => ({
   account_id: "acc-a", name: "Creator A", platform: "onlyfans", username: "miavale", display_name: "Mia Vale",
   on: true, synced: true, reachable: true, seeded: true, paused: false, paused_since: null,
-  last_checked_at: "2026-11-27T04:05:00Z", next_check_at: "2026-11-28T04:00:00Z", counts: MIA_COUNTS, today: null, ...over,
+  last_checked_at: "2026-11-27T04:05:00Z", next_check_at: "2026-11-28T04:00:00Z", counts: MIA_COUNTS, this_week: WEEK, ...over,
 });
-const TODAY = { day: "2026-11-27", state: "complete", new: 1, first_scan: 0, came_back: 0, gone: 0 } as const;
 
 describe("when", () => {
   it.each([
@@ -84,12 +85,12 @@ describe("pausedLabel", () => {
 
 describe("entryNote", () => {
   it.each<[string, Partial<LeakRosterRow>, string]>([
-    ["Leaks up now and New today", {}, "1 up now · 1 new today"],
-    ["no New today", { counts: { ...MIA_COUNTS, new_today: 0, found_on_first_scan: 2 } }, "1 up now"],
-    ["New today from the day's read", { today: { ...TODAY, new: 2 } }, "1 up now · 2 new today"],
-    ["the day's read finds none new", { today: { ...TODAY, new: 0, first_scan: 3 } }, "1 up now"],
-    ["only first-scan Leaks", { counts: { ...ZERO, live: 2, listed: 1, found_on_first_scan: 3 } }, "Found on first scan · 3"],
-    ["a seed that found nothing", { counts: ZERO, last_checked_at: null }, "Found on first scan · 0"],
+    ["Leaks up now and new this week", {}, "1 up now · 1 new this week"],
+    ["the week's read finds more", { this_week: { ...WEEK, new: 2 } }, "1 up now · 2 new this week"],
+    ["the week's read finds none new", { this_week: { ...WEEK, new: 0, first_scan: 3 } }, "1 up now"],
+    ["no week read: counts.new_today is not a fallback", { this_week: null }, "1 up now"],
+    ["only first-scan Leaks", { this_week: null, counts: { ...ZERO, live: 2, listed: 1, found_on_first_scan: 3 } }, "Found on first scan · 3"],
+    ["a seed that found nothing", { this_week: { ...WEEK, new: 0 }, counts: ZERO, last_checked_at: null }, "Found on first scan · 0"],
     ["not seeded yet", { seeded: false, counts: ZERO, last_checked_at: null }, "Not checked yet"],
     ["unknown to the service yet", { seeded: false, counts: null, last_checked_at: null, next_check_at: null }, "Not checked yet"],
     ["paused by the service", { paused: true, paused_since: "2026-11-20T09:00:00Z" }, "Paused since 20 Nov"],
@@ -112,20 +113,20 @@ describe("rosterNotes", () => {
 
   it("one line per Creator, untracked ones Not tracked", () => {
     expect(rosterNotes(roster(), NOW, UTC)).toEqual({
-      "acc-a": "1 up now · 1 new today", "acc-c": "Not checked yet", "acc-b": "Not tracked",
+      "acc-a": "1 up now · 1 new this week", "acc-c": "Not checked yet", "acc-b": "Not tracked",
     });
   });
 
   it("a stale copy adds each row's last checked time, never fetched_at", () => {
     expect(rosterNotes(roster({ stale: true }), NOW, UTC)).toEqual({
-      "acc-a": "1 up now · 1 new today · last checked Today 04:05", "acc-c": "Not checked yet", "acc-b": "Not tracked",
+      "acc-a": "1 up now · 1 new this week · last checked Today 04:05", "acc-c": "Not checked yet", "acc-b": "Not tracked",
     });
   });
 
   it("an unparsable last checked time drops the suffix instead of crashing", () => {
     const rows = [row({ last_checked_at: "garbage" })];
     expect(rosterNotes(roster({ stale: true, rows }), NOW, UTC)).toEqual({
-      "acc-a": "1 up now · 1 new today", "acc-b": "Not tracked",
+      "acc-a": "1 up now · 1 new this week", "acc-b": "Not tracked",
     });
   });
 });
@@ -177,6 +178,23 @@ describe("withoutCreator", () => {
   });
 });
 
+describe("withSnooze", () => {
+  const page: LeakRemovalPage = {
+    leaks: [], next_cursor: "c2", stale: false,
+    removal: { status: "none", view: "offer", notices_updated_at: null, stale: false, counts: null, offer_snoozed_until: null },
+    offer: { brand: "Example Removal", contact_url: "https://removal.example/contact", angle: "clean", n: 0 },
+  };
+  const until = "2026-12-04T12:00:00Z";
+
+  it.each([
+    ["with an offer", page, { ...page, removal: { ...page.removal!, offer_snoozed_until: until }, offer: null }],
+    ["without an offer", { ...page, offer: null }, { ...page, offer: null }],
+    ["without removal", { ...page, removal: null }, { ...page, removal: null }],
+  ] as const)("%s", (_label, before, after) => {
+    expect(withSnooze(before, until)).toEqual(after);
+  });
+});
+
 describe("PILL_LABEL and LEGEND", () => {
   it("names every pill and the legend explains each, Cached and Listed included", () => {
     expect(PILL_LABEL).toEqual({ live: "Live", cached: "Cached", gone: "Gone", listed: "Listed", not_checked: "Not checked yet" });
@@ -189,7 +207,7 @@ describe("PILL_LABEL and LEGEND", () => {
 });
 
 describe("seenNote", () => {
-  const [fresh, folder] = DRILL;
+  const [, fresh, folder] = DRILL;
   it.each<[string, Leak, string, string]>([
     ["a seeded Leak reads Found on first scan, never new", folder, "2026-11-20T12:00:00Z", "Found on first scan · 20 Nov"],
     ["seeded today is still not new", { ...folder, first_seen_at: "2026-11-27T04:02:00Z" }, NOW.toISOString(), "Found on first scan · 27 Nov"],
@@ -206,10 +224,11 @@ describe("seenNote", () => {
 
 describe("timeline", () => {
   it.each<[string, number, string[]]>([
-    ["a fresh Leak", 0, ["27 Nov Found via Google"]],
-    ["a seeded folder", 1, ["20 Nov Found on first scan"]],
-    ["a Leak that came back keeps the last four", 2, ["20 Nov Found on first scan", "21 Nov Up", "23 Nov Gone", "25 Nov Came back"]],
-    ["a Leak that went down", 3, ["20 Nov Found on first scan", "21 Nov Up", "26 Nov Gone"]],
+    ["a media Leak found in Google Images", 0, ["27 Nov Found via Google Images"]],
+    ["a fresh Leak", 1, ["27 Nov Found via Google"]],
+    ["a seeded folder", 2, ["20 Nov Found on first scan"]],
+    ["a Leak that came back keeps the last four", 3, ["20 Nov Found on first scan", "21 Nov Up", "23 Nov Gone", "25 Nov Came back"]],
+    ["a Leak that went down", 4, ["20 Nov Found on first scan", "21 Nov Up", "26 Nov Gone"]],
   ])("%s", (_label, i, want) => {
     expect(timeline(DRILL[i].events, NOW, UTC)).toEqual(want);
   });
@@ -235,19 +254,23 @@ describe("timeline", () => {
 describe("headerFacts", () => {
   it.each<[string, Partial<LeakRosterRow>, ReturnType<typeof headerFacts>]>([
     ["counts, tracking on, last checked", {}, {
-      counts: [["Up now", "1", "1 cached"], ["Gone", "0", null], ["Listed", "1", null], ["New today", "1", null]],
+      counts: [["Up now", "1", "1 cached"], ["Gone", "0", null], ["Listed", "1", null], ["New this week", "1", null]],
       tracking: "Tracking on", checked: "Last checked Today 04:05",
     }],
     ["no cached Leak", { counts: { ...MIA_COUNTS, cached: 0 } }, {
-      counts: [["Up now", "1", null], ["Gone", "0", null], ["Listed", "1", null], ["New today", "1", null]],
+      counts: [["Up now", "1", null], ["Gone", "0", null], ["Listed", "1", null], ["New this week", "1", null]],
       tracking: "Tracking on", checked: "Last checked Today 04:05",
     }],
     ["paused, never checked", { paused: true, paused_since: "2026-11-20T09:00:00Z", last_checked_at: null }, {
-      counts: [["Up now", "1", "1 cached"], ["Gone", "0", null], ["Listed", "1", null], ["New today", "1", null]],
+      counts: [["Up now", "1", "1 cached"], ["Gone", "0", null], ["Listed", "1", null], ["New this week", "1", null]],
       tracking: "Paused since 20 Nov", checked: "Next check tonight",
     }],
-    ["New today from the day's read", { today: { ...TODAY, new: 4 } }, {
-      counts: [["Up now", "1", "1 cached"], ["Gone", "0", null], ["Listed", "1", null], ["New today", "4", null]],
+    ["New this week from the week's read", { this_week: { ...WEEK, new: 4 } }, {
+      counts: [["Up now", "1", "1 cached"], ["Gone", "0", null], ["Listed", "1", null], ["New this week", "4", null]],
+      tracking: "Tracking on", checked: "Last checked Today 04:05",
+    }],
+    ["no week read hides New this week", { this_week: null }, {
+      counts: [["Up now", "1", "1 cached"], ["Gone", "0", null], ["Listed", "1", null]],
       tracking: "Tracking on", checked: "Last checked Today 04:05",
     }],
     ["not seeded yet", { seeded: false, counts: null, last_checked_at: null, next_check_at: null }, {

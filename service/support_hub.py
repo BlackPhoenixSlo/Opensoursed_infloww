@@ -11,16 +11,18 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 import client_addr
 import llm_client
+import signed_cookie
 from automations._common import DEFAULT_MODEL
 from llm_client import LLMCapExceeded, LLMConfigError, LLMHTTPError, LLMKeyError, key_error_payload
 from support_photos import Photo, capped_form, form_text, photo_response, read_photos, reencode
@@ -37,6 +39,7 @@ MAX_TEXT = 4000
 MAX_FIELD = 200
 FAIL_LIMIT = 5
 GLOBAL_FAIL_LIMIT = 30
+COOKIE_ADDR_LIMIT = 256
 FAIL_WINDOW_S = 600.0
 SEND_LIMIT = 20
 SEND_WINDOW_S = 600
@@ -82,7 +85,6 @@ _secrets: dict[str, bytes] = {}
 _fails: dict[str, deque[float]] = {}
 _all_fails: deque[float] = deque()
 _fail_lock = threading.Lock()
-_clock = time.time
 
 
 def _password() -> str:
@@ -133,35 +135,33 @@ def _secret() -> bytes:
 
 
 def _session_key() -> bytes:
-    # Password hash mixed in: changing the password signs every owner session out.
+    # The database secret preserves sessions across upgrades; mixing in the password revokes them on rotation.
     pw = hashlib.sha256(_password().encode()).digest()
     return hmac.new(_secret(), b"support-hub-session\0" + pw, hashlib.sha256).digest()
 
 
-def _sign(sid: str, exp: int) -> str:
-    return hmac.new(_session_key(), f"{sid}.{exp}".encode(), hashlib.sha256).hexdigest()
-
-
 def _new_session() -> str:
     sid = secrets.token_hex(16)
-    exp = int(_clock()) + SESSION_S
+    exp = int(time.time()) + SESSION_S
     with contextlib.closing(_connect()) as db:
-        db.execute("DELETE FROM sessions WHERE exp <= ?", (int(_clock()),))
+        db.execute("DELETE FROM sessions WHERE exp <= ?", (int(time.time()),))
         db.execute("INSERT INTO sessions (id, exp) VALUES (?, ?)", (sid, exp))
-    return f"{sid}.{exp}.{_sign(sid, exp)}"
+    return signed_cookie.make(_session_key(), sid, str(exp))
 
 
 def _parse(value: str | None) -> tuple[str, int] | None:
-    parts = (value or "").split(".")
-    if len(parts) != 3:
+    if not value:
         return None
-    sid, exp_s, sig = parts
+    parts = value.split(".")
+    if len(parts) != 3 or not parts[2].isascii():
+        return None
+    sid, exp_s, _ = parts
     if len(sid) != 32 or not all(c in "0123456789abcdef" for c in sid):
         return None
     if not (exp_s.isascii() and exp_s.isdigit()) or len(exp_s) > 12:
         return None
     exp = int(exp_s)
-    if not hmac.compare_digest(sig.encode(), _sign(sid, exp).encode()) or exp <= _clock():
+    if exp_s != str(exp) or exp <= time.time() or signed_cookie.parse(_session_key(), value, 2) is None:
         return None
     return sid, exp
 
@@ -189,16 +189,15 @@ def _too_many() -> JSONResponse:
 def _owner(request: Request) -> None:
     _require_enabled()
     value = request.cookies.get(COOKIE)
-    if not value:
-        raise HTTPException(status_code=401, detail="sign in required")
     if _session_ok(value):
         return
-    ip = str(client_addr.client_address(request))
-    if not _reserve(ip, _clock()):
-        log.warning("support hub: cookie checks throttled addr=%s", ip)
-        raise HTTPException(status_code=429, detail="Too many tries. Wait 10 minutes.",
-                            headers={"Retry-After": str(int(FAIL_WINDOW_S))})
-    log.warning("support hub: bad session cookie addr=%s", ip)
+    if value is not None:
+        ip = str(client_addr.client_address(request))
+        if not _reserve_bad_cookie(ip, time.time()):
+            log.warning("support hub: cookie checks throttled addr=%s", ip)
+            raise HTTPException(status_code=429, detail="Too many tries. Wait 10 minutes.",
+                                headers={"Retry-After": str(int(FAIL_WINDOW_S))})
+        log.warning("support hub: bad session cookie addr=%s", ip)
     raise HTTPException(status_code=401, detail="sign in required")
 
 
@@ -216,40 +215,43 @@ def _prune(q: deque[float], now: float) -> None:
         q.popleft()
 
 
-def _reserve(ip: str, now: float) -> bool:
+def _prune_failures(now: float) -> None:
+    for addr, failures in list(_fails.items()):
+        _prune(failures, now)
+        if not failures:
+            del _fails[addr]
+
+
+def _reserve_password(ip: str, now: float) -> bool:
     with _fail_lock:
-        q = _fails.setdefault(ip, deque())
-        _prune(q, now)
+        _prune_failures(now)
         _prune(_all_fails, now)
-        if len(q) >= FAIL_LIMIT or len(_all_fails) >= GLOBAL_FAIL_LIMIT:
+        if len(_all_fails) >= GLOBAL_FAIL_LIMIT or len(_fails.get(ip, ())) >= FAIL_LIMIT:
+            return False
+        _fails.setdefault(ip, deque()).append(now)
+        _all_fails.append(now)
+        return True
+
+
+def _reserve_bad_cookie(ip: str, now: float) -> bool:
+    with _fail_lock:
+        _prune_failures(now)
+        q = _fails.get(ip)
+        if q is None:
+            if len(_fails) >= COOKIE_ADDR_LIMIT:
+                return True
+            q = _fails[ip] = deque()
+        if len(q) >= FAIL_LIMIT:
             return False
         q.append(now)
-        _all_fails.append(now)
         return True
 
 
 def _release(ip: str, now: float) -> None:
     with _fail_lock:
-        q = _fails.get(ip)
-        if q is not None:
-            with contextlib.suppress(ValueError):
-                q.remove(now)
-            if not q:
-                _fails.pop(ip, None)
+        _fails.pop(ip, None)
         with contextlib.suppress(ValueError):
             _all_fails.remove(now)
-
-
-def _record_fail(ip: str, now: float) -> None:
-    with _fail_lock:
-        _fails.setdefault(ip, deque()).append(now)
-        _all_fails.append(now)
-
-
-def reset_throttle() -> None:
-    with _fail_lock:
-        _fails.clear()
-        _all_fails.clear()
 
 
 def _clip(text: str, limit: int = MAX_FIELD) -> str:
@@ -327,12 +329,57 @@ class Who(BaseModel):
     user_key: str = Field(..., min_length=1, max_length=MAX_FIELD)
 
 
+class ReadPosition(BaseModel):
+    up_to: int = Field(..., ge=0, le=2**63 - 1)
+
+
+class InstanceRead(Who):
+    up_to: int | None = Field(None, ge=0, le=2**63 - 1)
+
+
 class Ingest(Who):
     agency_id: str = Field("", max_length=MAX_FIELD)
     agency_name: str = Field("", max_length=MAX_FIELD)
     name: str = Field("", max_length=MAX_FIELD)
     role: str = Field("", max_length=MAX_FIELD)
     text: str = Field(..., min_length=1, max_length=MAX_TEXT)
+
+
+class PhotoRef(BaseModel):
+    id: int = Field(gt=0)
+    w: int = Field(gt=0)
+    h: int = Field(gt=0)
+
+
+class SupportMessage(BaseModel):
+    id: int = Field(gt=0)
+    sender: Literal["user", "support"]
+    text: str
+    at: str
+    photos: list[PhotoRef] = Field(default_factory=list)
+
+
+class ThreadMessages(BaseModel):
+    messages: list[SupportMessage]
+
+
+class SentMessages(ThreadMessages):
+    messages: list[SupportMessage] = Field(min_length=1)
+
+
+class UnreadCount(BaseModel):
+    unread: int = Field(ge=0)
+
+
+class ReadAck(BaseModel):
+    ok: bool = Field(strict=True)
+
+    @field_validator("ok")
+    @classmethod
+    def _require_ack(cls, ok: bool) -> bool:
+        if not ok:
+            raise ValueError("read was not acknowledged")
+        return ok
 
 
 class Text(BaseModel):
@@ -384,7 +431,7 @@ def _ingest(who: dict[str, str], text: str, photos: Sequence[Photo] = ()) -> dic
         except BaseException:
             db.execute("ROLLBACK")
             raise
-        return {"messages": _message_rows(db, tid)}
+        return SentMessages(messages=_message_rows(db, tid)).model_dump()
 
 
 WHO_FIELDS = ("instance", "user_key", "agency_id", "agency_name", "name", "role")
@@ -426,7 +473,7 @@ def instance_thread(request: Request, instance: str = Query(..., max_length=MAX_
     _instance(request)
     with contextlib.closing(_connect()) as db:
         tid = _thread_id(db, _clip(instance), _clip(user_key))
-        return {"messages": _message_rows(db, tid) if tid is not None else []}
+        return ThreadMessages(messages=_message_rows(db, tid) if tid is not None else []).model_dump()
 
 
 @router.get(f"{API}/instance/unread")
@@ -438,34 +485,33 @@ def instance_unread(request: Request, instance: str = Query(..., max_length=MAX_
             "SELECT COUNT(m.id) AS n FROM threads t JOIN messages m ON m.thread_id = t.id "
             "WHERE t.instance = ? AND t.user_key = ? AND m.sender = 'support' AND m.id > t.user_read_id",
             (_clip(instance), _clip(user_key))).fetchone()
-        return {"unread": int(row["n"]) if row else 0}
+        return UnreadCount(unread=int(row["n"]) if row else 0).model_dump()
 
 
 @router.post(f"{API}/instance/read")
-def instance_read(request: Request, body: Who = Body(...)) -> dict[str, Any]:
+def instance_read(request: Request, body: InstanceRead = Body(...)) -> dict[str, Any]:
     _instance(request)
     with contextlib.closing(_connect()) as db:
         db.execute(
-            "UPDATE threads SET user_read_id = COALESCE((SELECT MAX(id) FROM messages "
-            "WHERE thread_id = threads.id), 0) WHERE instance = ? AND user_key = ?",
-            (_clip(body.instance), _clip(body.user_key)))
-    return {"ok": True}
+            "UPDATE threads SET user_read_id = MAX(user_read_id, COALESCE("
+            "(SELECT MIN(COALESCE(?, MAX(id)), MAX(id)) FROM messages WHERE thread_id = threads.id), 0)) "
+            "WHERE instance = ? AND user_key = ?",
+            (body.up_to, _clip(body.instance), _clip(body.user_key)))
+    return ReadAck(ok=True).model_dump()
 
 
 @router.post(f"{API}/login")
 def login(request: Request, body: Login = Body(...)) -> JSONResponse:
     _require_enabled()
     ip = str(client_addr.client_address(request))
-    now = _clock()
-    if not _reserve(ip, now):
+    now = time.time()
+    if not _reserve_password(ip, now):
         log.warning("support hub: login throttled addr=%s", ip)
         return _too_many()
     if not hmac.compare_digest(body.password.encode(), _password().encode()):
         log.warning("support hub: wrong password addr=%s", ip)
         return JSONResponse({"detail": "Wrong password."}, status_code=401)
     _release(ip, now)
-    with _fail_lock:
-        _fails.pop(ip, None)
     resp = JSONResponse({"ok": True})
     resp.set_cookie(COOKIE, _new_session(), max_age=SESSION_S, path=PREFIX,
                     httponly=True, secure=True, samesite="strict")
@@ -507,15 +553,20 @@ def _owner_thread(db: sqlite3.Connection, thread_id: int) -> dict[str, Any]:
     return {"thread": _thread_row(db, thread_id), "messages": _message_rows(db, thread_id)}
 
 
+def _read_owner_thread(db: sqlite3.Connection, thread_id: int) -> dict[str, Any]:
+    out = _owner_thread(db, thread_id)
+    messages = out["messages"]
+    if messages:
+        db.execute("UPDATE threads SET owner_read_id = MAX(owner_read_id, ?) WHERE id = ?",
+                   (messages[-1]["id"], thread_id))
+    return out
+
+
 @router.get(API + "/threads/{thread_id}")
 def owner_thread(request: Request, thread_id: int) -> dict[str, Any]:
     _owner(request)
     with contextlib.closing(_connect()) as db:
-        out = _owner_thread(db, thread_id)
-        if out["messages"]:
-            db.execute("UPDATE threads SET owner_read_id = MAX(owner_read_id, ?) WHERE id = ?",
-                       (out["messages"][-1]["id"], thread_id))
-    return out
+        return _read_owner_thread(db, thread_id)
 
 
 def _reply(thread_id: int, text: str, photos: Sequence[Photo] = ()) -> dict[str, Any]:
@@ -524,13 +575,12 @@ def _reply(thread_id: int, text: str, photos: Sequence[Photo] = ()) -> dict[str,
         try:
             _thread_row(db, thread_id)
             _add_message(db, thread_id, "support", text, photos)
-            db.execute("UPDATE threads SET owner_read_id = (SELECT MAX(id) FROM messages "
-                       "WHERE thread_id = ?) WHERE id = ?", (thread_id, thread_id))
+            out = _read_owner_thread(db, thread_id)
             db.execute("COMMIT")
         except BaseException:
             db.execute("ROLLBACK")
             raise
-        return _owner_thread(db, thread_id)
+        return out
 
 
 def _require_thread(thread_id: int) -> None:
@@ -643,8 +693,13 @@ async def summarise(request: Request) -> dict[str, Any]:
     return {"summary": text, "threads": included, "total": total}
 
 
+@lru_cache(maxsize=1)
+def _page_template() -> str:
+    return Path(__file__).with_name("support_hub_page.htm").read_text(encoding="utf-8")
+
+
 def _page(nonce: str) -> str:
-    return _PAGE.replace("__NONCE__", nonce)
+    return _page_template().replace("__NONCE__", nonce)
 
 
 @router.get(PREFIX)
@@ -657,334 +712,3 @@ def page() -> HTMLResponse:
     return HTMLResponse(_page(nonce), headers={
         "Content-Security-Policy": csp, "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"})
-
-
-_PAGE = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="robots" content="noindex">
-<title>Support</title>
-<style nonce="__NONCE__">
-:root { color-scheme: dark; --bg:#141414; --panel:#1d1d1d; --line:#2c2c2c; --fg:#ededed; --dim:#9a9a9a; --me:#2f2f2f; --acc:#e5372f; }
-* { box-sizing: border-box; }
-body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 -apple-system, system-ui, sans-serif; }
-header { position:sticky; top:0; display:flex; gap:8px; align-items:center; padding:12px 14px; background:var(--panel); border-bottom:1px solid var(--line); z-index:1; }
-header h1 { font-size:17px; margin:0; flex:1; }
-button { font:inherit; color:var(--fg); background:#2a2a2a; border:1px solid var(--line); border-radius:10px; padding:8px 12px; cursor:pointer; }
-button:disabled { opacity:.5; }
-button.primary { background:var(--fg); color:#111; border-color:var(--fg); }
-main { max-width:760px; margin:0 auto; padding:12px; }
-.hidden { display:none !important; }
-.row { display:block; width:100%; text-align:left; padding:12px; margin:0 0 8px; background:var(--panel); border-radius:12px; }
-.meta { font-size:12px; color:var(--dim); }
-.who { font-weight:600; display:flex; align-items:center; gap:6px; }
-.dot { width:9px; height:9px; border-radius:50%; background:var(--acc); display:inline-block; }
-.last { color:var(--dim); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.msgs { display:flex; flex-direction:column; gap:8px; padding-bottom:12px; }
-.msg { max-width:85%; padding:8px 12px; border-radius:14px; white-space:pre-wrap; word-wrap:break-word; }
-.msg.user { align-self:flex-start; background:var(--panel); border:1px solid var(--line); }
-.msg.support { align-self:flex-end; background:var(--me); }
-.msg .meta { margin-top:4px; }
-textarea, input { width:100%; font-family:inherit; font-size:16px; line-height:1.4; color:var(--fg); background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; }
-textarea { min-height:80px; resize:vertical; }
-.compose { display:flex; flex-direction:column; gap:8px; position:sticky; bottom:0; background:var(--bg); padding:8px 0 max(12px, env(safe-area-inset-bottom)); }
-.pics { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
-.pics img { display:block; width:120px; height:120px; object-fit:cover; border-radius:10px; background:var(--line); }
-.pending { display:flex; gap:8px; flex-wrap:wrap; }
-.pend { position:relative; }
-.pend img { display:block; width:64px; height:64px; object-fit:cover; border-radius:8px; }
-.pend button { position:absolute; top:-6px; right:-6px; padding:0 6px; line-height:20px; border-radius:50%; }
-.actions { display:flex; gap:8px; }
-.actions #send { flex:1; }
-.err { color:#ff8a80; min-height:1.2em; margin:6px 0; }
-#summary { white-space:pre-wrap; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:12px; }
-form { display:flex; flex-direction:column; gap:10px; max-width:360px; margin:40px auto; }
-</style>
-</head>
-<body>
-<header>
-  <button id="back" class="hidden" type="button">&larr;</button>
-  <h1 id="title">Support</h1>
-  <button id="sum" class="hidden" type="button">Summarise all</button>
-  <button id="out" class="hidden" type="button">Log out</button>
-</header>
-<main>
-  <form id="login" class="hidden">
-    <input id="pw" type="password" autocomplete="current-password" placeholder="Password" required>
-    <button class="primary" type="submit">Sign in</button>
-    <div id="loginErr" class="err"></div>
-  </form>
-  <section id="list" class="hidden">
-    <div id="summary" class="hidden"></div>
-    <div id="listErr" class="err"></div>
-    <div id="threads"></div>
-  </section>
-  <section id="thread" class="hidden">
-    <div id="threadMeta" class="meta"></div>
-    <div id="msgs" class="msgs"></div>
-    <div class="compose">
-      <div id="pending" class="pending hidden"></div>
-      <textarea id="reply" placeholder="Reply… (Ctrl/Cmd+Enter sends)"></textarea>
-      <div class="actions">
-        <button id="pick" type="button" title="Add up to 4 photos">Photo</button>
-        <input id="file" class="hidden" type="file" accept="image/*" multiple>
-        <button id="send" class="primary" type="button">Send</button>
-      </div>
-      <div id="threadErr" class="err"></div>
-    </div>
-  </section>
-</main>
-<script nonce="__NONCE__">
-(function () {
-  var API = "/support/api";
-  var MAX_PHOTOS = 4, MAX_SIDE = 2048;
-  var $ = function (id) { return document.getElementById(id); };
-  var openId = null;
-  var shown = { thread: null, ids: {} };
-  var pending = [];
-  var busy = { list: false, thread: false, send: false };
-  function el(tag, cls, text) {
-    var n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = text;
-    return n;
-  }
-  function show(view) {
-    ["login", "list", "thread"].forEach(function (v) { $(v).classList.toggle("hidden", v !== view); });
-    var signed = view !== "login";
-    $("out").classList.toggle("hidden", !signed);
-    $("sum").classList.toggle("hidden", view !== "list");
-    $("back").classList.toggle("hidden", view !== "thread");
-    if (view !== "thread") { openId = null; $("title").textContent = "Support"; }
-  }
-  function when(iso) {
-    var d = new Date(iso);
-    return isNaN(d) ? "" : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  }
-  function call(method, path, body) {
-    var opt = { method: method, credentials: "same-origin", headers: {} };
-    if (body instanceof FormData) opt.body = body;
-    else if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
-    return fetch(API + path, opt).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (j) {
-        if (r.status === 401 && path !== "/login") { show("login"); throw new Error("Signed out"); }
-        if (!r.ok) throw new Error((j && typeof j.detail === "string") ? j.detail : "Error " + r.status);
-        return j;
-      });
-    });
-  }
-  function loadThreads(poll) {
-    if (busy.list) return Promise.resolve();
-    busy.list = true;
-    return call("GET", "/threads").then(function (j) {
-      if (poll && $("list").classList.contains("hidden")) return;
-      var box = $("threads");
-      box.replaceChildren();
-      if (!j.threads.length) box.appendChild(el("p", "meta", "No messages yet."));
-      j.threads.forEach(function (t) {
-        var b = el("button", "row");
-        b.type = "button";
-        var who = el("div", "who");
-        if (t.unread) { var d = el("span", "dot"); d.title = "Unread"; who.appendChild(d); }
-        who.appendChild(el("span", null, (t.name || "?") + " · " + (t.role || "user")));
-        b.appendChild(who);
-        b.appendChild(el("div", "meta", t.instance + " · " + (t.agency_name || t.agency_id || "no agency") + " · " + when(t.last_at)));
-        b.appendChild(el("div", "last", (t.last_sender === "support" ? "You: " : "") + (t.last_text || "[photo]")));
-        b.addEventListener("click", function () { openThread(t.id); });
-        box.appendChild(b);
-      });
-      $("listErr").textContent = "";
-      if (!poll) show("list");
-    }).catch(function (e) { $("listErr").textContent = e.message; })
-      .finally(function () { busy.list = false; });
-  }
-  function atBottom() {
-    return window.innerHeight + window.scrollY >= document.body.scrollHeight - 60;
-  }
-  function photoRow(photos) {
-    var row = el("div", "pics");
-    photos.forEach(function (p) {
-      var a = el("a");
-      a.href = API + "/photos/" + p.id;
-      a.target = "_blank";
-      a.rel = "noopener";
-      var img = el("img");
-      img.src = a.href;
-      img.alt = "Photo";
-      img.loading = "lazy";
-      a.appendChild(img);
-      row.appendChild(a);
-    });
-    return row;
-  }
-  function renderThread(j) {
-    var t = j.thread;
-    if (t.id !== openId) return;
-    $("title").textContent = t.name || "Thread";
-    $("threadMeta").textContent = (t.role || "user") + " · " + (t.agency_name || t.agency_id || "no agency") + " · " + t.instance;
-    var box = $("msgs");
-    var fresh = shown.thread !== t.id;
-    if (fresh) { box.replaceChildren(); shown = { thread: t.id, ids: {} }; }
-    var stick = fresh || atBottom();
-    var added = false;
-    j.messages.forEach(function (m) {
-      if (shown.ids[m.id]) return;
-      shown.ids[m.id] = true;
-      added = true;
-      var b = el("div", "msg " + m.sender);
-      if (m.text) b.appendChild(el("div", null, m.text));
-      if (m.photos && m.photos.length) b.appendChild(photoRow(m.photos));
-      b.appendChild(el("div", "meta", (m.sender === "support" ? "You" : (t.name || "User")) + " · " + when(m.at)));
-      box.appendChild(b);
-    });
-    if (added && stick) window.scrollTo(0, document.body.scrollHeight);
-  }
-  function refreshThread() {
-    if (openId == null || busy.thread || $("thread").classList.contains("hidden")) return;
-    busy.thread = true;
-    call("GET", "/threads/" + openId).then(renderThread).catch(function () {})
-      .finally(function () { busy.thread = false; });
-  }
-  function openThread(id) {
-    $("threadErr").textContent = "";
-    show("thread");
-    openId = id;
-    shown = { thread: null, ids: {} };
-    clearPending();
-    call("GET", "/threads/" + id).then(renderThread).catch(function (e) { $("threadErr").textContent = e.message; });
-  }
-  function drawPending() {
-    var box = $("pending");
-    box.replaceChildren();
-    pending.forEach(function (p, i) {
-      var cell = el("div", "pend");
-      var img = el("img");
-      img.src = p.url;
-      img.alt = "Photo to send";
-      var x = el("button", null, "×");
-      x.type = "button";
-      x.title = "Remove photo";
-      x.addEventListener("click", function () { pending.splice(i, 1); drawPending(); });
-      cell.appendChild(img);
-      cell.appendChild(x);
-      box.appendChild(cell);
-    });
-    box.classList.toggle("hidden", !pending.length);
-    $("pick").disabled = pending.length >= MAX_PHOTOS;
-  }
-  function clearPending() { pending = []; drawPending(); }
-  function toJpeg(file) {
-    return new Promise(function (resolve, reject) {
-      var fr = new FileReader();
-      fr.onerror = function () { reject(new Error("Couldn't read that photo.")); };
-      fr.onload = function () {
-        var img = new Image();
-        img.onerror = function () { reject(new Error("That file isn't a photo.")); };
-        img.onload = function () {
-          var k = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
-          var c = document.createElement("canvas");
-          c.width = Math.max(1, Math.round(img.naturalWidth * k));
-          c.height = Math.max(1, Math.round(img.naturalHeight * k));
-          var g = c.getContext("2d");
-          g.fillStyle = "#fff";
-          g.fillRect(0, 0, c.width, c.height);
-          g.drawImage(img, 0, 0, c.width, c.height);
-          c.toBlob(function (blob) {
-            if (!blob) { reject(new Error("Couldn't read that photo.")); return; }
-            resolve({ blob: blob, url: c.toDataURL("image/jpeg", 0.85) });
-          }, "image/jpeg", 0.85);
-        };
-        img.src = fr.result;
-      };
-      fr.readAsDataURL(file);
-    });
-  }
-  function addFiles(files) {
-    var id = openId;
-    var list = Array.prototype.filter.call(files, function (f) { return f.type.indexOf("image/") === 0; });
-    var room = MAX_PHOTOS - pending.length;
-    if (list.length > room) $("threadErr").textContent = "Up to " + MAX_PHOTOS + " photos per message.";
-    list.slice(0, Math.max(0, room)).forEach(function (f) {
-      toJpeg(f).then(function (p) {
-        if (openId === id && pending.length < MAX_PHOTOS) { pending.push(p); drawPending(); }
-      }).catch(function (e) { if (openId === id) $("threadErr").textContent = e.message; });
-    });
-  }
-  function send() {
-    var text = $("reply").value.trim();
-    if ((!text && !pending.length) || openId == null || busy.send) return;
-    busy.send = true;
-    var id = openId;
-    var sent = pending.slice();
-    var req;
-    if (sent.length) {
-      var fd = new FormData();
-      fd.append("text", text);
-      sent.forEach(function (p, i) { fd.append("photos", p.blob, "photo" + i + ".jpg"); });
-      req = call("POST", "/threads/" + id + "/reply/upload", fd);
-    } else {
-      req = call("POST", "/threads/" + id + "/reply", { text: text });
-    }
-    $("send").disabled = true;
-    req.then(function (j) {
-      if (openId !== id) return;
-      if ($("reply").value.trim() === text) $("reply").value = "";
-      pending = pending.filter(function (p) { return sent.indexOf(p) < 0; });
-      drawPending();
-      $("threadErr").textContent = "";
-      renderThread(j);
-      window.scrollTo(0, document.body.scrollHeight);
-    }).catch(function (e) { if (openId === id) $("threadErr").textContent = e.message; })
-      .finally(function () { busy.send = false; $("send").disabled = false; });
-  }
-  $("login").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    call("POST", "/login", { password: $("pw").value }).then(function () {
-      $("pw").value = "";
-      $("loginErr").textContent = "";
-      loadThreads();
-    }).catch(function (e) { $("loginErr").textContent = e.message; });
-  });
-  $("send").addEventListener("click", send);
-  $("pick").addEventListener("click", function () { $("file").click(); });
-  $("file").addEventListener("change", function () { addFiles($("file").files); $("file").value = ""; });
-  $("reply").addEventListener("paste", function (ev) {
-    var items = ev.clipboardData ? ev.clipboardData.files : null;
-    if (items && items.length) { ev.preventDefault(); addFiles(items); }
-  });
-  $("reply").addEventListener("keydown", function (ev) {
-    if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); send(); }
-  });
-  $("back").addEventListener("click", function () {
-    show("list");
-    shown = { thread: null, ids: {} };
-    clearPending();
-    loadThreads();
-  });
-  $("out").addEventListener("click", function () {
-    call("POST", "/logout").finally(function () { show("login"); });
-  });
-  $("sum").addEventListener("click", function () {
-    var box = $("summary");
-    box.classList.remove("hidden");
-    box.textContent = "Summarising every thread…";
-    $("sum").disabled = true;
-    call("POST", "/summarise").then(function (j) {
-      box.textContent = j.error ? j.error : j.summary + (j.total > j.threads ? "\\n\\n(" + j.threads + " of " + j.total + " threads read.)" : "");
-    }).catch(function (e) { box.textContent = e.message; })
-      .finally(function () { $("sum").disabled = false; });
-  });
-  setInterval(function () {
-    if (document.visibilityState === "visible" && openId != null) refreshThread();
-  }, 4000);
-  setInterval(function () {
-    if (document.visibilityState === "visible" && !$("list").classList.contains("hidden")) loadThreads(true);
-  }, 10000);
-  loadThreads();
-})();
-</script>
-</body>
-</html>
-"""

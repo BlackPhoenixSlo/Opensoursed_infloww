@@ -15,6 +15,7 @@
         "leak_site": "example-leaks.test",
         "origin_status": null,
         "pill": "not_checked",
+        "preview": null,
         "sources": [
           "google_web"
         ],
@@ -33,6 +34,7 @@
         "leak_site": "example-index.test",
         "origin_status": null,
         "pill": "listed",
+        "preview": null,
         "sources": [
           "mega_index"
         ],

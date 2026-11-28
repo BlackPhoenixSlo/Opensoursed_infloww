@@ -65,6 +65,7 @@ import { patchChatListAfterSend } from "@/hooks/useSendMessage";
 import { setRelayOffset } from "@/lib/ageClock";
 import { RelayError, chatListRetry, relay, type OFChatItem } from "@/lib/relay";
 import { PLATFORM_KEY, resetPlatformForTests, setPlatform } from "@/lib/platform";
+import { noteRoster, resetUnknownAccounts } from "@/lib/unknownAccounts";
 const relayGet = relay.get as unknown as Mock;
 
 const POLL_MS = 90_000;
@@ -1404,5 +1405,79 @@ describe("chat-list paging budget, replay cap and caller tags (chatlist-429 01-0
     await settle();
     expect(tagged().map((c) => [c.offset, c.caller])).toEqual([[0, "replay"], [25, "replay"], [0, "warmup"]]);
     expect(h.result.current.data.map((c) => c.withUser.id)).toEqual([999, 125]);
+  });
+});
+
+describe("useChatList: a Creator the Relay does not know is asked once, then left alone", () => {
+  const unknown = () => new RelayError(404, { detail: { error: "unknown_account", message: "Unknown account_id 'acct-x'" } });
+  const callsFor = (id: string) => chatCalls().filter((c) => c.accountId === id).length;
+
+  beforeEach(() => {
+    resetUnknownAccounts();
+    client.setQueryDefaults(["chats"], { retry: chatListRetry, retryDelay: 0 });
+  });
+  afterEach(resetUnknownAccounts);
+
+  it("one Creator: one read, no retry, no poll; the list says she is disconnected", async () => {
+    mockScope = { kind: "model", accountId: "acct-x" };
+    serve = () => { throw unknown(); };
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("marked", () => h.result.current.unknownAccount);
+    await settle(POLL_MS * 3);
+    expect(callsFor("acct-x")).toBe(1);
+    expect(h.result.current.isError).toBe(false);
+    expect(h.result.current.data).toEqual([]);
+  });
+
+  it("All Models: the unknown Creator drops out of the poll, the others keep polling", async () => {
+    mockScope = { kind: "all" };
+    mockAccounts = [{ id: "acct-a" }, { id: "acct-x" }];
+    serve = (aid) => {
+      if (aid === "acct-x") throw unknown();
+      return { list: [row(1, "2026-08-25T10:00:00Z")], hasMore: false };
+    };
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("page 0", () => h.result.current.data.length === 1);
+    await settle(POLL_MS * 3);
+    expect(callsFor("acct-x")).toBe(1);
+    expect(callsFor("acct-a")).toBeGreaterThanOrEqual(3);
+    expect(h.result.current.unknownAccount).toBe(false);
+  });
+
+  it("a roster refetch clears the mark: she is read again and, back, her chats show", async () => {
+    mockScope = { kind: "model", accountId: "acct-x" };
+    noteRoster("owner", 1);
+    serve = () => { throw unknown(); };
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("marked", () => h.result.current.unknownAccount);
+    serve = () => ({ list: [row(7, "2026-08-25T10:00:00Z")], hasMore: false });
+    act(() => noteRoster("owner", 2));
+    await until("back", () => h.result.current.data.length === 1);
+    expect(h.result.current.unknownAccount).toBe(false);
+    expect(callsFor("acct-x")).toBe(2);
+  });
+
+  it("All Models with every Creator unknown: the poll timer disarms", async () => {
+    mockScope = { kind: "all" };
+    mockAccounts = [{ id: "acct-x" }];
+    serve = () => { throw unknown(); };
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    renderHook(() => useChatList(), { wrapper });
+    await until("asked", () => callsFor("acct-x") === 1);
+    await settle();
+    timers.mockClear();
+    await settle(POLL_MS * 3);
+    expect(timers.mock.calls.filter(([, ms]) => ms === POLL_MS)).toEqual([]);
+    expect(callsFor("acct-x")).toBe(1);
+    timers.mockRestore();
+  });
+
+  it("a plain 404 still retries once", async () => {
+    mockScope = { kind: "model", accountId: "acct-x" };
+    serve = () => { throw new RelayError(404, { detail: "Not Found" }); };
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("failed", () => h.result.current.isError);
+    expect(callsFor("acct-x")).toBe(2);
+    expect(h.result.current.unknownAccount).toBe(false);
   });
 });

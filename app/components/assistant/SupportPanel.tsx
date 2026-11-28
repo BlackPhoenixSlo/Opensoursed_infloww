@@ -29,6 +29,7 @@ export function SupportButton({ unread, onClick }: { unread: boolean; onClick: (
 }
 
 const lastSupportId = (ms: SupportState["messages"]) => ms.reduce((n, m) => (m.from === "support" && m.id > n ? m.id : n), 0);
+const lastMessageId = (ms: SupportState["messages"]) => ms.reduce((n, m) => Math.max(n, m.id), 0);
 let photoSeq = 0;
 
 export function SupportPanel({ frame, column, composerPad, inputText, unread, draft, onEntry, onBack, onClose, onRead }: {
@@ -74,7 +75,7 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, dr
         if (!live.current) return;
         const messages = messagesOf(body);
         dispatch({ type: "loaded", messages });
-        return relay.post<unknown>("/admin/support/read", {}).then(() => {
+        return relay.post<unknown>("/admin/support/read", { up_to: lastMessageId(messages) }).then(() => {
           seenSupport.current = Math.max(seenSupport.current, lastSupportId(messages));
           if (live.current) onRead();
         });
@@ -99,7 +100,7 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, dr
           dispatch({ type: "polled", messages });
           const newest = lastSupportId(messages);
           if (newest > seenSupport.current) {
-            return relay.post<unknown>("/admin/support/read", {}).then(() => {
+            return relay.post<unknown>("/admin/support/read", { up_to: lastMessageId(messages) }).then(() => {
               seenSupport.current = Math.max(seenSupport.current, newest);
               if (live.current) onRead();
             });

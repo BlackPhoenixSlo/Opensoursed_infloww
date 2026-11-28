@@ -6,10 +6,14 @@ vi.mock("@/lib/relay", async (importOriginal) => {
   return { ...real, relay: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } };
 });
 
+import { leakKeys } from "./leakKeys";
+import { useLeakPages } from "./leakRead";
+import type { LeakRemovalPage } from "./leakView";
+import type { OfferRead } from "./StartRemovalPopup";
 import { RemovalArea } from "@/components/leaks/RemovalArea";
 import { leadLine, type Removal, type RemovalOffer } from "@/components/leaks/removalOffer";
 import { relay } from "@/lib/relay";
-import { renderWithProviders } from "@/test-utils";
+import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
 
 const relayPost = relay.post as unknown as Mock;
 const relayGet = relay.get as unknown as Mock;
@@ -18,7 +22,7 @@ const BRAND = "Example Removal";
 const CONTACT = "https://removal.example/contact?text=Hi%2C%20I%27d%20like%20help";
 const UPDATED = "2026-11-27T04:05:00Z";
 const removal = (over: Partial<Removal> = {}): Removal =>
-  ({ status: "none", view: "offer", notices_updated_at: UPDATED, stale: false, counts: null, ...over });
+  ({ status: "none", view: "offer", notices_updated_at: UPDATED, stale: false, counts: null, offer_snoozed_until: null, ...over });
 const offer = (over: Partial<RemovalOffer> = {}): RemovalOffer =>
   ({ brand: BRAND, contact_url: CONTACT, angle: "came_back", n: 2, ...over });
 const card = () => screen.queryByRole("region", { name: "Removal help" });
@@ -114,23 +118,42 @@ describe("Removal offer card", () => {
     expect(relayPost).not.toHaveBeenCalled();
   });
 
-  it("a null contact_url still opens the popup, whose contact button is disabled and no link", async () => {
-    relayGet.mockResolvedValue({ offer: offer({ contact_url: null }), preview_leak: null, video: null, scenes: SCENES,
-      last_checked_at: UPDATED });
-    show(removal(), offer({ contact_url: null }));
-    fireEvent.click(within(card()!).getByRole("button", { name: "Contact us to start removal" }));
-    const dialog = await screen.findByRole("dialog");
-    await within(dialog).findByText(leadLine(offer({ contact_url: null })), { selector: "p" });
-    expect(within(dialog).queryByRole("link")).toBeNull();
-    expect((within(dialog).getByRole("button", { name: `Contact ${BRAND}` }) as HTMLButtonElement).disabled).toBe(true);
+  it("reads a persisted snooze on mount and shows the offer when the read changes", () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-27T12:00:00Z") });
+    const { rerender } = show(removal({ offer_snoozed_until: "2026-12-04T12:00:00Z" }));
+    expect(screen.getByText("Removal offer hidden until 4 Dec.")).toBeTruthy();
+    rerender(<RemovalArea creatorId="acc-a" scopeAccountId="acc-b" removal={removal()} offer={offer()} />);
+    expect(card()).toBeTruthy();
+    expect(screen.queryByText(/^Removal offer hidden/)).toBeNull();
   });
 
-  it("Not now posts snoozed true and shows the hidden-until line with no Undo", async () => {
+  it("Not now keeps the offer hidden when the Creator refetch fails", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-27T12:00:00Z") });
     relayPost.mockResolvedValue({ offer_snoozed_until: "2026-12-04T12:00:00Z" });
-    show(removal(), offer());
-    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
-    await waitFor(() => expect(card()).toBeNull());
+    relayGet.mockResolvedValueOnce({ leaks: [], next_cursor: null, stale: false, removal: removal(), offer: offer() })
+      .mockRejectedValueOnce(new Error("refetch failed"));
+    function Drill() {
+      const { data } = useLeakPages<LeakRemovalPage>(
+        leakKeys.watch("acc-a", "acc-b"), "/admin/leaks/watches/acc-a", "acc-b",
+      );
+      const page = data?.pages[0];
+      return page && <RemovalArea creatorId="acc-a" scopeAccountId="acc-b" {...page} />;
+    }
+    const client = makeTestQueryClient();
+    client.setDefaultOptions({ queries: { gcTime: Infinity, retry: false } });
+    const offerKey = leakKeys.offer("acc-a", "acc-b");
+    client.setQueryData<OfferRead>(offerKey, {
+      offer: offer(), preview_leak: null, video: null, scenes: SCENES, last_checked_at: UPDATED,
+    });
+    const otherScope = [leakKeys.setup("acc-c"), leakKeys.roster("acc-c"), leakKeys.all("acc-c"), leakKeys.watch("acc-a", "acc-c")];
+    for (const key of otherScope) client.setQueryData(key, {});
+    renderWithProviders(<Drill />, client);
+    fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+    await waitFor(() => expect(client.getQueryState(leakKeys.watch("acc-a", "acc-b"))?.status).toBe("error"));
+    expect(card()).toBeNull();
+    expect(relayGet).toHaveBeenCalledTimes(2);
+    expect(client.getQueryState(offerKey)).toBeUndefined();
+    expect(otherScope.map((key) => client.getQueryState(key)?.isInvalidated)).toEqual([true, true, true, true]);
     expect(relayPost).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/offer-snooze", { snoozed: true }, { accountId: "acc-b" });
     expect(screen.getByText("Removal offer hidden until 4 Dec.")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();

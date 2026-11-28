@@ -11,6 +11,7 @@ vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => [{ id: "acc-a",
 let employeeKey: string | null = "emp-1";
 vi.mock("@/hooks/useEmployeeKey", () => ({ useEmployeeKey: () => employeeKey, usePrincipalId: () => "owner-1" }));
 
+import { PREVIEW_LINE } from "@/components/leaks/LeakDisclaimer";
 import { LeakTracker } from "@/components/leaks/LeakTracker";
 import { relay } from "@/lib/relay";
 import { renderWithProviders } from "@/test-utils";
@@ -20,7 +21,7 @@ const TITLE = "These results are automated";
 const body = (brand: string) =>
   `Every link here was found by bots that scrape Google, Mega and pirate sites. Some may be wrong or not about this Creator. ${brand} personally checks every leak before any removal starts.`;
 const setup = (over: Record<string, unknown> = {}) =>
-  ({ key: "set", masked: "••••aaaa", is_owner: true, can_write: true, brand: "Example Removal", ...over });
+  ({ key: "set", masked: "••••aaaa", is_owner: true, can_write: true, brand: "Example Removal", previews: true, ...over });
 const dialog = () => screen.queryByRole("dialog", { name: TITLE });
 const ROSTER = { rows: [], untracked: [{ account_id: "acc-a", name: "Mia Vale" }], stale: false, fetched_at: null };
 const open = async (over: Record<string, unknown> = {}) => {
@@ -45,6 +46,42 @@ describe("Leak disclaimer", () => {
     const d = await screen.findByRole("dialog", { name: TITLE });
     expect(within(d).getByText(body("Example Removal"))).toBeTruthy();
     expect(within(d).getAllByRole("button").map((b) => b.textContent || b.getAttribute("aria-label"))).toEqual(["Close", "Got it"]);
+  });
+
+  it("previews on: the dialog adds the preview line and closing writes the v2 key", async () => {
+    await open();
+    const d = await screen.findByRole("dialog", { name: TITLE });
+    expect(within(d).getByText(PREVIEW_LINE)).toBeTruthy();
+    expect(PREVIEW_LINE).toBe("Google previews are automated search matches. They can be explicit or show someone else. "
+      + "They stay blurred until you click one, and this app keeps no copy.");
+    fireEvent.click(screen.getByRole("button", { name: "Got it" }));
+    expect(window.localStorage.getItem("chatterly:leak_disclaimer_seen:v2:emp-1")).toBe("1");
+    expect(window.localStorage.getItem("chatterly:leak_disclaimer_seen:emp-1")).toBeNull();
+  });
+
+  it("previews on: a person who closed the old text sees the dialog once more", async () => {
+    window.localStorage.setItem("chatterly:leak_disclaimer_seen:emp-1", "1");
+    await open();
+    expect(await screen.findByRole("dialog", { name: TITLE })).toBeTruthy();
+  });
+
+  it("previews off: no preview line, the old key is written and still keeps it shut", async () => {
+    await open({ previews: false });
+    const d = await screen.findByRole("dialog", { name: TITLE });
+    expect(within(d).getByText(body("Example Removal"))).toBeTruthy();
+    expect(within(d).queryByText(PREVIEW_LINE)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Got it" }));
+    expect(window.localStorage.getItem("chatterly:leak_disclaimer_seen:emp-1")).toBe("1");
+    expect(window.localStorage.getItem("chatterly:leak_disclaimer_seen:v2:emp-1")).toBeNull();
+    cleanup();
+    await open({ previews: false });
+    expect(dialog()).toBeNull();
+  });
+
+  it("previews off: someone who closed the v2 text sees no dialog", async () => {
+    window.localStorage.setItem("chatterly:leak_disclaimer_seen:v2:emp-1", "1");
+    await open({ previews: false });
+    expect(dialog()).toBeNull();
   });
 
   it("falls back to The removal team when the brand is null", async () => {
@@ -79,7 +116,7 @@ describe("Leak disclaimer", () => {
     await screen.findByRole("dialog", { name: TITLE });
     close();
     expect(dialog()).toBeNull();
-    expect(window.localStorage.getItem("chatterly:leak_disclaimer_seen:emp-1")).toBe("1");
+    expect(window.localStorage.getItem("chatterly:leak_disclaimer_seen:v2:emp-1")).toBe("1");
     cleanup();
     await open();
     expect(dialog()).toBeNull();

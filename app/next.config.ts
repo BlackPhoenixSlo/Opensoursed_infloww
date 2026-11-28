@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+
 import type { NextConfig } from "next";
 import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from "next/constants";
 
@@ -108,6 +111,8 @@ export default function config(phase: string): NextConfig {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { writePluginBarrel } = require("./lib/pluginBarrel.js") as { writePluginBarrel: (appRoot: string) => string[] };
     writePluginBarrel(__dirname);
+    const mirror = existsSync(path.join(__dirname, "public/fansly-mirror/pages"));
+    return { ...nextConfig, env: { NEXT_PUBLIC_FANSLY_MIRROR_ABSENT: mirror ? "" : "1" } };
   }
   return nextConfig;
 }

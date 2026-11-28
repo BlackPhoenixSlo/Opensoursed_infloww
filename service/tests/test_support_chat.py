@@ -21,9 +21,12 @@ import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 import hashlib  # noqa: E402
 import hmac  # noqa: E402
+import re  # noqa: E402
+import time  # noqa: E402
 import io  # noqa: E402
 import struct  # noqa: E402
 import threading  # noqa: E402
+from unittest.mock import patch
 from types import SimpleNamespace  # noqa: E402
 
 import httpx  # noqa: E402
@@ -33,6 +36,7 @@ from sqlalchemy import select  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 import server  # noqa: E402
+import signed_cookie  # noqa: E402
 import support_api  # noqa: E402
 import support_hub  # noqa: E402
 import support_photos  # noqa: E402
@@ -42,7 +46,18 @@ from llm_client import LLMKeyError  # noqa: E402
 
 IDS = fx.seed_two_agencies()
 fx.store_blob(IDS["agency_a_owner"], "account", {"agency_name": "Agency A"})
-support_api._transport = httpx.ASGITransport(app=server.app)
+ASGI_TRANSPORT = httpx.ASGITransport(app=server.app)
+ASYNC_CLIENT = httpx.AsyncClient
+
+
+def _hub_transport(transport):
+    return patch.object(httpx, "AsyncClient", side_effect=lambda **kw: ASYNC_CLIENT(transport=transport, **kw))
+
+
+def _reset_throttle():
+    with support_hub._fail_lock:
+        support_hub._fails.clear()
+        support_hub._all_fails.clear()
 
 CHATTER = fx.login_chatter("chatter_a")
 OWNER_A = fx.login_owner("agency_a_owner")
@@ -56,7 +71,7 @@ def _hub_client() -> TestClient:
 
 
 def _hub_owner() -> TestClient:
-    support_hub.reset_throttle()
+    _reset_throttle()
     c = _hub_client()
     r = c.post("/support/api/login", json={"password": PASSWORD})
     assert r.status_code == 200, r.text
@@ -106,17 +121,16 @@ def case_owner_api_needs_cookie():
     assert c.get("/support/api/threads/1").status_code == 401
     assert c.post("/support/api/threads/1/reply", json={"text": "hi"}).status_code == 401
     assert c.post("/support/api/summarise").status_code == 401
-    support_hub.reset_throttle()
+    _reset_throttle()
     sid = "a" * 32
-    for bad in ("9999999999.deadbeef", f"{sid}.1.{support_hub._sign(sid, 1)}",
-                f"{sid}.9999999999.{support_hub._sign(sid, 9999999999)}"):
+    for bad in ("9999999999.deadbeef", _signed(sid, 1), _signed(sid, 9999999999)):
         c.cookies.set(support_hub.COOKIE, bad, path="/support")
         assert c.get("/support/api/threads").status_code == 401, bad
-    support_hub.reset_throttle()
+    _reset_throttle()
 
 
 def case_non_ascii_digit_cookie_is_401_not_500():
-    support_hub.reset_throttle()
+    _reset_throttle()
     sid = "a" * 32
     for exp in ("\u00b2", "1\u00b2", "\u0661\u0662"):
         assert support_hub._session_ok(f"{sid}.{exp}.{'0' * 64}") is False
@@ -124,7 +138,13 @@ def case_non_ascii_digit_cookie_is_401_not_500():
     c = TestClient(server.app, base_url="https://testserver", raise_server_exceptions=False)
     r = c.get("/support/api/threads", headers={"cookie": raw})
     assert r.status_code == 401, (r.status_code, r.text)
-    support_hub.reset_throttle()
+    raw = f"{support_hub.COOKIE}={sid}.9999999999.é".encode("latin-1")
+    assert c.get("/support/api/threads", headers={"cookie": raw}).status_code == 401
+    _reset_throttle()
+
+
+def _signed(sid: str, exp: int) -> str:
+    return signed_cookie.make(support_hub._session_key(), sid, str(exp))
 
 
 def _set_cookie(c: TestClient, value: str) -> None:
@@ -132,8 +152,8 @@ def _set_cookie(c: TestClient, value: str) -> None:
 
 
 def case_cookie_forged_from_password_alone_is_refused():
-    support_hub.reset_throttle()
-    sid, exp = "b" * 32, int(support_hub._clock()) + 3600
+    _reset_throttle()
+    sid, exp = "b" * 32, int(time.time()) + 3600
     old_key = hashlib.sha256(b"support-hub-session\0" + PASSWORD.encode()).digest()
     pw_key = hmac.new(hashlib.sha256(PASSWORD.encode()).digest(), b"support-hub-session\0", hashlib.sha256).digest()
     c = _hub_client()
@@ -142,20 +162,32 @@ def case_cookie_forged_from_password_alone_is_refused():
             sig = hmac.new(key, msg.encode(), hashlib.sha256).hexdigest()
             _set_cookie(c, f"{msg}.{sig}")
             assert c.get("/support/api/threads").status_code == 401
-    support_hub.reset_throttle()
+    _reset_throttle()
 
 
 def case_signed_cookie_without_a_session_row_is_refused():
-    support_hub.reset_throttle()
-    sid, exp = "c" * 32, int(support_hub._clock()) + 3600
+    _reset_throttle()
+    sid, exp = "c" * 32, int(time.time()) + 3600
     c = _hub_client()
-    _set_cookie(c, f"{sid}.{exp}.{support_hub._sign(sid, exp)}")
+    _set_cookie(c, _signed(sid, exp))
     assert c.get("/support/api/threads").status_code == 401
-    support_hub.reset_throttle()
+    _reset_throttle()
+
+
+def case_signed_out_requests_leave_login_allowed():
+    _reset_throttle()
+    try:
+        c = _hub_client()
+        for _ in range(support_hub.FAIL_LIMIT + 1):
+            assert c.get("/support/api/threads").status_code == 401
+        r = c.post("/support/api/login", json={"password": PASSWORD})
+        assert r.status_code == 200, (r.status_code, r.text)
+    finally:
+        _reset_throttle()
 
 
 def case_repeated_bad_cookies_are_throttled():
-    support_hub.reset_throttle()
+    _reset_throttle()
     c = _hub_client()
     _set_cookie(c, "junk")
     for _ in range(support_hub.FAIL_LIMIT):
@@ -164,7 +196,7 @@ def case_repeated_bad_cookies_are_throttled():
     assert r.status_code == 429 and r.headers.get("retry-after"), r.text
     assert c.post("/support/api/login", json={"password": PASSWORD}).status_code == 429
     assert _hub_client().get("/support/api/threads").status_code == 401
-    support_hub.reset_throttle()
+    _reset_throttle()
 
 
 def case_cookie_dead_after_logout():
@@ -175,7 +207,7 @@ def case_cookie_dead_after_logout():
     replay = _hub_client()
     _set_cookie(replay, cookie)
     assert replay.get("/support/api/threads").status_code == 401
-    support_hub.reset_throttle()
+    _reset_throttle()
 
 
 def case_password_change_signs_everyone_out():
@@ -183,11 +215,11 @@ def case_password_change_signs_everyone_out():
     with _env(SUPPORT_HUB_PASSWORD=PASSWORD + "-new"):
         assert c.get("/support/api/threads").status_code == 401
     assert c.get("/support/api/threads").status_code == 200
-    support_hub.reset_throttle()
+    _reset_throttle()
 
 
 def case_parallel_wrong_logins_stay_within_limit():
-    support_hub.reset_throttle()
+    _reset_throttle()
     req = SimpleNamespace(headers={}, client=SimpleNamespace(host="203.0.113.9"))
     real = support_hub.client_addr.client_address
     support_hub.client_addr.client_address = lambda r: "203.0.113.9"
@@ -206,7 +238,7 @@ def case_parallel_wrong_logins_stay_within_limit():
     finally:
         support_hub.client_addr.client_address = real
     assert statuses.count(401) == support_hub.FAIL_LIMIT and statuses.count(429) == 40 - support_hub.FAIL_LIMIT, statuses
-    support_hub.reset_throttle()
+    _reset_throttle()
 
 
 def case_instance_api_needs_token():
@@ -226,13 +258,13 @@ def case_instance_api_needs_token():
 
 
 def case_login_wrong_password_and_rate_limit():
-    support_hub.reset_throttle()
+    _reset_throttle()
     c = _hub_client()
     for _ in range(support_hub.FAIL_LIMIT):
         assert c.post("/support/api/login", json={"password": "nope"}).status_code == 401
     r = c.post("/support/api/login", json={"password": PASSWORD})
     assert r.status_code == 429 and r.headers.get("retry-after"), r.text
-    support_hub.reset_throttle()
+    _reset_throttle()
     r = c.post("/support/api/login", json={"password": PASSWORD})
     assert r.status_code == 200
     cookie = r.headers["set-cookie"].lower()
@@ -244,13 +276,19 @@ def case_login_wrong_password_and_rate_limit():
 
 
 def case_global_fail_cap_spans_addresses():
-    support_hub.reset_throttle()
-    now = support_hub._clock()
-    for i in range(support_hub.GLOBAL_FAIL_LIMIT):
-        support_hub._record_fail(f"10.0.0.{i}", now)
-    r = _hub_client().post("/support/api/login", json={"password": PASSWORD})
-    assert r.status_code == 429
-    support_hub.reset_throttle()
+    owner = _hub_owner()
+    with patch.object(support_hub.client_addr, "client_address") as address:
+        client = _hub_client()
+        for i in range(support_hub.GLOBAL_FAIL_LIMIT):
+            address.return_value = f"192.0.2.{i}"
+            assert client.post("/support/api/login", json={"password": "nope"}).status_code == 401
+        address.return_value = "192.0.2.250"
+        assert client.post("/support/api/login", json={"password": PASSWORD}).status_code == 429
+        assert owner.get("/support/api/threads").status_code == 200
+        assert address.return_value not in support_hub._fails
+        _set_cookie(client, "junk")
+        assert client.get("/support/api/threads").status_code == 401
+    _reset_throttle()
 
 
 def case_identity_comes_from_session_not_body():
@@ -291,7 +329,7 @@ def case_ingest_thread_reply_unread_read():
     msgs = CHATTER.get("/admin/support/thread").json()["messages"]
     assert msgs[-1]["from"] == "support" and msgs[-1]["text"] == "On it — next week"
     assert OWNER_A.get("/admin/support/unread").json()["unread"] == 0
-    assert CHATTER.post("/admin/support/read").json()["ok"] is True
+    assert CHATTER.post("/admin/support/read", json={"up_to": msgs[-1]["id"]}).json()["ok"] is True
     assert CHATTER.get("/admin/support/unread").json()["unread"] == 0
     support_api._unread.clear()
     assert CHATTER.get("/admin/support/unread").json()["unread"] == 0
@@ -304,13 +342,11 @@ def case_unread_cached_30s():
     t = _thread_of(owner, "chatter_a")
     owner.post(f"/support/api/threads/{t['id']}/reply", json={"text": "ping"})
     assert CHATTER.get("/admin/support/unread").json()["unread"] == 0
-    real = support_api._clock
-    support_api._clock = lambda: real() + support_api.UNREAD_TTL_S + 1
-    try:
+    later = time.monotonic() + support_api.UNREAD_TTL_S + 1
+    with patch.object(support_api, "time", SimpleNamespace(monotonic=lambda: later)):
         assert CHATTER.get("/admin/support/unread").json()["unread"] == 1
-    finally:
-        support_api._clock = real
-    CHATTER.post("/admin/support/read")
+    msgs = CHATTER.get("/admin/support/thread").json()["messages"]
+    CHATTER.post("/admin/support/read", json={"up_to": msgs[-1]["id"]})
 
 
 def case_not_configured_and_signed_out():
@@ -323,14 +359,36 @@ def case_not_configured_and_signed_out():
 
 
 def case_hub_down_is_502_not_crash():
-    saved = support_api._transport
-    support_api._transport = httpx.MockTransport(lambda req: httpx.Response(500))
     support_api._unread.clear()
-    try:
+    with _hub_transport(httpx.MockTransport(lambda req: httpx.Response(500))):
         assert CHATTER.post("/admin/support/messages", json={"text": "x"}).status_code == 502
         assert CHATTER.get("/admin/support/unread").json() == {"configured": True, "unread": 0}
-    finally:
-        support_api._transport = saved
+
+
+def case_bad_hub_responses_are_logged_and_rejected():
+    for response in (httpx.Response(200, text="bad JSON"), httpx.Response(200, json={}),
+                     httpx.Response(200, json={"messages": []}),
+                     httpx.Response(200, json={"messages": [{"id": 1}]})):
+        with _hub_transport(httpx.MockTransport(lambda req: response)), patch.object(support_api.log, "warning") as log:
+            assert CHATTER.post("/admin/support/messages", json={"text": "x"}).status_code == 502
+            log.assert_called_once_with("support: hub %s %s failed: InvalidResponse", "POST", "messages")
+    with _hub_transport(httpx.MockTransport(lambda req: httpx.Response(429))):
+        response = CHATTER.get("/admin/support/thread")
+        assert response.status_code == 502 and response.json()["detail"] == support_api.UNREACHABLE
+
+
+def case_insecure_hub_url_is_disabled():
+    with _env(SUPPORT_HUB_URL="http://hub.test"), patch.object(support_api.log, "warning") as log:
+        support_api._secure_hub_url.cache_clear()
+        assert CHATTER.get("/admin/support/thread").json() == {"configured": False}
+        assert CHATTER.get("/admin/support/unread").json() == {"configured": False}
+        log.assert_called_once()
+
+
+def case_support_ui_and_hub_share_message_limit():
+    reducer = Path(__file__).resolve().parents[2] / "app/components/assistant/supportReducer.ts"
+    match = re.search(r"^export const MAX_SUPPORT_CHARS = (\d+);$", reducer.read_text(), re.MULTILINE)
+    assert match and int(match[1]) == support_hub.MAX_TEXT
 
 
 def case_share_token_gate_lets_only_the_hub_through():
@@ -390,13 +448,126 @@ def case_send_rate_limit():
                   headers=INST).status_code == 429
     other = {**who, "user_key": f"rate:{uuid.uuid4().hex}"}
     assert c.post("/support/api/instance/messages", json={**other, "text": "hi"}, headers=INST).status_code == 200
-    saved = support_api._transport
-    support_api._transport = httpx.MockTransport(lambda req: httpx.Response(429, json={"detail": "send limit"}))
-    try:
+    with _hub_transport(httpx.MockTransport(lambda req: httpx.Response(429))):
         r = CHATTER.post("/admin/support/messages", json={"text": "x"})
         assert r.status_code == 429 and "wait a few minutes" in r.json()["detail"], r.text
-    finally:
-        support_api._transport = saved
+
+
+def case_read_ack_keeps_messages_arriving_after_snapshot_unread():
+    owner = _hub_owner()
+    tid = _thread_of(owner, "chatter_a")["id"]
+    path = f"/support/api/threads/{tid}/reply"
+    old = CHATTER.get("/admin/support/thread").json()["messages"][-1]["id"]
+    new = owner.post(path, json={"text": "arrived after the snapshot"}).json()["messages"][-1]["id"]
+    assert CHATTER.post("/admin/support/read", json={"up_to": old}).status_code == 200
+    assert CHATTER.get("/admin/support/unread").json()["unread"] == 1
+    assert CHATTER.post("/admin/support/read", json={"up_to": new + 100}).status_code == 200
+    assert CHATTER.post("/admin/support/read", json={"up_to": old}).status_code == 200
+    assert CHATTER.get("/admin/support/unread").json()["unread"] == 0
+    owner.post(path, json={"text": "arrived after the capped ack"})
+    support_api._unread.clear()
+    assert CHATTER.get("/admin/support/unread").json()["unread"] == 1
+
+
+def case_legacy_relay_read_ack_marks_only_its_thread():
+    client = _hub_client()
+    owner = _hub_owner()
+    who = {"instance": "legacy-relay", "user_key": "same-user"}
+    other = {**who, "instance": "other-relay"}
+    for identity in (who, other):
+        name = identity["instance"]
+        assert client.post("/support/api/instance/messages", headers=INST, json={
+            **identity, "name": name, "text": "Question",
+        }).status_code == 200
+        tid = _thread_of(owner, name)["id"]
+        assert owner.post(f"/support/api/threads/{tid}/reply", json={"text": "Answer"}).status_code == 200
+        assert client.get("/support/api/instance/unread", headers=INST, params=identity).json() == {"unread": 1}
+
+    response = client.post("/support/api/instance/read", headers=INST, json=who)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True}
+    assert client.get("/support/api/instance/unread", headers=INST, params=who).json() == {"unread": 0}
+    assert client.get("/support/api/instance/unread", headers=INST, params=other).json() == {"unread": 1}
+
+
+def case_long_display_fields_are_clipped():
+    asker = support_api.Asker("test-long-fields", "n" * 300, "owner", "", "a" * 300)
+    with patch.object(support_api, "_asker", return_value=asker):
+        res = OWNER_A.post("/admin/support/messages", json={"text": "hello"})
+    assert res.status_code == 200, res.text
+    row = _thread_of(_hub_owner(), "n" * support_hub.MAX_FIELD)
+    assert row["agency_name"] == "a" * support_hub.MAX_FIELD
+
+
+def case_switching_threads_discards_the_old_draft_and_late_transcript():
+    from playwright.sync_api import sync_playwright
+
+    client = _hub_client()
+    for name in ("Browser Alpha", "Browser Beta"):
+        response = client.post("/support/api/instance/messages", headers=INST, json={
+            "instance": "browser", "user_key": name, "name": name, "text": f"{name} transcript",
+        })
+        assert response.status_code == 200
+
+    base = "http://localhost:8110"
+    held = []
+    delayed = set()
+
+    def serve(route):
+        req = route.request
+        path = req.url.removeprefix(base)
+        if req.method == "GET" and path in delayed:
+            held.append(route)
+            return
+        response = client.request(req.method, path, content=req.post_data_buffer,
+                                  headers={"content-type": req.headers["content-type"]} if req.post_data_buffer else {})
+        route.fulfill(status=response.status_code, headers=dict(response.headers), body=response.content)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.add_init_script("window.setInterval = (fn, ms) => { if (ms === 4000) window.pollThreads = fn; };")
+        page.route(base + "/**", serve)
+        page.goto(base + "/support")
+        page.locator("#pw").fill(PASSWORD)
+        page.locator("#login button").click()
+        buttons = page.locator("#threads button")
+        buttons.filter(has_text="Browser Alpha").click()
+        messages = page.locator("#msgs .msg")
+        messages.filter(has_text="Browser Alpha transcript").wait_for()
+        alpha = f"/support/api/threads/{_thread_of(client, 'Browser Alpha')['id']}"
+        beta = f"/support/api/threads/{_thread_of(client, 'Browser Beta')['id']}"
+        page.locator("#reply").fill("Old draft")
+        delayed.add(alpha)
+        with page.expect_request(base + alpha):
+            page.evaluate("window.pollThreads()")
+        page.locator("#back").click()
+        delayed.add(beta)
+        with page.expect_request(base + beta):
+            buttons.filter(has_text="Browser Beta").click()
+        assert page.locator("#reply").input_value() == "", "old draft carried into Beta"
+        assert not page.locator("#msgs").inner_text(), "old transcript carried into Beta"
+        assert page.locator("#reply").is_disabled()
+        assert page.locator("#send").is_disabled()
+        delayed.clear()
+        serve(held.pop())
+        messages.filter(has_text="Browser Beta transcript").wait_for()
+        with page.expect_response(base + alpha):
+            serve(held.pop())
+        page.locator("#reply").fill("Reply for Beta")
+        page.locator("#file").set_input_files({"name": "reply.jpg", "mimeType": "image/jpeg", "buffer": _jpeg()})
+        page.locator("#pending img").wait_for()
+        page.locator("#send").click()
+        reply = messages.filter(has_text="Reply for Beta")
+        reply.locator("img").wait_for()
+        page.wait_for_function("() => document.querySelector('#msgs .pics img').naturalWidth > 0")
+        screenshot = os.environ.get("SUPPORT_TEST_SCREENSHOT")
+        if screenshot:
+            page.screenshot(path=screenshot)
+        assert [m["text"] for m in client.get(alpha).json()["messages"]] == ["Browser Alpha transcript"]
+        transcript = client.get(beta).json()["messages"]
+        assert [m["text"] for m in transcript] == ["Browser Beta transcript", "Reply for Beta"]
+        assert client.get(f"/support/api/photos/{transcript[-1]['photos'][0]['id']}").status_code == 200
 
 
 def _raw_post(path: str, headers: list[tuple[bytes, bytes]], length: int | None) -> tuple[int, int]:
@@ -424,7 +595,7 @@ def _raw_post(path: str, headers: list[tuple[bytes, bytes]], length: int | None)
 
 
 def case_oversize_photo_posts_refused_before_body_is_read():
-    support_hub.reset_throttle()
+    _reset_throttle()
     big = 50 * 1024 * 1024
     bearer = [(b"authorization", f"Bearer {TOKEN}".encode())]
     assert _raw_post("/support/api/instance/messages/upload", [], big) == (401, 0)
@@ -436,7 +607,7 @@ def case_oversize_photo_posts_refused_before_body_is_read():
     assert _raw_post("/support/api/threads/1/reply/upload", owner, big) == (413, 0)
     status, reads = _raw_post("/support/api/instance/messages/upload", bearer, None)
     assert status == 413 and reads <= support_photos.UPLOAD_CAP // 65536 + 2, (status, reads)
-    support_hub.reset_throttle()
+    _reset_throttle()
 
 
 def _jpeg(w: int = 64, h: int = 48, orient: int | None = None) -> bytes:
@@ -468,7 +639,7 @@ def _hub_upload(c: TestClient, user_key: str, *blobs: bytes, text: str = ""):
 
 
 def case_four_photos_roundtrip_crm_hub_owner_and_reply():
-    support_hub.reset_throttle()
+    _reset_throttle()
     r = CHATTER.post("/admin/support/messages/upload", data={"text": "see these"},
                      files=_files(_jpeg(orient=6), _jpeg(), _jpeg(), _jpeg()))
     assert r.status_code == 200, r.text
@@ -503,7 +674,7 @@ def case_four_photos_roundtrip_crm_hub_owner_and_reply():
     assert owner.post(f"/support/api/threads/{t['id']}/reply/upload", data={"text": "words only"}).status_code == 200
     body, _, _ = support_hub._digest_input()
     assert "User: see these [photo] [photo] [photo] [photo]" in body and "Team: [photo]" in body, body
-    CHATTER.post("/admin/support/read")
+    assert CHATTER.post("/admin/support/read", json={"up_to": msgs[-1]["id"]}).status_code == 200
 
 
 def case_photo_of_another_thread_is_404_and_no_cookie_is_401():
@@ -518,7 +689,7 @@ def case_photo_of_another_thread_is_404_and_no_cookie_is_401():
     assert owner.get("/support/api/photos/999999").status_code == 404
     assert _hub_client().get(f"/support/api/photos/{pid}").status_code == 401
     assert ANON.get(f"/admin/support/photos/{pid}").status_code == 401
-    support_hub.reset_throttle()
+    _reset_throttle()
 
 
 def case_valid_session_never_throttled_on_shared_ip():
@@ -548,7 +719,7 @@ def case_valid_session_never_throttled_on_shared_ip():
     for th in threads:
         th.join()
     assert len(paths) == 20 and statuses == [200] * 20, statuses
-    support_hub.reset_throttle()
+    _reset_throttle()
 
 
 def case_send_limit_and_identity_checked_before_decode():
@@ -569,7 +740,7 @@ def case_send_limit_and_identity_checked_before_decode():
         assert decodes == [], decodes
     finally:
         support_photos._reencode = real
-    support_hub.reset_throttle()
+    _reset_throttle()
 
 
 def case_bad_photos_refused():
@@ -591,6 +762,14 @@ def case_bad_photos_refused():
     assert r.status_code == 400 and r.json()["detail"] == "Only photos (JPEG) can be sent.", r.text
 
 
+def case_upload_rejects_a_malformed_photo_reference():
+    message = {"id": 1, "sender": "user", "text": "", "at": "", "photos": [{"id": "1", "w": 1, "h": 1}]}
+    response = httpx.Response(200, json={"messages": [message]})
+    with _hub_transport(httpx.MockTransport(lambda req: response)), patch.object(support_api.log, "warning") as log:
+        assert CHATTER.post("/admin/support/messages/upload", files=_files(_jpeg())).status_code == 502
+        log.assert_called_once_with("support: hub %s %s failed: InvalidResponse", "POST", "messages/upload")
+
+
 def case_db_budget_refuses_new_photos():
     c = _hub_client()
     key = f"budget:{uuid.uuid4().hex}"
@@ -609,4 +788,5 @@ def case_support_traffic_not_audited():
     assert not any("support" in a for a in asyncio.run(rows()))
 
 
-_harness.run()
+with _hub_transport(ASGI_TRANSPORT):
+    _harness.run()

@@ -14,6 +14,7 @@ import { useAppCreator } from "@/contexts/PageCreatorContext";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useTheme } from "@/hooks/useTheme";
+import { useFlags } from "@/components/shell/useFlags";
 import { useDragPress } from "@/components/useDragPress";
 import { relay, relayFile, type AccountMeta } from "@/lib/relay";
 import { saveBlob } from "@/lib/csv";
@@ -275,11 +276,12 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   }, [open]);
   const { theme, setTheme } = useTheme();
   const appliedSettings = useAppliedSettings().data;
+  const flags = useFlags();
   const chatterOnly = isChatterOnly(user, chatter);
   const isMaster = user?.is_admin === true;
   const navFilter = useMemo(() => ({
-    chatterOnly, grantedPages: sessionGrantedPages(chatterOnly, appliedSettings?.permissions), master: isMaster, flags: appliedSettings?.flags,
-  }), [chatterOnly, appliedSettings?.permissions, appliedSettings?.flags, isMaster]);
+    chatterOnly, grantedPages: sessionGrantedPages(chatterOnly, appliedSettings?.permissions), master: isMaster, flags,
+  }), [chatterOnly, appliedSettings?.permissions, flags, isMaster]);
   const commandTargets = useMemo(() => commandLinks(navFilter), [navFilter]);
   const openPages = useMemo(() => openablePages(navFilter), [navFilter]);
   const command = useCallback((question: string): PrepassHit | null => {

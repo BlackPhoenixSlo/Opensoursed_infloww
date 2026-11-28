@@ -129,6 +129,7 @@ _PROXY_PACED_KINDS = frozenset({"transactions"})   # walks whose pages also take
 class _Walk:
     account_id: str | None
     kind: str
+    deadline: float | None
 
 
 _WALK: ContextVar[_Walk | None] = ContextVar("of_pacing_walk", default=None)
@@ -215,6 +216,11 @@ def upstream(exc: BaseException) -> tuple[int | str | None, str, str | None]:
     return getattr(resp, "status_code", None), getattr(resp, "text", "") or "", header
 
 
+def _hold_cf_window(g: _Gate, exc: BaseException, now: float) -> None:
+    if "1015" in upstream(exc)[1]:
+        g.hold_until = max(g.hold_until, now + CF_WINDOW_S - _wall() % CF_WINDOW_S)
+
+
 def retry_after(exc: BaseException) -> float | None:
     status, body, header = upstream(exc)
     if status != 429:
@@ -253,29 +259,35 @@ def paced(account_id: Any, call: Callable[[], Any], proxy_key: Callable[[], str]
     exit_ = proxy_key() if proxy_key is not None and w.kind in _PROXY_PACED_KINDS else None
     keys = (aid,) if exit_ is None else (aid, f"proxy {exit_}")
     try:
-        return _walk_attempt(aid, keys, call)
+        return _walk_attempt(aid, keys, call, w.deadline)
     except Exception as e:
         wait = retry_after(e)
-        if wait is None:
+        if wait is None or (w.deadline is not None and time.monotonic() + wait >= w.deadline):
             raise
     # walk= after kind=: proxy-health's summarize.py matches "account=... kind=transactions".
     log.info("bg_walk_429_retry account=%s kind=%s walk=%s proxy=%s wait_s=%.1f", aid, w.kind,
              w.account_id or "-", exit_label(exit_), wait)
     time.sleep(wait)
-    return _walk_attempt(aid, keys, call)
+    return _walk_attempt(aid, keys, call, w.deadline)
 
 
-def _walk_attempt(aid: str, keys: tuple[str, ...], call: Callable[[], Any]) -> Any:
+def _walk_attempt(aid: str, keys: tuple[str, ...], call: Callable[[], Any], deadline: float | None) -> Any:
     with _gates_lock:
         g = _gates.setdefault(aid, _Gate())
     me = (BACKGROUND, next(_tickets), False)
     try:
         while True:
             with _gates_lock:
-                action, delay = _admit(g, me, time.monotonic(), keys)
+                now = time.monotonic()
+                _step(g, now)
+                if deadline is not None and now >= deadline and _pacing(g):
+                    raise ReadPacingExpired()
+                action, delay = _admit(g, me, now, keys)
                 epoch = g.epoch
             if action != "wait":
                 return _gate_call(aid, g, call, action == "probe", epoch, time.monotonic)
+            if deadline is not None and now + delay >= deadline:
+                raise ReadPacingExpired()
             time.sleep(delay)
     finally:
         with _gates_lock:
@@ -288,15 +300,15 @@ _wall = time.time
 def _close(aid: str, g: _Gate, e: BaseException, now: float) -> None:
     _step(g, now)
     if not g.closed:
-        g.fail_gap = g.gap if g.gap is not None else g.left_gap if now - g.left_at <= REFLOOR_S else None
+        recent_gap = g.left_gap if now - g.left_at <= REFLOOR_S else None
+        g.fail_gap = g.gap if g.gap is not None else recent_gap
     if g.closed and now - g.cool_until > COOLDOWNS_S[-1]:
         g.step = 0  # nobody probed for a whole top cooldown: start the ladder again
     window = int(_wall() // CF_WINDOW_S)
     if g.window not in (None, window):
         g.step = 0
     g.window = window
-    if "1015" in (upstream(e)[1] or ""):
-        g.hold_until = now + CF_WINDOW_S - _wall() % CF_WINDOW_S
+    _hold_cf_window(g, e, now)
     ladder = COOLDOWNS_S[min(g.step, len(COOLDOWNS_S) - 1)]
     cool = max(min(ladder, CF_WINDOW_S - _wall() % CF_WINDOW_S + 1.0), retry_after(e) or 0.0)
     if not g.closed:
@@ -341,9 +353,13 @@ def _step(g: _Gate, now: float) -> None:
         g.gap, g.clean_since = gap, at
 
 
+def _pacing(g: _Gate) -> bool:
+    return g.closed or g.gap is not None
+
+
 def _reads_full(g: _Gate, prio: int, now: float) -> bool:
     _step(g, now)
-    return (g.closed or g.gap is not None) and sum(
+    return _pacing(g) and sum(
         read and (prio != USER_READ or p == USER_READ) for p, _, read in g.queue) >= MAX_READ_WAITERS
 
 
@@ -360,7 +376,7 @@ def _admit(
     g: _Gate, me: tuple[int, int, bool], now: float, pace_keys: tuple[str, ...] = (),
 ) -> tuple[str, float]:
     _step(g, now)
-    if g.closed or g.gap is not None:
+    if _pacing(g):
         g.queue.setdefault(me, now)
         if g.closed and g.cool_until > now:
             return "wait", g.cool_until - now
@@ -399,6 +415,7 @@ def _gate_call(
                     _close(aid, g, e, now)
                 elif g.closed and not g.probing:
                     g.cool_until = max(g.cool_until, now + (retry_after(e) or 0.0))
+                    _hold_cf_window(g, e, now)
         raise
     else:
         if probe:
@@ -421,6 +438,11 @@ def read_budget(secs: float):
         _READ_BUDGET.reset(tok)
 
 
+class ReadPacingExpired(TimeoutError):
+    def __init__(self):
+        super().__init__("Timed out waiting for the OnlyFans request queue.")
+
+
 class SendDispatchExpired(Exception):
     pass
 
@@ -434,6 +456,8 @@ def absorb_429(account_id: Any, call: Callable[[], Any], *,
     with _gates_lock:
         g = _gates.setdefault(aid, _Gate())
     send = send_deadline is not None
+    if send and prio != BACKGROUND:
+        prio = PERSON_SEND
     me = (prio, next(_tickets), not send)
     t0 = clock()
     budget = _READ_BUDGET.get()
@@ -443,9 +467,8 @@ def absorb_429(account_id: Any, call: Callable[[], Any], *,
         while True:
             with _gates_lock:
                 now = clock()
-                last = g.last_429 if g.closed or g.queue else None
                 full = not send and me not in g.queue and _reads_full(g, prio, now)
-                if full or (now >= deadline and (send or own is not None or last is not None)):
+                if full or (now >= deadline and (send or own is not None or _pacing(g))):
                     break
                 action, delay = _admit(g, me, now)
                 epoch = g.epoch
@@ -468,18 +491,24 @@ def absorb_429(account_id: Any, call: Callable[[], Any], *,
                     wait = max(g.cool_until - now, 0.0)
                 log.info("request_429_retry account=%s wait_s=%.1f waited_s=%.1f", aid, wait, now - t0)
         log.info("request_429_gave_up account=%s waited_s=%.1f send=%d", aid, now - t0, send)
-        if own is not None:
+        with _gates_lock:
+            last = g.last_429 if g.closed else None
+        if own is not None and (send or last is not None):
             raise own from None
         if last is not None:
             raise copy.copy(last) from None
-        raise SendDispatchExpired() from None
+        if send:
+            raise SendDispatchExpired() from None
+        raise ReadPacingExpired() from None
     finally:
         with _gates_lock:
             g.queue.pop(me, None)
 
 
 async def walk(account_id: Any, kind: str, run: Callable[[], Awaitable[Any]]) -> Any:
-    tok = _WALK.set(_Walk(None if account_id is None else str(account_id), kind))
+    budget = _READ_BUDGET.get()
+    deadline = time.monotonic() + budget if budget is not None else None
+    tok = _WALK.set(_Walk(None if account_id is None else str(account_id), kind, deadline))
     try:
         with of_call_counter.caller(f"walk:{kind}"):
             return await run()

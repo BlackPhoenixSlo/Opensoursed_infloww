@@ -159,7 +159,7 @@ export function Sidebar({
   return (
     <aside
       aria-label={kind === "tag" ? "Tags" : "Sequences"}
-      className="w-full md:w-[248px] shrink-0 px-3 md:px-4 py-2 border-b md:border-b-0 md:border-r border-border"
+      className="w-full md:w-[248px] shrink-0 px-3 md:px-4 py-2 border-b md:border-b-0 md:border-r border-border md:flex md:flex-col md:min-h-0"
     >
       <div className="md:hidden mb-2 flex items-center gap-2">
         <IfNativeSelect
@@ -208,7 +208,7 @@ export function Sidebar({
         </div>
       )}
       {shown.length === 0 && <div className="hidden md:block"><EmptyState size="sm" text="No data" /></div>}
-      <ul className="hidden md:block space-y-0.5 md:max-h-[calc(100dvh-14rem)] overflow-y-auto">
+      <ul className="hidden md:block space-y-0.5 md:flex-1 md:min-h-0 overflow-y-auto">
         {shown.slice(0, upTo).map((i) => (
           <li key={i.id}>
             <div

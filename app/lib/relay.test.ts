@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   nextGen, API_KEY_ERROR_EVENT, ApiKeyError, RelayError, STALE_CELL_GEN_EVENT, chatListRetry, describeLoadError, isDeepRefused,
-  isRateLimited, prefetchScreenBundle, relay, relayFile, request, resetCellGens,
+  isRateLimited, isUnknownAccount, prefetchScreenBundle, relay, relayFile, request, resetCellGens,
   type ApiKeyErrorPayload,
 } from "@/lib/relay";
 import { resetInline, seedInline } from "@/lib/inlineBoot";
@@ -305,8 +305,11 @@ describe("chat-list caller and intent", () => {
     ["429 busy", busy, 0, false, false],
     ["other error, first failure", new RelayError(502, {}), 0, false, true],
     ["other error, second failure", new RelayError(502, {}), 1, false, false],
-  ])("%s: deep refused %s, retried %s", (_n, e, failures, deep, retried) => {
+    ["unknown account", new RelayError(404, { detail: { error: "unknown_account", message: "Unknown account_id '1'" } }), 0, false, false],
+    ["other 404", new RelayError(404, { detail: "Not Found" }), 0, false, true],
+  ])("%s: deep refused %s, retried %s", (name, e, failures, deep, retried) => {
     expect(isDeepRefused(e)).toBe(deep);
+    expect(isUnknownAccount(e)).toBe(name === "unknown account");
     expect(chatListRetry(failures, e)).toBe(retried);
   });
 });

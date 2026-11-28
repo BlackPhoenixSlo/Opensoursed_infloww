@@ -1,0 +1,192 @@
+{
+  "method": "GET",
+  "path": "/v1/creators/w_miavale_0103/leaks",
+  "request": null,
+  "response": {
+    "leaks": [
+      {
+        "came_back": false,
+        "events": [
+          {
+            "at": "2026-11-12T04:10:00Z",
+            "data": {
+              "first_scan": true,
+              "source": "google_web"
+            },
+            "type": "seen"
+          },
+          {
+            "at": "2026-11-12T04:10:00Z",
+            "data": {},
+            "type": "google_seen"
+          },
+          {
+            "at": "2026-11-13T04:01:00Z",
+            "data": {
+              "dead_since": null,
+              "from": null,
+              "to": "live"
+            },
+            "type": "status"
+          },
+          {
+            "at": "2026-11-19T04:10:00Z",
+            "data": {
+              "visible": false
+            },
+            "type": "google_seen"
+          },
+          {
+            "at": "2026-11-21T04:01:00Z",
+            "data": {
+              "dead_since": "2026-11-20T04:01:00Z",
+              "from": "live",
+              "to": "gone"
+            },
+            "type": "status"
+          },
+          {
+            "at": "2026-11-26T04:10:00Z",
+            "data": {
+              "visible": true
+            },
+            "type": "google_seen"
+          }
+        ],
+        "first_seen_at": "2026-11-12T04:10:00Z",
+        "found_on_first_scan": true,
+        "kind": "page",
+        "last_probe_at": "2026-11-27T04:01:00Z",
+        "last_up_at": "2026-11-19T04:01:00Z",
+        "leak_id": "lk_0201",
+        "leak_site": "example-leaks.test",
+        "origin_status": "gone",
+        "pill": "cached",
+        "preview": null,
+        "sources": [
+          "google_web"
+        ],
+        "title": "set",
+        "url": "https://example-leaks.test/miavale-set-1"
+      },
+      {
+        "came_back": false,
+        "events": [
+          {
+            "at": "2026-11-12T04:10:00Z",
+            "data": {
+              "first_scan": true,
+              "source": "google_web"
+            },
+            "type": "seen"
+          },
+          {
+            "at": "2026-11-12T04:10:00Z",
+            "data": {},
+            "type": "google_seen"
+          },
+          {
+            "at": "2026-11-13T04:01:00Z",
+            "data": {
+              "dead_since": null,
+              "from": null,
+              "to": "live"
+            },
+            "type": "status"
+          },
+          {
+            "at": "2026-11-19T04:10:00Z",
+            "data": {
+              "visible": false
+            },
+            "type": "google_seen"
+          },
+          {
+            "at": "2026-11-21T04:01:00Z",
+            "data": {
+              "dead_since": "2026-11-20T04:01:00Z",
+              "from": "live",
+              "to": "gone"
+            },
+            "type": "status"
+          }
+        ],
+        "first_seen_at": "2026-11-12T04:10:00Z",
+        "found_on_first_scan": true,
+        "kind": "page",
+        "last_probe_at": "2026-11-27T04:01:00Z",
+        "last_up_at": "2026-11-19T04:01:00Z",
+        "leak_id": "lk_0202",
+        "leak_site": "example-leaks.test",
+        "origin_status": "gone",
+        "pill": "gone",
+        "preview": null,
+        "sources": [
+          "google_web"
+        ],
+        "title": "set",
+        "url": "https://example-leaks.test/miavale-set-2"
+      },
+      {
+        "came_back": false,
+        "events": [
+          {
+            "at": "2026-11-12T04:10:00Z",
+            "data": {
+              "first_scan": true,
+              "source": "google_web"
+            },
+            "type": "seen"
+          },
+          {
+            "at": "2026-11-12T04:10:00Z",
+            "data": {},
+            "type": "google_seen"
+          },
+          {
+            "at": "2026-11-13T04:01:00Z",
+            "data": {
+              "dead_since": null,
+              "from": null,
+              "to": "live"
+            },
+            "type": "status"
+          },
+          {
+            "at": "2026-11-21T04:01:00Z",
+            "data": {
+              "dead_since": "2026-11-20T04:01:00Z",
+              "from": "live",
+              "to": "gone"
+            },
+            "type": "status"
+          },
+          {
+            "at": "2026-11-26T04:10:00Z",
+            "data": {
+              "visible": null
+            },
+            "type": "google_seen"
+          }
+        ],
+        "first_seen_at": "2026-11-12T04:10:00Z",
+        "found_on_first_scan": true,
+        "kind": "page",
+        "last_probe_at": "2026-11-27T04:01:00Z",
+        "last_up_at": "2026-11-19T04:01:00Z",
+        "leak_id": "lk_0203",
+        "leak_site": "example-leaks.test",
+        "origin_status": "gone",
+        "pill": "gone",
+        "preview": null,
+        "sources": [
+          "google_web"
+        ],
+        "title": "set",
+        "url": "https://forum.example-leaks.test/t/mia.vale.x"
+      }
+    ],
+    "next_cursor": null
+  },
+  "status": 200
+}

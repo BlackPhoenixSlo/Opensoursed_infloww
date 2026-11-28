@@ -328,7 +328,7 @@ describe("PlatformSync: the scope fix-up stays in memory, so Messages Pro keeps 
 });
 
 describe("Sidebar per platform", () => {
-  it("swaps to Fansly's page set and back (fansly_manager off: no Fansly Manager group)", async () => {
+  it("swaps to Fansly's page set and back (Fansly Manager on by default)", async () => {
     render(<Providers><Sidebar /></Providers>);
     const nav = () => screen.getByRole("navigation", { name: "Main" });
     expect(within(nav()).getByRole("link", { name: "Dashboard" })).toBeInTheDocument();
@@ -336,19 +336,32 @@ describe("Sidebar per platform", () => {
 
     act(() => setPlatform("fansly"));
     expect(within(nav()).queryByRole("link", { name: "Dashboard" })).toBeNull();
-    expect(within(nav()).queryByRole("button", { name: "Fansly Manager" })).toBeNull();
-    expect(within(nav()).getAllByRole("link").map((l) => l.textContent)).toEqual(["Scripts", "Message pro", "Vault pro"]);
+    expect(within(nav()).getByRole("button", { name: "Fansly Manager" })).toBeInTheDocument();
+    expect(within(nav()).getAllByRole("link").map((l) => l.textContent)).toEqual(expect.arrayContaining(["Scripts", "Message pro", "Vault pro"]));
     expect(within(nav()).getByRole("button", { name: "Creators" })).toBeInTheDocument();
 
     act(() => setPlatform("onlyfans"));
     expect(within(nav()).getByRole("link", { name: "Dashboard" })).toBeInTheDocument();
   });
 
+  it("a build without the Fansly mirror has no Fansly Manager group", () => {
+    vi.stubEnv("NEXT_PUBLIC_FANSLY_MIRROR_ABSENT", "1");
+    try {
+      window.localStorage.setItem(PLATFORM_KEY, "fansly");
+      render(<Providers><Sidebar /></Providers>);
+      const nav = screen.getByRole("navigation", { name: "Main" });
+      expect(within(nav).queryByRole("button", { name: "Fansly Manager" })).toBeNull();
+      expect(within(nav).getAllByRole("link").map((l) => l.textContent)).toEqual(["Scripts", "Message pro", "Vault pro"]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("the rail swaps too", () => {
     window.localStorage.setItem(PLATFORM_KEY, "fansly");
     render(<Providers><Sidebar collapsed /></Providers>);
     expect(screen.getByRole("button", { name: "Platform: Fansly" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Fansly Manager" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Fansly Manager" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Vault pro" })).toBeInTheDocument();
   });
 });

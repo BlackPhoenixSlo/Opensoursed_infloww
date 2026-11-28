@@ -73,19 +73,20 @@ def case_get_absorbs_429():
 
 def case_entry_point_decides_the_gate_class():
     seen = []
-    real = of_pacing.absorb_429
+    real = of_pacing._admit
 
-    def spy(aid, call, **kw):
-        seen.append((kw["prio"], kw.get("send_deadline") is not None))
-        return real(aid, call, **kw)
-    with patch.object(of_pacing, "absorb_429", spy):
+    def spy(gate, ticket, now):
+        priority, _, read = ticket
+        seen.append((priority, not read))
+        return real(gate, ticket, now)
+    with patch.object(of_pacing, "_admit", spy):
         for method, prio, send in [("GET", "user", False), ("GET", "background", False),
                                    ("POST", "user", True), ("POST", "background", True)]:
             of_pacing._gates.clear()
             call, _ = _calls(0)
             assert _run(method, call, prio, send=send) == {"ok": True}
     assert seen == [(of_pacing.USER_READ, False), (of_pacing.BACKGROUND, False),
-                    (of_pacing.PERSON_SEND, True), (of_pacing.PERSON_SEND, True)], seen
+                    (of_pacing.PERSON_SEND, True), (of_pacing.BACKGROUND, True)], seen
 
 
 def case_get_past_budget_answers_429():
@@ -99,6 +100,19 @@ def case_get_past_budget_answers_429():
         assert _lane_free()
     finally:
         of_pacing.READ_BUDGET_S = _BUDGET
+
+
+def case_list_read_budget_exhausted_during_recovery_is_busy():
+    now = server._time_mod.monotonic()
+    waiter = (of_pacing.USER_READ, -1, True)
+    gate = of_pacing._Gate(gap=5, next_at=now + 5, clean_since=now,
+                          queue={waiter: now}, last_429=OFAPIError("429", response=_Resp()))
+    of_pacing._gates[AID] = gate
+    call, n = _calls(0)
+    with of_pacing.read_budget(of_pacing.LIST_READ_BUDGET_S):
+        out = _run("GET", call)
+    assert isinstance(out, HTTPException) and out.status_code == 503, out
+    assert not n and list(gate.queue) == [waiter]
 
 
 def case_write_not_retried():

@@ -54,9 +54,12 @@ class Tracker:
         self.answer: dict | Exception = DELETED
         self.by_watch: dict[str, dict | Exception] = {}
         self.calls: list[httpx.Request] = []
+        self.before_delete = None
 
-    def handler(self, request: httpx.Request) -> httpx.Response:
+    async def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
+        if self.before_delete:
+            await self.before_delete()
         answer = self.by_watch.get(request.url.path.rsplit("/", 1)[-1], self.answer)
         if isinstance(answer, Exception):
             raise answer
@@ -441,28 +444,68 @@ def case_user_delete_lands_every_delete_inline_then_deletes_the_user():
     assert _rows() == {}
 
 
-def case_user_delete_stops_at_the_first_failed_delete_answers_409_and_keeps_everything():
+def case_user_delete_keeps_a_watch_enrolled_during_the_inline_drain():
     _reset()
     uid = _agency_user()
-    watches = {_row(CREATOR, agency=uid), _row(OTHER, agency=uid)}
-    for answer, error in [({**LIMITED, "method": "DELETE", "status": 500}, "service_error"),
-                          (httpx.ReadTimeout("slow"), "service_error"),
-                          ({**LIMITED, "method": "DELETE"}, "http_429")]:
+    old = _row(CREATOR, agency=uid)
+    late = []
+    from concurrent.futures import ThreadPoolExecutor
+
+    with _tracker() as t, ThreadPoolExecutor(1) as pool:
+        async def enrol():
+            late.append(await asyncio.get_running_loop().run_in_executor(pool, lambda: _row(OTHER, agency=uid)))
+
+        t.before_delete = enrol
+        r = _delete_user(uid)
+        assert r.status_code == 409, r.text
+        assert list(_rows()) == late
+        assert [w for w, _ in t.deletes()] == [old]
+        t.before_delete = None
+        assert _delete_user(uid).status_code == 200
+        assert [w for w, _ in t.deletes()] == [old, *late]
+
+
+def case_user_delete_caps_the_whole_inline_drain():
+    _reset()
+    uid = _agency_user()
+    first, second, third = (_stone(account, agency=uid) for account in (CREATOR, OTHER, "extra"))
+    with _tracker() as t:
+        async def delayed():
+            await asyncio.sleep(0.12)
+        t.before_delete = delayed
+        old_budget = leak_tracker.INLINE_BUDGET_S
+        leak_tracker.INLINE_BUDGET_S = 0.2
+        try:
+            r = _delete_user(uid)
+        finally:
+            leak_tracker.INLINE_BUDGET_S = old_budget
+        assert r.status_code == 409, r.text
+        assert [w for w, _ in t.deletes()] == [first, second]
+        assert set(_stones()) == {second, third}
+        assert _left(uid)[0]
+
+
+def case_tombstone_batch_stops_on_rate_limit_or_service_down():
+    for answer, error, stops in [
+        ({**LIMITED, "method": "DELETE", "status": 500}, "service_error", False),
+        (httpx.ReadTimeout("slow"), "service_error", False),
+        ({**LIMITED, "method": "DELETE"}, "http_429", True),
+        (httpx.ConnectError("refused"), "unreachable", True),
+    ]:
+        _reset()
+        uid = _agency_user()
+        first, second = (_stone(account, agency=uid) for account in ("first", "second"))
         with _tracker() as t:
-            t.answer = answer
+            t.by_watch[first] = answer
             r = _delete_user(uid)
             assert (r.status_code, r.json()["detail"]) == (409, PENDING), r.text
-            (tried,) = t.deletes()
-        assert _left(uid) == (True, KEY_3, TENANT), "user, key and binding stay for the job"
+            assert [w for w, _ in t.deletes()] == ([first] if stops else [first, second]), error
+        assert _left(uid) == (True, KEY_3, TENANT)
         left = _stones()
-        assert set(left) == watches and left[tried[0]].last_error == error, (error, left[tried[0]].last_error)
-        assert {s.agency_user_id for s in left.values()} == {uid}
-        assert _rows() == {}
-    with _tracker() as t:
-        r = _delete_user(uid)
-        assert r.status_code == 200, r.text
-    assert _left(uid) == (False, None, None)
-    assert _stones() == {}
+        assert set(left) == ({first, second} if stops else {first}) and left[first].last_error == error
+        with _tracker():
+            assert _delete_user(uid).status_code == 200
+        assert _left(uid) == (False, None, None) and _stones() == {}
 
 
 def case_user_delete_with_no_key_or_the_service_down_answers_409():

@@ -10,9 +10,10 @@ import uuid  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 import httpx  # noqa: E402
-from sqlalchemy import delete, select  # noqa: E402
+from sqlalchemy import delete, select, update  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 import account_health  # noqa: E402
@@ -76,12 +77,14 @@ class Tracker:
         else:
             assert request.url.path == want, request.url
         assert request.method == answer["method"], request.method
+        if "stream" in answer:
+            return httpx.Response(answer["status"], stream=answer["stream"], headers=answer.get("headers"))
         if "raw" in answer:
             return httpx.Response(answer["status"], content=answer["raw"], headers=answer.get("headers"))
         response = answer["response"]
         if answer is PUT_CREATED or answer is PUT_UPDATED:
             response = {**response, "watch_id": request.url.path.rsplit("/", 1)[-1]}
-        return httpx.Response(answer["status"], json=response)
+        return httpx.Response(answer["status"], json=response, headers=answer.get("headers"))
 
     def bearers(self) -> list[str]:
         return [r.headers.get("authorization", "") for r in self.calls]
@@ -166,10 +169,10 @@ def case_setup_shows_the_masked_key_to_the_owner_only_and_never_the_key():
         assert _put(KEY_1).status_code == 200
         owner = OWNER_A.get("/admin/leaks/setup")
         assert owner.json() == {"key": "set", "masked": _masked(KEY_1), "is_owner": True, "can_write": True,
-                                "brand": "Example Removal", "source": "own"}, owner.json()
+                                "brand": "Example Removal", "source": "own", "previews": True}, owner.json()
         admin = CHATTER_A.get("/admin/leaks/setup")
         assert admin.json() == {"key": "set", "masked": None, "is_owner": False, "can_write": True,
-                                "brand": "Example Removal", "source": "own"}, admin.json()
+                                "brand": "Example Removal", "source": "own", "previews": True}, admin.json()
         for r in (owner, admin):
             assert KEY_1 not in r.text and KEY_1[4:] not in r.text
         assert set(t.bearers()) == {f"Bearer {KEY_1}"}
@@ -191,7 +194,7 @@ def case_setup_with_no_key_makes_no_call():
     _reset()
     with _tracker() as t:
         assert _setup() == {"key": "missing", "masked": None, "is_owner": True, "can_write": True, "brand": None,
-                            "source": None}
+                            "source": None, "previews": True}
         assert t.calls == []
 
 
@@ -436,6 +439,53 @@ def _pushed(t: Tracker) -> list[dict]:
     return [json.loads(r.content) for r in t.calls if r.method == "PUT"]
 
 
+def case_enrol_rechecks_for_a_nonblank_key_after_profile_verification():
+    _connect()
+
+    async def verify(account_id: str):
+        async with get_session() as s:
+            await s.execute(update(UserLlmKey).where(
+                UserLlmKey.user_id == IDS["agency_a_owner"], UserLlmKey.provider == leak_tracker.PROVIDER,
+            ).values(api_key=" \t"))
+        return MIA_LIVE
+
+    with _tracker() as t, patch.object(account_page, "of_me", verify):
+        t.answer = PUT_CREATED
+        r = _enrol()
+        assert r.status_code == 404, r.text
+        assert not t.calls
+    assert not _watches()
+
+
+def case_enrol_rechecks_membership_after_profile_verification():
+    _connect()
+    master = fx.login_owner("agency_master")
+    agency = IDS["agency_a_owner"]
+
+    async def verify(account_id: str):
+        r = await asyncio.to_thread(
+            master.request, "DELETE", f"/admin/users/{agency}/accounts/{account_id}",
+            json={"admin_password": os.environ["ADMIN_PASSWORD"]},
+        )
+        assert r.status_code == 200, r.text
+        return MIA_LIVE
+
+    try:
+        with _tracker() as t, patch.object(account_page, "of_me", verify):
+            t.answer = PUT_CREATED
+            r = _enrol()
+            assert r.status_code == 404, r.text
+            assert not _watches()
+            assert not t.calls
+            assert _put("").status_code == 200
+    finally:
+        async def relink():
+            async with get_session() as s:
+                if await s.get(UserAccount, (agency, CREATOR)) is None:
+                    s.add(UserAccount(user_id=agency, account_id=CREATOR))
+        asyncio.run(relink())
+
+
 def case_enrol_with_consent_mints_the_watch_id_stores_who_and_when_and_pushes_the_identity():
     _connect()
     with _tracker() as t, _live({CREATOR: MIA_LIVE}):
@@ -483,8 +533,8 @@ def case_the_suggestion_is_the_live_identity_verified_or_empty_unverified():
     empty = {"username": "", "display_name": "", "verified": False}
     with _tracker() as t, _live({CREATOR: MIA_LIVE, FANSLY: MIA_LIVE}):
         body = OWNER_A.get(f"/admin/leaks/watches/{CREATOR}").json()
-        assert body == {"tracked": False, "identity": None, "synced": False, "lanes": None, "today": None,
-                        "removal": None, "offer": None, "leaks": [], "next_cursor": None, "stale": False, "fetched_at": None,
+        assert body == {"tracked": False, "identity": None, "synced": False, "lanes": None, "this_week": None,
+                        "next_refresh_at": None, "removal": None, "offer": None, "leaks": [], "next_cursor": None, "stale": False, "fetched_at": None,
                         "suggested": {"username": "miavale", "display_name": "Mia Vale", "verified": True}}, body
         body = OWNER_A.get(f"/admin/leaks/watches/{SECOND}").json()
         assert body["suggested"] == empty, "no live session: typed and unverified"
@@ -805,7 +855,7 @@ CREATORS = _golden("creators")
 MIA_W, ROWAN_W = (c["watch_id"] for c in CREATORS["response"]["creators"])
 DOWN = httpx.ConnectError("refused")
 UNKNOWN = {"seeded": False, "paused": False, "paused_since": None, "last_checked_at": None, "next_check_at": None,
-           "counts": None, "today": None}
+           "next_refresh_at": None, "counts": None, "this_week": None}
 
 
 def _rewatch(account: str, watch_id: str) -> None:
@@ -979,32 +1029,61 @@ def case_a_malformed_creator_entry_is_unreadable():
         assert r.status_code == 502, label
 
 
-def case_the_roster_passes_today_through_and_a_bad_today_reads_null():
+def case_the_roster_passes_this_week_through_and_a_bad_this_week_reads_null():
     mia, rowan = CREATORS["response"]["creators"]
-    assert mia["today"]["state"] == "complete" and rowan["today"]["state"] == "paused"
-    states = [(st, {**mia["today"], "state": st}, {**mia["today"], "state": st})
+    week = mia["this_week"]
+    assert week["state"] == "complete" and rowan["this_week"]["state"] == "paused"
+    assert mia["next_refresh_at"] == "2026-11-28T04:00:00Z" and rowan["next_refresh_at"] is None
+    states = [(st, {**week, "state": st}, {**week, "state": st})
               for st in ("pending", "complete", "partial", "coverage_reduced", "paused")]
-    for label, today, want in [
+    for label, this_week, want in [
         *states,
-        ("unknown keys dropped", {**mia["today"], "lanes": ["x"], "watch_id": "w_other"}, mia["today"]),
+        ("unknown keys dropped", {**week, "lanes": ["x"], "watch_id": "w_other"}, week),
         ("missing", None, None),
         ("not an object", "complete", None),
-        ("unknown state", {**mia["today"], "state": "done"}, None),
-        ("count a bool", {**mia["today"], "new": True}, None),
-        ("count a string", {**mia["today"], "gone": "1"}, None),
-        ("count missing", {k: v for k, v in mia["today"].items() if k != "came_back"}, None),
-        ("day a number", {**mia["today"], "day": 20261127}, None),
+        ("unknown state", {**week, "state": "done"}, None),
+        ("count a bool", {**week, "new": True}, None),
+        ("count a string", {**week, "gone": "1"}, None),
+        ("count missing", {k: v for k, v in week.items() if k != "came_back"}, None),
+        ("since a number", {**week, "since": 20261121}, None),
+        ("a pre-change today only", {**week, "day": "2026-11-27", "since": None}, None),
     ]:
         _connect()
         with _tracker() as t, _live({}):
             _enrol_three(t)
-            entry = {k: v for k, v in mia.items() if k != "today"} if today is None else {**mia, "today": today}
+            entry = {k: v for k, v in mia.items() if k != "this_week"} if this_week is None \
+                else {**mia, "this_week": this_week}
             t.routes["/v1/creators"] = {**CREATORS, "response": {**CREATORS["response"], "creators": [entry, rowan]}}
             body = _roster()
         assert body["rows"][0] == {**_local(CREATOR, "creator_a", "miavale"), "reachable": True,
-                                   **_service(MIA_W), "today": want}, (label, body["rows"][0])
-        assert body["rows"][1]["today"] == rowan["today"], label
-        assert body["rows"][2]["today"] is None, label
+                                   **_service(MIA_W), "this_week": want}, (label, body["rows"][0])
+        assert body["rows"][1]["this_week"] == rowan["this_week"] and body["rows"][1]["next_refresh_at"] is None, label
+        assert body["rows"][2]["this_week"] is None, label
+
+
+def case_a_pre_change_service_without_this_week_or_next_refresh_at_still_reads():
+    mia, rowan = CREATORS["response"]["creators"]
+    old = [{**{k: v for k, v in c.items() if k not in ("this_week", "next_refresh_at")},
+            "today": {"day": "2026-11-27", "state": "complete", "new": 1, "first_scan": 0, "came_back": 0, "gone": 0}}
+           for c in (mia, rowan)]
+    _connect()
+    with _tracker() as t, _live({}):
+        _enrol_three(t)
+        t.routes["/v1/creators"] = {**CREATORS, "response": {**CREATORS["response"], "creators": old}}
+        body = _roster()
+    assert [(r["this_week"], r["next_refresh_at"], r["reachable"]) for r in body["rows"]] == [(None, None, True)] * 3, body
+    assert not any("today" in r for r in body["rows"]), body
+
+
+def case_a_next_refresh_at_that_is_not_a_string_is_unreadable():
+    mia, rowan = CREATORS["response"]["creators"]
+    _connect()
+    with _tracker() as t, _live({}):
+        _enrol_three(t)
+        t.routes["/v1/creators"] = {**CREATORS, "response": {**CREATORS["response"],
+                                                             "creators": [{**mia, "next_refresh_at": 1764302400}, rowan]}}
+        r = OWNER_A.get("/admin/leaks/roster")
+    assert r.status_code == 502, r.text
 
 
 def case_a_key_save_drops_the_agencys_cached_copy():
@@ -1020,19 +1099,17 @@ def case_a_key_save_drops_the_agencys_cached_copy():
     assert body["stale"] is False and [r["reachable"] for r in body["rows"]] == [False, False, False], body
 
 
-def case_a_key_clear_drops_the_agencys_cached_copy():
+def case_clearing_the_key_with_enrolled_creators_is_refused():
     _connect()
     with _tracker() as t, _live({}):
         _enrol_three(t)
         t.routes["/v1/creators"] = CREATORS
         assert _roster()["rows"][0]["reachable"] is True
-        assert _put("").status_code == 200
-        assert leak_tracker._copies == {}
-        t.answer = ME
-        assert _put(KEY_1).status_code == 200
-        t.routes["/v1/creators"] = DOWN
-        body = _roster()
-    assert body["stale"] is False and [r["reachable"] for r in body["rows"]] == [False, False, False], body
+        r = _put("")
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == "Stop tracking every Creator before disconnecting"
+        assert _stored() == KEY_1
+        assert len(_watches()) == 3
 
 
 def case_the_identity_is_checked_like_the_form():

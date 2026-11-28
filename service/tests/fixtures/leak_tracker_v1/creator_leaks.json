@@ -8,6 +8,42 @@
         "came_back": false,
         "events": [
           {
+            "at": "2026-11-27T04:03:00Z",
+            "data": {
+              "first_scan": false,
+              "source": "google_images"
+            },
+            "type": "seen"
+          },
+          {
+            "at": "2026-11-27T04:03:00Z",
+            "data": {},
+            "type": "google_seen"
+          }
+        ],
+        "first_seen_at": "2026-11-27T04:03:00Z",
+        "found_on_first_scan": false,
+        "kind": "media",
+        "last_probe_at": null,
+        "last_up_at": null,
+        "leak_id": "lk_0005",
+        "leak_site": "example-leaks.test",
+        "origin_status": null,
+        "pill": "not_checked",
+        "preview": {
+          "seen_at": "2026-11-27T04:03:00Z",
+          "vertical": "images"
+        },
+        "sources": [
+          "google_images"
+        ],
+        "title": "miavale set 2",
+        "url": "https://pics.example-leaks.test/miavale/set-2"
+      },
+      {
+        "came_back": false,
+        "events": [
+          {
             "at": "2026-11-27T04:02:00Z",
             "data": {
               "first_scan": false,
@@ -30,6 +66,7 @@
         "leak_site": "example-leaks.test",
         "origin_status": null,
         "pill": "not_checked",
+        "preview": null,
         "sources": [
           "google_web"
         ],
@@ -57,6 +94,7 @@
         "leak_site": "example-index.test",
         "origin_status": null,
         "pill": "listed",
+        "preview": null,
         "sources": [
           "mega_index"
         ],
@@ -116,6 +154,7 @@
         "leak_site": "example-leaks.test",
         "origin_status": "live",
         "pill": "live",
+        "preview": null,
         "sources": [
           "google_web"
         ],
@@ -166,6 +205,7 @@
         "leak_site": "example-leaks.test",
         "origin_status": "gone",
         "pill": "cached",
+        "preview": null,
         "sources": [
           "google_web"
         ],

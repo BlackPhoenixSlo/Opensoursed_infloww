@@ -13,6 +13,7 @@ import { accountPlatform, AllPlatformsContext, usePlatform, type Platform } from
 import type { SeedRow } from "@/lib/creatorFreshness";
 import { dispatchCreatorFreshness } from "@/hooks/useCreatorFreshness";
 import { serverOffset, setRelayOffset } from "@/lib/ageClock";
+import { noteRoster } from "@/lib/unknownAccounts";
 
 const PAGE_LOADED_AT = Date.now();
 
@@ -72,6 +73,8 @@ export function useAccounts() {
     if (Number.isFinite(relayNow)) setRelayOffset(serverOffset(relayNow, at));
     dispatchCreatorFreshness(qc, principalId, { type: "seeded", rows: seedRows, receivedAt: at });
   }, [qc, principalId, seedRows, isChatterOnly, userId]);
+  const rosterAt = (isChatterOnly ? chatterQ : ownerQ).dataUpdatedAt;
+  useEffect(() => noteRoster(principalId, rosterAt), [principalId, rosterAt]);
   const seenPrincipal = useRef(principalId);
   useEffect(() => {
     if (seenPrincipal.current === principalId) return;

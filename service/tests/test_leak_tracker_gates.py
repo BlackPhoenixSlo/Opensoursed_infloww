@@ -146,9 +146,11 @@ REFUSED = {"PUT /admin/leaks/key": {"owner": 422, "writer": 403, "reader": 403},
            "PUT /admin/leaks/watches/{account_id}": {"owner": 422, "writer": 422, "reader": 403},
            "POST /admin/leaks/watches/{account_id}/tracking": {"owner": 422, "writer": 422, "reader": 403},
            "POST /admin/leaks/watches/{account_id}/offer-snooze": {"owner": 422, "writer": 422, "reader": 403},
+           "POST /admin/leaks/watches/{account_id}/refresh": {"owner": 404, "writer": 404, "reader": 403},
            "DELETE /admin/leaks/watches/{account_id}": {"owner": 200, "writer": 200, "reader": 403},
            "GET /admin/leaks/watches/{account_id}/offer": {"owner": 404, "writer": 404, "reader": 404},
-           "GET /admin/leaks/offer-video/{part}": {"owner": 404, "writer": 404, "reader": 404}}
+           "GET /admin/leaks/offer-video/{part}": {"owner": 404, "writer": 404, "reader": 404},
+           "GET /admin/leaks/watches/{account_id}/leaks/{leak_id}/thumb": {"owner": 404, "writer": 404, "reader": 404}}
 SNOOZE = "POST /admin/leaks/watches/{account_id}/offer-snooze"
 
 
@@ -352,7 +354,7 @@ def case_setup_is_exempt_from_the_key_gate():
             r = OWNER_A.get("/admin/leaks/setup")
             assert r.status_code == 200, r.text
             assert r.json() == {"key": "missing", "masked": None, "is_owner": True, "can_write": True,
-                                "brand": None, "source": None}
+                                "brand": None, "source": None, "previews": True}
             assert OWNER_A.get(PROBE).status_code == 404
             assert _flag(OWNER_A) is True
             _set_key("agency_a_owner", "   ")
@@ -400,7 +402,7 @@ def case_role_table():
                     _all_reached(CHATTER_A, label, writes=writes, offers=offers)
                     body = CHATTER_A.get("/admin/leaks/setup").json()
                     assert body == {"key": "set", "masked": None, "is_owner": False, "can_write": writes,
-                                    "brand": None, "source": "own"}, f"{label}: {body}"
+                                    "brand": None, "source": "own", "previews": True}, f"{label}: {body}"
                 else:
                     _all_404(CHATTER_A, label)
                 assert _flag(CHATTER_A) is passes, label
@@ -418,7 +420,7 @@ def case_team_leader_with_no_key_reaches_setup_only():
             assert _flag(CHATTER_A) is True
             body = CHATTER_A.get("/admin/leaks/setup").json()
             assert body == {"key": "missing", "masked": None, "is_owner": False, "can_write": False,
-                            "brand": None, "source": None}, body
+                            "brand": None, "source": None, "previews": True}, body
             assert CHATTER_A.get(PROBE).status_code == 404
     finally:
         _reset()

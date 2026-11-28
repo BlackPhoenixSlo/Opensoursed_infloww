@@ -4,10 +4,11 @@ import { useEffect, useReducer, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { TableSkeleton } from "@/components/ui/Skeleton";
-import { IfButton, IfModal, ifButtonClass } from "@/components/ui/infloww";
+import { IfModal, ifButtonClass } from "@/components/ui/infloww";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { relay, RelayError } from "@/lib/relay";
 
+import { leakKeys } from "./leakKeys";
 import { dayLabel, viewerZone } from "./leakView";
 import { PopupOverlay } from "./PopupOverlayLayer";
 import { SCENE_LABEL, type OfferVideo, type SceneKind, type Scenes } from "./popupOverlay";
@@ -104,7 +105,7 @@ export function StartRemovalPopup({ creatorId, scopeAccountId, offer, onClose }:
   onClose: () => void;
 }) {
   const read = useQuery<OfferRead>({
-    queryKey: ["leak-tracker", "offer", creatorId, scopeAccountId],
+    queryKey: leakKeys.offer(creatorId, scopeAccountId),
     queryFn: () => relay.get<OfferRead>(`/admin/leaks/watches/${creatorId}/offer`, { accountId: scopeAccountId }),
     gcTime: 0,
     staleTime: 0,
@@ -115,13 +116,11 @@ export function StartRemovalPopup({ creatorId, scopeAccountId, offer, onClose }:
     if (refused) onClose();
   }, [refused, onClose]);
   const shown = read.data?.offer ?? offer;
-  const contact = shown.contact_url ? (
+  const contact = (
     <a href={shown.contact_url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer"
       className={ifButtonClass("primary")}>
       {contactLabel(shown.brand)}
     </a>
-  ) : (
-    <IfButton variant="primary" disabled>{contactLabel(shown.brand)}</IfButton>
   );
   return (
     <IfModal title={popupTitle(shown.brand)} width={720} size="editor" onClose={onClose} footer={contact}>

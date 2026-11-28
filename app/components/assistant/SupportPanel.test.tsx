@@ -103,7 +103,7 @@ describe("Support tab", () => {
     await openHelp();
     await userEvent.click(await screen.findByRole("button", { name: "Support" }));
     expect(await screen.findByText(SUPPORT_EMPTY)).toBeInTheDocument();
-    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/support/read", {}));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/support/read", { up_to: 0 }));
     const box = screen.getByRole("textbox", { name: "Message Support" });
     await userEvent.type(box, "Need bulk tags{Shift>}{Enter}{/Shift}please{Enter}");
     await screen.findByText(/Need bulk tags/);
@@ -129,7 +129,7 @@ describe("Support tab", () => {
     await userEvent.click(screen.getByRole("button", { name: "Help assistant" }));
     await userEvent.click(await screen.findByRole("button", { name: "Support (new reply)" }));
     expect(await screen.findByText("On it")).toBeInTheDocument();
-    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/support/read", {}));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/support/read", { up_to: 2 }));
     await userEvent.click(screen.getByRole("button", { name: "Back to help" }));
     expect(screen.getByRole("button", { name: "Support" })).toBeInTheDocument();
   });
@@ -198,7 +198,7 @@ describe("Support tab", () => {
     expect(await screen.findByText("Fixed now")).toBeInTheDocument();
     expect(threadCalls()).toBe(before + 1);
     expect(box).toHaveValue("half typed");
-    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/support/read", {}));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/support/read", { up_to: 2 }));
     const vis = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     await act(async () => { vi.advanceTimersByTime(SUPPORT_THREAD_POLL_MS * 3); await new Promise((r) => setTimeout(r, 0)); });
     expect(threadCalls()).toBe(before + 1);

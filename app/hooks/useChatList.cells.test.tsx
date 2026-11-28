@@ -8,6 +8,7 @@ import { spliceCellHeads, useChatList } from "./useChatList";
 import { askCells, forgetCellMap, loadCellMap, useGreyAccounts } from "@/lib/cellMap";
 import { useRecentChatsLocal } from "./useRecentChatsLocal";
 import { RelayError, relay } from "@/lib/relay";
+import { markUnknown, resetUnknownAccounts, seenNow, unknownIds } from "@/lib/unknownAccounts";
 
 const accounts = [{ id: "10", platform: "onlyfans" }, { id: "20", platform: "onlyfans" }];
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ scope: { kind: "all" } }) }));
@@ -42,6 +43,7 @@ afterEach(() => {
   meta.remove();
   resetCellFlagForTests();
   get.mockReset();
+  resetUnknownAccounts();
 });
 
 it("explicit paging uses the direct intent and retries a failed Creator's own offset", async () => {
@@ -179,3 +181,52 @@ it("paints healthy cold seed rows and clears their fallback warning after inbox 
   });
   expect([...hook.result.current.grey]).toEqual([]);
 }, 4_000);
+
+const cellsMap = {
+  actor: "test", grant_gen: 1, placement_gen: 1, cells: ["a"],
+  accounts: accounts.map(({ id, platform }) => ({ account_id: id, platform, cell: "a" })),
+};
+const bundleAsks = () => get.mock.calls.filter(([path]) => path.startsWith("/admin/screens/inbox"))
+  .map(([path]) => new URLSearchParams(path.split("?")[1]).get("accounts"));
+
+it.each([
+  ["unknown to the Relay", { read: "chats", status: 404, detail: { error: "unknown_account", message: "Unknown account_id '20'" } }],
+  ["not on this screen", { read: "*", status: 404, detail: "not on this screen" }],
+])("All Models cell bundle: a Creator %s is marked and left out of the next read", async (_name, gone) => {
+  get.mockImplementation(async (path) => {
+    if (path === "/auth/cells") return cellsMap as never;
+    if (path.startsWith("/admin/screens/inbox")) return {
+      answers: new URLSearchParams(path.split("?")[1]).get("accounts")!.split(",").map((id) => id === "20"
+        ? { accountId: id, ...gone }
+        : { accountId: id, read: "chats", body: { list: [], hasMore: false } }),
+    } as never;
+    throw new Error(path);
+  });
+  const hook = renderHook(() => useChatList(), { wrapper });
+  await waitFor(() => expect(unknownIds().has("20")).toBe(true));
+  await waitFor(() => expect(hook.result.current.isFetching).toBe(false));
+  await act(async () => { await client.refetchQueries({ queryKey: ["chats"] }); });
+  expect(bundleAsks()).toEqual(["10,20", "10"]);
+});
+
+it("All-inbox resync leaves a marked Creator out of the head read and the tail repair", async () => {
+  get.mockImplementation(async (path, ctx) => {
+    if (path === "/auth/cells") return cellsMap as never;
+    const qs = new URLSearchParams(path.split("?")[1]);
+    const body = { list: [], hasMore: true };
+    if (path.startsWith("/admin/screens/inbox")) return {
+      answers: qs.get("accounts")!.split(",").map((id) => ({ accountId: id, read: "chats", body })),
+    } as never;
+    if (ctx?.accountId === "20" && qs.get("offset") === "25") throw new Error("offline");
+    return body as never;
+  });
+  const hook = renderHook(() => useChatList(), { wrapper });
+  await waitFor(() => expect(hook.result.current.hasMore).toBe(true));
+  await act(async () => { await hook.result.current.loadMore("loadmore"); });
+  markUnknown("20", seenNow());
+  get.mockClear();
+  const named = new Set(["10", "20"]);
+  await act(async () => { await spliceCellHeads(client, named, named); });
+  const asked = get.mock.calls.map(([path, ctx]) => new URLSearchParams(path.split("?")[1]).get("accounts") ?? ctx?.accountId);
+  expect(asked.some((ids) => ids?.split(",").includes("20"))).toBe(false);
+});

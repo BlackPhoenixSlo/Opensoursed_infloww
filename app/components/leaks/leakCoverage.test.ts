@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  DAY_MARKER_LABEL, dayMarker, FRESHNESS, LANE_ORDER, laneRows, rosterChips, skippedNames, todayLine, todayStrip,
-  type DayState, type LaneName, type LeakLane, type LeakToday, type TodayStrip,
+  DAY_MARKER_LABEL, dayMarker, FRESHNESS, LANE_ORDER, laneRows, rosterChips, skippedNames, weekLine, weekStrip,
+  type DayState, type LaneName, type LeakLane, type LeakWeek, type WeekStrip,
 } from "./leakCoverage";
 
 const V1 = join(__dirname, "..", "..", "..", "service", "tests", "fixtures", "leak_tracker_v1");
 const golden = (name: string) => JSON.parse(readFileSync(join(V1, `${name}.json`), "utf8")).response;
 const GOLDEN: LeakLane[] = golden("creator_one").lanes;
-const ROSTER: { today: LeakToday; paused: boolean }[] = golden("creators").creators;
+const ROSTER: { this_week: LeakWeek; paused: boolean }[] = golden("creators").creators;
 
 const NOW = new Date("2026-11-27T12:00:00Z");
 const lane = (over: Partial<LeakLane> = {}): LeakLane => ({
@@ -23,11 +23,11 @@ const TRIMMED = [{ field: "alias:2", value: "Mia V" }, { field: "alias:0", value
   { field: "x", value: "miavale" }, { field: "instagram", value: "mia.vale" }];
 
 describe("laneRows", () => {
-  it("lists all six lanes in order with their labels, filling a missing one as Not run yet", () => {
+  it("lists all five weekly lanes in order with their labels, filling a missing one as Not run yet", () => {
     const rows = laneRows([lane({ lane: "mega_lookup", cadence: "daily" })], NOW);
     expect(rows.map((r) => [r.lane, r.label])).toEqual([
       ["origin_probe", "Link check"], ["mega_lookup", "Mega"], ["listing_recheck", "Leak-site pages"],
-      ["google_fresh", "Google (past day)"], ["google_full", "Google full search"], ["registry_crawl", "Leak-site search"],
+      ["google_full", "Google full search"], ["registry_crawl", "Leak-site search"],
     ]);
     expect(rows.filter((r) => r.lane !== "mega_lookup").every((r) => r.chip === "Not run yet")).toBe(true);
   });
@@ -37,7 +37,6 @@ describe("laneRows", () => {
       ["Link check", "OK", "last OK 8 h ago", "next attempt Sat 28 Nov", null],
       ["Mega", "Failed", "last OK 1 d ago", "next attempt Sat 28 Nov", null],
       ["Leak-site pages", "Not run yet", null, null, null],
-      ["Google (past day)", "Not run yet", null, null, null],
       ["Google full search", "Not run yet", null, null, null],
       ["Leak-site search", "Not run yet", null, null, null],
     ]);
@@ -114,29 +113,29 @@ describe("skippedNames", () => {
 
 describe("FRESHNESS", () => {
   it("states the promise and never says next full search", () => {
-    expect(FRESHNESS).toBe("Known links are checked daily. New Google results show within a day, or within a week on a reduced day. "
-      + "Images, videos and new sites show within a week.");
+    expect(FRESHNESS).toBe("Each Creator is checked once a week on its scan day, and again when an Owner or Admin presses Refresh now "
+      + "(at most once a day). Images, videos and new sites show after the next check.");
     expect(FRESHNESS.toLowerCase()).not.toContain("next full search");
   });
 });
 
-const day = (over: Partial<LeakToday> = {}): LeakToday => ({
-  day: "2026-11-27", state: "complete", new: 0, first_scan: 0, came_back: 0, gone: 0, ...over,
+const day = (over: Partial<LeakWeek> = {}): LeakWeek => ({
+  since: "2026-11-21", state: "complete", new: 0, first_scan: 0, came_back: 0, gone: 0, ...over,
 });
-const watch = (today: LeakToday | null, over: { paused?: boolean; on?: boolean } = {}) =>
-  ({ today, paused: false, on: true, ...over });
-const strip = (over: Partial<TodayStrip> = {}): TodayStrip =>
+const watch = (week: LeakWeek | null, over: { paused?: boolean; on?: boolean } = {}) =>
+  ({ this_week: week, paused: false, on: true, ...over });
+const strip = (over: Partial<WeekStrip> = {}): WeekStrip =>
   ({ new: 0, cameBack: 0, gone: 0, firstRun: 0, checked: 0, partial: 0, total: 0, ...over });
 
-describe("todayStrip", () => {
+describe("weekStrip", () => {
   it("reads the service golden: a paused watch is outside the total", () => {
-    expect(todayStrip(ROSTER.map((c) => watch(c.today, { paused: c.paused })))).toEqual(strip({ new: 1, checked: 1, total: 1 }));
+    expect(weekStrip(ROSTER.map((c) => watch(c.this_week, { paused: c.paused })))).toEqual(strip({ new: 1, cameBack: 1, gone: 2, checked: 1, total: 1 }));
   });
 
-  it.each<[string, ReturnType<typeof watch>[], TodayStrip | null]>([
+  it.each<[string, ReturnType<typeof watch>[], WeekStrip | null]>([
     ["nothing tracked", [], null],
-    ["no watch carries a day yet", [watch(null), watch(null, { paused: true })], null],
-    ["sums the day's counts", [watch(day({ new: 2, came_back: 1, gone: 3 })), watch(day({ new: 1, gone: 1 }))],
+    ["no watch carries a week yet", [watch(null), watch(null, { paused: true })], null],
+    ["sums the week's counts", [watch(day({ new: 2, came_back: 1, gone: 3 })), watch(day({ new: 1, gone: 1 }))],
       strip({ new: 3, cameBack: 1, gone: 4, checked: 2, total: 2 })],
     ["first-run finds count apart from new", [watch(day({ first_scan: 12 })), watch(day({ new: 1, first_scan: 2 }))],
       strip({ new: 1, firstRun: 14, checked: 2, total: 2 })],
@@ -154,35 +153,35 @@ describe("todayStrip", () => {
       watch(day({ new: 1 }), { paused: true }), watch(day({ came_back: 1 }), { on: false }), watch(day())],
       strip({ new: 3, cameBack: 1, gone: 1, firstRun: 4, checked: 1, total: 1 })],
   ])("%s", (_label, watches, want) => {
-    expect(todayStrip(watches)).toEqual(want);
+    expect(weekStrip(watches)).toEqual(want);
   });
 });
 
-describe("todayLine", () => {
-  it.each<[string, TodayStrip, string]>([
-    ["a quiet day", strip({ checked: 3, total: 3 }), "0 new today · 0 came back · 0 gone · checked 3 of 3"],
-    ["the day's change", strip({ new: 2, cameBack: 1, gone: 4, checked: 2, total: 3 }),
-      "2 new today · 1 came back · 4 gone · checked 2 of 3"],
-    ["partial when non-zero", strip({ checked: 1, partial: 2, total: 3 }), "0 new today · 0 came back · 0 gone · checked 1 of 3 · 2 partial"],
+describe("weekLine", () => {
+  it.each<[string, WeekStrip, string]>([
+    ["a quiet week", strip({ checked: 3, total: 3 }), "0 new this week · 0 came back · 0 gone · checked 3 of 3"],
+    ["the week's change", strip({ new: 2, cameBack: 1, gone: 4, checked: 2, total: 3 }),
+      "2 new this week · 1 came back · 4 gone · checked 2 of 3"],
+    ["partial when non-zero", strip({ checked: 1, partial: 2, total: 3 }), "0 new this week · 0 came back · 0 gone · checked 1 of 3 · 2 partial"],
     ["first scans when non-zero", strip({ new: 1, firstRun: 14, checked: 2, total: 2 }),
-      "1 new today · 0 came back · 0 gone · checked 2 of 2 · 14 found on first scans"],
+      "1 new this week · 0 came back · 0 gone · checked 2 of 2 · 14 found on first scans"],
     ["both", strip({ firstRun: 5, partial: 1, total: 2 }),
-      "0 new today · 0 came back · 0 gone · checked 0 of 2 · 1 partial · 5 found on first scans"],
+      "0 new this week · 0 came back · 0 gone · checked 0 of 2 · 1 partial · 5 found on first scans"],
   ])("%s", (_label, s, want) => {
-    expect(todayLine(s)).toBe(want);
+    expect(weekLine(s)).toBe(want);
   });
 });
 
 describe("dayMarker", () => {
-  it.each<[string, LeakToday | null, string | null]>([
+  it.each<[string, LeakWeek | null, string | null]>([
     ["complete", day(), null],
     ["partial", day({ state: "partial" }), "Partial check"],
     ["coverage_reduced", day({ state: "coverage_reduced" }), "Reduced"],
     ["pending", day({ state: "pending" }), "Checking…"],
     ["paused", day({ state: "paused" }), "Paused"],
-    ["no day read", null, null],
-  ])("%s", (_label, today, label) => {
-    const m = dayMarker(today);
+    ["no week read", null, null],
+  ])("%s", (_label, week, label) => {
+    const m = dayMarker(week);
     expect(m && DAY_MARKER_LABEL[m]).toBe(label);
   });
 
@@ -195,12 +194,12 @@ describe("dayMarker", () => {
 describe("rosterChips", () => {
   it("maps each row with a day marker to its chip and leaves the rest out", () => {
     expect(rosterChips([
-      { account_id: "acc-a", today: day() },
-      { account_id: "acc-b", today: null },
-      { account_id: "acc-c", today: day({ state: "paused" }) },
-      { account_id: "acc-d", today: day({ state: "partial" }) },
-      { account_id: "acc-e", today: day({ state: "pending" }) },
-      { account_id: "acc-f", today: day({ state: "coverage_reduced" }) },
+      { account_id: "acc-a", this_week: day() },
+      { account_id: "acc-b", this_week: null },
+      { account_id: "acc-c", this_week: day({ state: "paused" }) },
+      { account_id: "acc-d", this_week: day({ state: "partial" }) },
+      { account_id: "acc-e", this_week: day({ state: "pending" }) },
+      { account_id: "acc-f", this_week: day({ state: "coverage_reduced" }) },
     ])).toEqual({ "acc-c": "Paused", "acc-d": "Partial check", "acc-e": "Checking…", "acc-f": "Reduced" });
     expect(rosterChips([])).toEqual({});
   });

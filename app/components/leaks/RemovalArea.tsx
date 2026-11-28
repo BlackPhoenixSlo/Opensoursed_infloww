@@ -1,16 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { type InfiniteData, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { IfButton, IfCard } from "@/components/ui/infloww";
 import { relay } from "@/lib/relay";
 
+import { afterWatchWrite, leakKeys } from "./leakKeys";
 import {
   CONTACT_CTA, followLine, hiddenUntil, leadLine, NOT_NOW, NOTICES_NEVER, OFFER_HEADING, REMOVAL_STARTING,
   type Removal, type RemovalOffer,
 } from "./removalOffer";
-import { dayLabel, viewerZone, when } from "./leakView";
+import { dayLabel, viewerZone, when, withSnooze, type LeakRemovalPage } from "./leakView";
 import { StartRemovalPopup } from "./StartRemovalPopup";
 
 export function RemovalArea({ creatorId, scopeAccountId, removal, offer }: {
@@ -20,18 +21,26 @@ export function RemovalArea({ creatorId, scopeAccountId, removal, offer }: {
   offer: RemovalOffer | null;
 }) {
   const qc = useQueryClient();
-  const [until, setUntil] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const snooze = useMutation({
     mutationFn: () => relay.post<{ offer_snoozed_until: string }>(
       `/admin/leaks/watches/${creatorId}/offer-snooze`, { snoozed: true }, { accountId: scopeAccountId }),
-    onSuccess: (r) => {
-      setUntil(r.offer_snoozed_until);
-      void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId, scopeAccountId] });
+    onSuccess: async ({ offer_snoozed_until }) => {
+      const watchKey = leakKeys.watch(creatorId, scopeAccountId);
+      qc.removeQueries({ queryKey: leakKeys.offer(creatorId, scopeAccountId) });
+      await qc.cancelQueries({ queryKey: watchKey });
+      qc.setQueryData<InfiniteData<LeakRemovalPage>>(
+        watchKey, (data) => data && {
+          ...data,
+          pages: data.pages.map((page) => withSnooze(page, offer_snoozed_until)),
+        },
+      );
+      return afterWatchWrite(qc, creatorId);
     },
   });
   if (!removal || removal.view === "hidden") return null;
   const now = new Date();
+  const until = removal.offer_snoozed_until;
   const tz = viewerZone();
   const updated = removal.notices_updated_at && when(removal.notices_updated_at, now, tz);
   return (

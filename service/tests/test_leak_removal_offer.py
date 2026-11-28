@@ -104,7 +104,7 @@ def case_every_removal_area_row_at_47h_49h_and_never():
                 label = (status, hours)
                 counts = TRACK if fresh and view in ("track", "past") else None
                 assert body["removal"] == {"status": status, "view": view, "notices_updated_at": notices,
-                                           "stale": not fresh, "counts": counts}, (label, body["removal"])
+                                           "stale": not fresh, "counts": counts, "offer_snoozed_until": None}, (label, body["removal"])
                 assert body["offer"] == (OFFER if offers else None), (label, body["offer"])
 
 
@@ -238,15 +238,15 @@ def case_brand_and_contact_url_must_be_valid():
         assert body["offer"] is None and body["removal"]["stale"] is True, body
 
 
-def case_no_offer_key_on_roster_rows_or_the_today_strip():
+def case_no_offer_key_on_roster_rows_or_the_week_strip():
     _connect()
     with _tracker() as t, _live({}):
         _enrol_three(t)
         t.routes["/v1/creators"] = CREATORS
         body = _roster()
-    assert body["rows"] and all(r["today"] is None or isinstance(r["today"], dict) for r in body["rows"])
+    assert body["rows"] and all(r["this_week"] is None or isinstance(r["this_week"], dict) for r in body["rows"])
     for r in body["rows"]:
-        for part in (r, r["today"] or {}):
+        for part in (r, r["this_week"] or {}):
             assert not {"offer", "offer_counts", "first_daily_at", "contact_url"} & set(part), part
     assert "offer" not in body
 
@@ -265,6 +265,7 @@ def case_not_now_snoozes_the_offer_for_seven_days():
         assert r.json() == {"offer_snoozed_until": stored.replace(microsecond=0).isoformat() + "Z"}, r.json()
         body = _drill()
         assert (body["offer"], body["removal"]["view"]) == (None, "offer"), body
+        assert body["removal"]["offer_snoozed_until"] == r.json()["offer_snoozed_until"]
         _serve(t, one={"offer_counts": {"visible": 9, "came_back_30d": 5, "cached": 4, "live_30d": 3, "new_7d": 2}})
         t.routes[LEAKS] = {**CREATOR_LEAKS, "response": {**CREATOR_LEAKS["response"],
                            "leaks": CREATOR_LEAKS["response"]["leaks"] * 2}}
@@ -275,7 +276,8 @@ def case_not_now_snoozes_the_offer_for_seven_days():
                 await s.execute(update(LeakWatch).where(LeakWatch.account_id == CREATOR).values(
                     offer_snoozed_until=datetime.utcnow() - timedelta(seconds=1)))
         asyncio.run(_expire())
-        assert _drill()["offer"] is not None, "a past snooze no longer hides the card"
+        expired = _drill()
+        assert expired["offer"] is not None and expired["removal"]["offer_snoozed_until"] is None, expired
 
 
 def case_snooze_is_owner_or_admin_only_and_checks_its_body():
@@ -381,8 +383,9 @@ def case_the_popup_read_answers_the_offer_preview_video_scenes_and_last_checked(
     assert [x["leak_id"] for x in body["scenes"]["google"]] == ["lk_0001", "lk_0002"], body["scenes"]
     assert body["scenes"]["google"][0] == {"leak_id": "lk_0001", "leak_site": "example-leaks.test", "kind": "page",
                                           "title": "miavale onlyfans leak", "pill": "live", "preview": None}
-    assert {k: v for k, v in body["scenes"].items() if k != "google"} == {
-        "google_images": [], "mega": [], "forum": [], "x": []}, body["scenes"]
+    assert body["scenes"]["mega"] == [{"leak_id": "lk_0003", "leak_site": "example-index.test", "kind": "mega",
+                                       "title": "miavale folder", "pill": "listed", "preview": None}]
+    assert all(not body["scenes"][kind] for kind in ("google_images", "forum", "x")), body["scenes"]
 
 
 def case_a_missing_or_bad_video_reads_null():
@@ -440,7 +443,7 @@ def case_overlay_scenes_maps_each_kind_caps_and_orders_newest_seen_first():
         _leak(6, pill="gone"), _leak(7, pill="listed"), _leak(8, pill="not_checked"), _leak(9, pill="cached"),
         *(_leak(10 + i, kind="media", sources=("google_images",), preview=shot) for i in range(7)),
         _leak(20, kind="media", sources=("google_images",)),
-        _leak(21, kind="mega", sources=("mega_index",)), _leak(22, kind="mega", sources=("mega_index",), pill="gone"),
+        _leak(21, kind="mega", sources=("mega_index",), pill="listed"), _leak(22, kind="mega", sources=("mega_index",), pill="gone"),
         _leak(23, sources=("site_search",), site="forum.example.test"),
         _leak(24, sources=("site_search",), site="x.com"), _leak(25, sources=("x_search",), site="twitter.com"),
     ]
@@ -454,7 +457,7 @@ def case_overlay_scenes_maps_each_kind_caps_and_orders_newest_seen_first():
         "x": ["lk_0025", "lk_0024"],
     }, ids
     assert scenes["mega"] == [{"leak_id": "lk_0021", "leak_site": "example-leaks.test", "kind": "mega", "title": "t21",
-                               "pill": "live", "preview": None}]
+                               "pill": "listed", "preview": None}]
     assert all(x["preview"] is None for v in scenes.values() for x in v), "previews stay off in the CRM"
     assert leak_removal.overlay_scenes([]) == {k: [] for k in ("google", "google_images", "mega", "forum", "x")}
 
@@ -714,7 +717,7 @@ def case_the_offer_video_bounds_size_and_concurrent_streams():
         assert not leak_tracker_api._streams.get(IDS["agency_a_owner"]), "every stream released its slot"
 
 
-def _video_call(send_body):
+def _video_call(send_body, *, send_start=None):
     cookie = "; ".join(f"{k}={v}" for k, v in OWNER_A.cookies.items()).encode()
     scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1", "method": "GET",
              "scheme": "http", "path": "/admin/leaks/offer-video/video", "raw_path": b"/admin/leaks/offer-video/video",
@@ -725,6 +728,8 @@ def _video_call(send_body):
         await asyncio.Event().wait()
 
     async def send(message):
+        if message["type"] == "http.response.start" and send_start:
+            send_start(message)
         if message["type"] == "http.response.body":
             await send_body(message)
     return asyncio.ensure_future(OWNER_A.app(scope, receive, send))
@@ -774,6 +779,76 @@ def case_a_client_that_leaves_mid_stream_frees_its_slot():
             raise leak_tracker.httpx.ReadError("upstream cut")
         t.routes[VIDEO_PATH] = {**_part(status=200), "raw": cut()}
         assert _asgi(lambda message: asyncio.sleep(0)) == 0, "a truncated upstream frees the slot"
+
+
+def case_stalled_video_releases_the_slot_before_the_asgi_wait_expires():
+    _connect()
+    with _tracker() as t, _live({}):
+        _tracked(t)
+        original = leak_tracker_api.STREAM_FOR_S
+        leak_tracker_api.STREAM_FOR_S = 0.25
+        try:
+            async def stall():
+                await asyncio.Event().wait()
+
+            class StalledStream(leak_tracker.httpx.AsyncByteStream):
+                def __init__(self):
+                    self.closed = asyncio.Event()
+                    self.reading = asyncio.Event()
+
+                async def __aiter__(self):
+                    for _ in range(3):
+                        yield BYTES * 64
+                    self.reading.set()
+                    await stall()
+
+                async def aclose(self):
+                    self.closed.set()
+
+            async def drive(stall_client):
+                upstream = StalledStream()
+                sending = asyncio.Event()
+                part = _part(status=200, headers={"content-length": str(4 * 64 * len(BYTES))})
+                part["stream"] = upstream
+                t.routes[VIDEO_PATH] = part
+
+                starts, bodies = [], []
+
+                async def send(message):
+                    bodies.append(message.get("body", b""))
+                    if stall_client:
+                        sending.set()
+                        await stall()
+
+                task = _video_call(send, send_start=starts.append)
+                try:
+                    stalled = sending if stall_client else upstream.reading
+                    await asyncio.wait_for(stalled.wait(), 1)
+                    assert leak_tracker_api._streams.get(IDS["agency_a_owner"]) == 1
+                    await asyncio.wait_for(upstream.closed.wait(), 1)
+                    assert not leak_tracker_api._streams.get(IDS["agency_a_owner"])
+                    if not stall_client:
+                        assert dict(starts[0]["headers"])[b"content-length"] == part["headers"]["content-length"].encode()
+                        assert sum(map(len, bodies)) == 3 * 64 * len(BYTES)
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+            _abandoned_generators_stay_open(lambda: drive(False))
+            _abandoned_generators_stay_open(lambda: drive(True))
+        finally:
+            leak_tracker_api.STREAM_FOR_S = original
+
+
+def case_stale_creator_details_never_supply_fresh_removal_counts():
+    _connect()
+    with _tracker() as t, _live({}):
+        _tracked(t)
+        _serve(t, one={"service_status": "active", "removal": TRACK})
+        assert _drill()["removal"]["counts"] == TRACK
+        t.routes[ONE] = DOWN
+        stale = _drill()["removal"]
+        assert stale["stale"] is True and stale["counts"] is None, stale
 
 
 def case_a_non_http_error_opening_the_stream_closes_the_client_and_frees_the_slot():

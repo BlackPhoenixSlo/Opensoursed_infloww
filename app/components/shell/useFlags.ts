@@ -2,11 +2,13 @@
 
 import { useAppliedSettings, type FeatureFlags } from "@/lib/appliedSettings";
 
-const NO_FLAGS: FeatureFlags = { fansly_manager: false, leak_tracker: false };
+const NO_FLAGS: FeatureFlags = { fansly_manager: true, leak_tracker: false };
 
-// undefined until the first read answers; every flag off when no data arrived, so a dark page never shows by accident.
 export function useFlags(): FeatureFlags | undefined {
   const q = useAppliedSettings();
   if (q.isPending) return undefined;
-  return q.data?.flags ?? NO_FLAGS;
+  const flags = q.data?.flags ?? NO_FLAGS;
+  // Public builds ship without app/public/fansly-mirror (never public), so their Fansly Manager would be iframe 404s.
+  if (flags.fansly_manager && process.env.NEXT_PUBLIC_FANSLY_MIRROR_ABSENT === "1") return { ...flags, fansly_manager: false };
+  return flags;
 }

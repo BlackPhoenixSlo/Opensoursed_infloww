@@ -1,6 +1,7 @@
 import { parseUtc } from "@/lib/format";
 
-import type { LeakToday } from "./leakCoverage";
+import type { LeakWeek } from "./leakCoverage";
+import type { Removal, RemovalOffer } from "./removalOffer";
 
 export const NOT_TRACKED = "Not tracked";
 export const NOT_CHECKED = "Not checked yet";
@@ -34,7 +35,7 @@ export type LeakRosterRow = {
   last_checked_at: string | null;
   next_check_at: string | null;
   counts: LeakCounts | null;
-  today: LeakToday | null;
+  this_week: LeakWeek | null;
 };
 
 export type LeakPill = "live" | "cached" | "gone" | "listed" | "not_checked";
@@ -57,9 +58,14 @@ export type Leak = {
   origin_status: string | null;
   account_id?: string;
   events?: LeakEvent[];
+  preview: LeakPreview | null;
 };
 
+export type LeakPreview = { vertical: "images" | "videos"; seen_at: string };
+
 export type LeakPage = { leaks: Leak[] | null; next_cursor: string | null; stale: boolean };
+
+export type LeakRemovalPage = LeakPage & { removal: Removal | null; offer: RemovalOffer | null };
 
 export type LeakRoster = {
   rows: LeakRosterRow[];
@@ -132,9 +138,9 @@ export function entryNote(row: LeakRosterRow, now: Date, tz: string): string {
   const c = row.counts;
   if (!row.seeded || !c) return NOT_CHECKED;
   const total = c.live + c.cached + c.gone + c.listed + c.not_checked;
-  const fresh = row.today?.new ?? c.new_today;
+  const fresh = row.this_week?.new ?? 0;
   if (fresh === 0 && c.found_on_first_scan === total) return `Found on first scan · ${c.found_on_first_scan}`;
-  return fresh ? `${c.live} up now · ${fresh} new today` : `${c.live} up now`;
+  return fresh ? `${c.live} up now · ${fresh} new this week` : `${c.live} up now`;
 }
 
 export function rosterNotes(roster: LeakRoster, now: Date, tz: string): Record<string, string> {
@@ -160,6 +166,11 @@ export function untrack(roster: LeakRoster, accountId: string): LeakRoster {
 
 export const withoutCreator = (page: LeakPage, accountId: string): LeakPage =>
   page.leaks ? { ...page, leaks: page.leaks.filter((l) => l.account_id !== accountId) } : page;
+
+export const withSnooze = (page: LeakRemovalPage, snoozedUntil: string): LeakRemovalPage =>
+  page.removal && page.offer
+    ? { ...page, removal: { ...page.removal, offer_snoozed_until: snoozedUntil }, offer: null }
+    : page;
 
 export const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -231,14 +242,11 @@ export function headerFacts(row: LeakRosterRow, now: Date, tz: string): HeaderFa
   const last = row.last_checked_at && when(row.last_checked_at, now, tz);
   const next = row.next_check_at && nextCheck(row.next_check_at, now, tz);
   const checked = !row.reachable ? NOT_REACHABLE : last ? `Last checked ${last}` : next || NOT_CHECKED;
-  return {
-    counts: c && [
-      ["Up now", String(c.live), c.cached ? `${c.cached} cached` : null],
-      ["Gone", String(c.gone), null],
-      ["Listed", String(c.listed), null],
-      ["New today", String(row.today?.new ?? c.new_today), null],
-    ],
-    tracking,
-    checked,
-  };
+  const counts: HeaderFacts["counts"] = c && [
+    ["Up now", String(c.live), c.cached ? `${c.cached} cached` : null],
+    ["Gone", String(c.gone), null],
+    ["Listed", String(c.listed), null],
+  ];
+  if (counts && row.this_week) counts.push(["New this week", String(row.this_week.new), null]);
+  return { counts, tracking, checked };
 }

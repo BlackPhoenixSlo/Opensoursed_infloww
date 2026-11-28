@@ -760,7 +760,9 @@ def case_activation_reasserts_healthy_creators_while_one_is_unreadable() -> None
             task = asyncio.create_task(reservations.retry_activations())
             try:
                 assert await asyncio.to_thread(done.wait, 4), "unreadable Creator blocked healthy activation"
-                broken.write_text('{"session":"session.json"}')
+                fixed = broken.with_suffix(".tmp")
+                fixed.write_text('{"session":"session.json"}')
+                fixed.replace(broken)
                 assert await asyncio.to_thread(repaired.wait, 4)
             finally:
                 task.cancel()

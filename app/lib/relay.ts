@@ -82,7 +82,7 @@ export interface RelayContext {
 }
 
 
-function buildUrl(path: string, ctx?: RelayContext, opts?: { refresh?: boolean }): string {
+export function buildUrl(path: string, ctx?: RelayContext, opts?: { refresh?: boolean }): string {
   const url = new URL(path, RELAY_BASE || window.location.origin);
   const tok = ctx?.shareToken ?? resolveShareToken();
   if (tok && !url.searchParams.has("t")) url.searchParams.set("t", tok);
@@ -175,8 +175,13 @@ export function isDeepRefused(error: unknown): boolean {
   return error instanceof RelayError && error.status === 428;
 }
 
+export function isUnknownAccount(error: unknown): boolean {
+  return error instanceof RelayError && error.status === 404 &&
+    (error.body as { detail?: { error?: unknown } } | null)?.detail?.error === "unknown_account";
+}
+
 export function chatListRetry(failures: number, error: unknown): boolean {
-  return failures < 1 && !isDeepRefused(error) && !isRateLimited(error);
+  return failures < 1 && !isDeepRefused(error) && !isRateLimited(error) && !isUnknownAccount(error);
 }
 
 export const STALE_CELL_GEN_EVENT = "infloww:stale-cell-gen";

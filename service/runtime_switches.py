@@ -92,6 +92,10 @@ SWITCHES: tuple[Switch, ...] = (
            "Creators › Leak tracker. Off: the page is hidden and every Leak tracker route answers 404. "
            "Turns on only from the server's env; here it can only be forced off.",
            "bool", False, _truthy, "leak_tracker.deployment_on", off_only=True),
+    Switch("LEAK_TRACKER_PREVIEWS", "Leak tracker previews",
+           "On: the Leak tracker shows Google's thumbnails of media Leaks, blurred until clicked. Off: Leak reads "
+           "carry no preview, the thumbnail route answers 404 and the page shows text tiles.",
+           "bool", True, _not_off, "leak_tracker_api.previews_on"),
 )
 BY_NAME: dict[str, Switch] = {s.env: s for s in SWITCHES}
 

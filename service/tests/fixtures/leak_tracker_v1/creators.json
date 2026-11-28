@@ -19,7 +19,8 @@
         },
         "first_daily_at": "2026-11-27T04:05:00Z",
         "last_checked_at": "2026-11-27T04:05:00Z",
-        "next_check_at": "2026-11-28T04:00:00Z",
+        "next_check_at": "2026-11-30T04:00:00Z",
+        "next_refresh_at": "2026-11-28T04:00:00Z",
         "offer_counts": {
           "cached": 1,
           "came_back_30d": 1,
@@ -33,12 +34,12 @@
         "seeded": true,
         "service_status": "none",
         "service_status_since": null,
-        "today": {
-          "came_back": 0,
-          "day": "2026-11-27",
+        "this_week": {
+          "came_back": 1,
           "first_scan": 0,
-          "gone": 0,
+          "gone": 2,
           "new": 1,
+          "since": "2026-11-21",
           "state": "complete"
         },
         "watch_id": "w_miavale_0001"
@@ -57,7 +58,8 @@
         },
         "first_daily_at": null,
         "last_checked_at": null,
-        "next_check_at": "2026-11-28T04:00:00Z",
+        "next_check_at": "2026-12-01T04:00:00Z",
+        "next_refresh_at": null,
         "offer_counts": {
           "cached": 0,
           "came_back_30d": 0,
@@ -71,12 +73,12 @@
         "seeded": false,
         "service_status": "none",
         "service_status_since": null,
-        "today": {
+        "this_week": {
           "came_back": 0,
-          "day": "2026-11-27",
           "first_scan": 0,
           "gone": 0,
           "new": 0,
+          "since": "2026-11-21",
           "state": "paused"
         },
         "watch_id": "w_rowanash_0002"

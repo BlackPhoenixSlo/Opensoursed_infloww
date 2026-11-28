@@ -1,44 +1,74 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { TableSkeleton } from "@/components/ui/Skeleton";
-import { EmptyState, IfButton } from "@/components/ui/infloww";
+import { EmptyState, IfButton, IfSegmented } from "@/components/ui/infloww";
 
+import { leakKeys } from "./leakKeys";
 import { DeleteWatch } from "./DeleteWatch";
 import { IdentityForm, type IdentityStart } from "./IdentityForm";
 import { LeakCoverageSection } from "./LeakCoverageSection";
-import type { LeakLane } from "./leakCoverage";
+import type { LeakLane, LeakWeek } from "./leakCoverage";
 import { LeakPages } from "./LeakList";
+import { NO_PREVIEWS, previewTiles } from "./leakPreview";
+import { PreviewGrid } from "./LeakPreviewTiles";
 import { useLeakPages } from "./leakRead";
-import { headerFacts, NOT_CHECKED, NOT_TRACKED, pausedLabel, viewerZone, type LeakPage, type LeakRosterRow } from "./leakView";
+import { recheck } from "./leakRefresh";
+import { RefreshButton } from "./RefreshButton";
+import { headerFacts, NOT_CHECKED, NOT_TRACKED, PAUSED, pausedLabel, viewerZone, type Leak, type LeakPage, type LeakRemovalPage, type LeakRosterRow } from "./leakView";
 import { RemovalArea } from "./RemovalArea";
-import type { Removal, RemovalOffer } from "./removalOffer";
 import { TrackingSwitch } from "./TrackingSwitch";
 
-type LeakWatchRead = LeakPage & {
+type LeakWatchRead = LeakRemovalPage & {
   tracked: boolean;
   identity: (IdentityStart & { platform: string; on: boolean }) | null;
   suggested: IdentityStart | null;
   synced: boolean;
   lanes: LeakLane[] | null;
-  removal: Removal | null;
-  offer: RemovalOffer | null;
+  this_week: LeakWeek | null;
+  next_refresh_at: string | null;
 };
 
 const EMPTY: IdentityStart = { username: "", verified: false, display_name: "" };
 
-export function LeakCreator({ creatorId, scopeAccountId, name, canWrite, brand, row, onDeleted }: {
+export type LeakViewMode = "list" | "google";
+
+const VIEWS: { value: LeakViewMode; label: string }[] = [{ value: "list", label: "List" }, { value: "google", label: "Google" }];
+
+export function LeakCreator({ creatorId, scopeAccountId, name, canWrite, brand, previews, view, onView, row, onDeleted }: {
   creatorId: string;
   scopeAccountId: string | null;
   name: string;
   canWrite: boolean;
   brand: string | null;
+  previews: boolean;
+  view: LeakViewMode;
+  onView: (view: LeakViewMode) => void;
   row?: LeakRosterRow;
   onDeleted: () => void;
 }) {
-  const watch = useLeakPages<LeakWatchRead>(["leak-tracker", "watch", creatorId, scopeAccountId], `/admin/leaks/watches/${creatorId}`, scopeAccountId);
+  const qc = useQueryClient();
+  const pendingSince = useRef<number | null>(null);
+  const watch = useLeakPages<LeakWatchRead>(leakKeys.watch(creatorId, scopeAccountId), `/admin/leaks/watches/${creatorId}`,
+    scopeAccountId, (data) => {
+      const r = recheck(data?.pages[0]?.this_week?.state === "pending", pendingSince.current, Date.now());
+      pendingSince.current = r.since;
+      return r.every;
+    });
+  const google = useLeakPages<LeakPage>(leakKeys.google(creatorId, scopeAccountId), `/admin/leaks/watches/${creatorId}?preview=1`, scopeAccountId,
+    undefined, previews && view === "google");
   const [editing, setEditing] = useState(false);
+  const pending = watch.data?.pages[0]?.this_week?.state === "pending";
+  const wasPending = useRef(pending);
+  useEffect(() => {
+    if (wasPending.current && !pending) {
+      void qc.invalidateQueries({ queryKey: leakKeys.rosterRoot });
+      void qc.invalidateQueries({ queryKey: leakKeys.google(creatorId, scopeAccountId) });
+    }
+    wasPending.current = pending;
+  }, [pending, qc, creatorId, scopeAccountId]);
 
   if (watch.isPending) return <TableSkeleton rows={3} />;
   const w = watch.data?.pages[0];
@@ -47,6 +77,12 @@ export function LeakCreator({ creatorId, scopeAccountId, name, canWrite, brand, 
   const now = new Date();
   const tz = viewerZone();
   const facts = row && headerFacts(row, now, tz);
+  const paused = row ? pausedLabel(row, now, tz) : w.this_week?.state === "paused" ? PAUSED : null;
+  const grid = (leaks: Leak[], more: boolean) => {
+    const tiles = previewTiles(leaks, previews, creatorId, now, tz);
+    if (tiles.length) return <PreviewGrid label={`${name} Google previews`} tiles={tiles} scopeAccountId={scopeAccountId} />;
+    return more ? null : <p className="text-[14px] text-muted">{NO_PREVIEWS}</p>;
+  };
   if (editing && canWrite) {
     return (
       <section aria-label={name}>
@@ -87,7 +123,11 @@ export function LeakCreator({ creatorId, scopeAccountId, name, canWrite, brand, 
               Saved. It reaches {brand || "the removal service"} on the next sync.
             </p>
           )}
-          <TrackingSwitch creatorId={creatorId} scopeAccountId={scopeAccountId} on={w.identity.on} paused={row ? pausedLabel(row, now, tz) : null} canWrite={canWrite} />
+          <TrackingSwitch creatorId={creatorId} scopeAccountId={scopeAccountId} on={w.identity.on} paused={paused} canWrite={canWrite} />
+          {canWrite && w.synced && w.identity.on && !paused && (
+            <RefreshButton key={creatorId} creatorId={creatorId} scopeAccountId={scopeAccountId}
+              nextRefreshAt={w.next_refresh_at} pending={pending} />
+          )}
           {canWrite && (
             <div>
               <IfButton variant="link" className="mt-2" onClick={() => setEditing(true)}>Edit identity</IfButton>
@@ -96,7 +136,15 @@ export function LeakCreator({ creatorId, scopeAccountId, name, canWrite, brand, 
           )}
           {w.lanes && <LeakCoverageSection lanes={w.lanes} />}
           <div className="mt-4">
-            <LeakPages label={`${name} Leaks`} query={watch} />
+            <IfSegmented aria-label="Leak view" options={VIEWS} value={view} onChange={onView} className="mb-3" />
+            {view === "google" && !previews ? <LeakPages query={watch} render={grid} />
+              : view === "google" ? (
+                google.isPending ? <TableSkeleton rows={2} />
+                  : google.data ? <LeakPages query={google} render={grid} />
+                  : <EmptyState kind="error" className="mt-12" text="Couldn't load the Google previews." onRetry={() => void google.refetch()} />
+              ) : (
+              <LeakPages label={`${name} Leaks`} query={watch} />
+            )}
           </div>
         </>
       ) : (

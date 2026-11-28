@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Support</title>
+<style nonce="__NONCE__">
+:root { color-scheme: dark; --bg:#141414; --panel:#1d1d1d; --line:#2c2c2c; --fg:#ededed; --dim:#9a9a9a; --me:#2f2f2f; --acc:#e5372f; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 -apple-system, system-ui, sans-serif; }
+header { position:sticky; top:0; display:flex; gap:8px; align-items:center; padding:12px 14px; background:var(--panel); border-bottom:1px solid var(--line); z-index:1; }
+header h1 { font-size:17px; margin:0; flex:1; }
+button { font:inherit; color:var(--fg); background:#2a2a2a; border:1px solid var(--line); border-radius:10px; padding:8px 12px; cursor:pointer; }
+button:disabled { opacity:.5; }
+button.primary { background:var(--fg); color:#111; border-color:var(--fg); }
+main { max-width:760px; margin:0 auto; padding:12px; }
+.hidden { display:none !important; }
+.row { display:block; width:100%; text-align:left; padding:12px; margin:0 0 8px; background:var(--panel); border-radius:12px; }
+.meta { font-size:12px; color:var(--dim); }
+.who { font-weight:600; display:flex; align-items:center; gap:6px; }
+.dot { width:9px; height:9px; border-radius:50%; background:var(--acc); display:inline-block; }
+.last { color:var(--dim); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.msgs { display:flex; flex-direction:column; gap:8px; padding-bottom:12px; }
+.msg { max-width:85%; padding:8px 12px; border-radius:14px; white-space:pre-wrap; word-wrap:break-word; }
+.msg.user { align-self:flex-start; background:var(--panel); border:1px solid var(--line); }
+.msg.support { align-self:flex-end; background:var(--me); }
+.msg .meta { margin-top:4px; }
+textarea, input { width:100%; font-family:inherit; font-size:16px; line-height:1.4; color:var(--fg); background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; }
+textarea { min-height:80px; resize:vertical; }
+.compose { display:flex; flex-direction:column; gap:8px; position:sticky; bottom:0; background:var(--bg); padding:8px 0 max(12px, env(safe-area-inset-bottom)); }
+.pics { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.pics img { display:block; width:120px; height:120px; object-fit:cover; border-radius:10px; background:var(--line); }
+.pending { display:flex; gap:8px; flex-wrap:wrap; }
+.pend { position:relative; }
+.pend img { display:block; width:64px; height:64px; object-fit:cover; border-radius:8px; }
+.pend button { position:absolute; top:-6px; right:-6px; padding:0 6px; line-height:20px; border-radius:50%; }
+.actions { display:flex; gap:8px; }
+.actions #send { flex:1; }
+.err { color:#ff8a80; min-height:1.2em; margin:6px 0; }
+#summary { white-space:pre-wrap; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:12px; }
+form { display:flex; flex-direction:column; gap:10px; max-width:360px; margin:40px auto; }
+</style>
+</head>
+<body>
+<header>
+  <button id="back" class="hidden" type="button">&larr;</button>
+  <h1 id="title">Support</h1>
+  <button id="sum" class="hidden" type="button">Summarise all</button>
+  <button id="out" class="hidden" type="button">Log out</button>
+</header>
+<main>
+  <form id="login" class="hidden">
+    <input id="pw" type="password" autocomplete="current-password" placeholder="Password" required>
+    <button class="primary" type="submit">Sign in</button>
+    <div id="loginErr" class="err"></div>
+  </form>
+  <section id="list" class="hidden">
+    <div id="summary" class="hidden"></div>
+    <div id="listErr" class="err"></div>
+    <div id="threads"></div>
+  </section>
+  <section id="thread" class="hidden">
+    <div id="threadMeta" class="meta"></div>
+    <div id="msgs" class="msgs"></div>
+    <div class="compose">
+      <div id="pending" class="pending hidden"></div>
+      <textarea id="reply" disabled placeholder="Reply… (Ctrl/Cmd+Enter sends)"></textarea>
+      <div class="actions">
+        <button id="pick" disabled type="button" title="Add up to 4 photos">Photo</button>
+        <input id="file" class="hidden" type="file" accept="image/*" multiple>
+        <button id="send" disabled class="primary" type="button">Send</button>
+      </div>
+      <div id="threadErr" class="err"></div>
+    </div>
+  </section>
+</main>
+<script nonce="__NONCE__">
+(function () {
+  var API = "/support/api";
+  var MAX_PHOTOS = 4, MAX_SIDE = 2048;
+  var $ = function (id) { return document.getElementById(id); };
+  var openId = null;
+  var shown = { thread: null, ids: {} };
+  var pending = [];
+  var busy = { list: false, thread: false, send: false };
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function show(view) {
+    ["login", "list", "thread"].forEach(function (v) { $(v).classList.toggle("hidden", v !== view); });
+    var signed = view !== "login";
+    $("out").classList.toggle("hidden", !signed);
+    $("sum").classList.toggle("hidden", view !== "list");
+    $("back").classList.toggle("hidden", view !== "thread");
+    if (view !== "thread") {
+      openId = null;
+      shown = { thread: null, ids: {} };
+      $("title").textContent = "Support";
+    }
+  }
+  function when(iso) {
+    var d = new Date(iso);
+    return isNaN(d) ? "" : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
+  function call(method, path, body) {
+    var opt = { method: method, credentials: "same-origin", headers: {} };
+    if (body instanceof FormData) opt.body = body;
+    else if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+    return fetch(API + path, opt).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (r.status === 401 && path !== "/login") { show("login"); throw new Error("Signed out"); }
+        if (!r.ok) throw new Error((j && typeof j.detail === "string") ? j.detail : "Error " + r.status);
+        return j;
+      });
+    });
+  }
+  function loadThreads(poll) {
+    if (busy.list) return Promise.resolve();
+    busy.list = true;
+    return call("GET", "/threads").then(function (j) {
+      if (poll && $("list").classList.contains("hidden")) return;
+      var box = $("threads");
+      box.replaceChildren();
+      if (!j.threads.length) box.appendChild(el("p", "meta", "No messages yet."));
+      j.threads.forEach(function (t) {
+        var b = el("button", "row");
+        b.type = "button";
+        var who = el("div", "who");
+        if (t.unread) { var d = el("span", "dot"); d.title = "Unread"; who.appendChild(d); }
+        who.appendChild(el("span", null, (t.name || "?") + " · " + (t.role || "user")));
+        b.appendChild(who);
+        b.appendChild(el("div", "meta", t.instance + " · " + (t.agency_name || t.agency_id || "no agency") + " · " + when(t.last_at)));
+        b.appendChild(el("div", "last", (t.last_sender === "support" ? "You: " : "") + (t.last_text || "[photo]")));
+        b.addEventListener("click", function () { openThread(t.id); });
+        box.appendChild(b);
+      });
+      $("listErr").textContent = "";
+      if (!poll) show("list");
+    }).catch(function (e) { $("listErr").textContent = e.message; })
+      .finally(function () { busy.list = false; });
+  }
+  function atBottom() {
+    return window.innerHeight + window.scrollY >= document.body.scrollHeight - 60;
+  }
+  function photoRow(photos) {
+    var row = el("div", "pics");
+    photos.forEach(function (p) {
+      var a = el("a");
+      a.href = API + "/photos/" + p.id;
+      a.target = "_blank";
+      a.rel = "noopener";
+      var img = el("img");
+      img.src = a.href;
+      img.alt = "Photo";
+      img.loading = "lazy";
+      a.appendChild(img);
+      row.appendChild(a);
+    });
+    return row;
+  }
+  function renderThread(j) {
+    var t = j.thread;
+    if (t.id !== openId) return;
+    $("title").textContent = t.name || "Thread";
+    $("threadMeta").textContent = (t.role || "user") + " · " + (t.agency_name || t.agency_id || "no agency") + " · " + t.instance;
+    var box = $("msgs");
+    var fresh = shown.thread !== t.id;
+    shown.thread = t.id;
+    updateComposer();
+    var stick = fresh || atBottom();
+    var added = false;
+    j.messages.forEach(function (m) {
+      if (shown.ids[m.id]) return;
+      shown.ids[m.id] = true;
+      added = true;
+      var b = el("div", "msg " + m.sender);
+      if (m.text) b.appendChild(el("div", null, m.text));
+      if (m.photos && m.photos.length) b.appendChild(photoRow(m.photos));
+      b.appendChild(el("div", "meta", (m.sender === "support" ? "You" : (t.name || "User")) + " · " + when(m.at)));
+      box.appendChild(b);
+    });
+    if (added && stick) window.scrollTo(0, document.body.scrollHeight);
+  }
+  function refreshThread() {
+    if (openId == null || busy.thread || $("thread").classList.contains("hidden")) return;
+    busy.thread = true;
+    var view = shown;
+    call("GET", "/threads/" + openId).then(function (j) {
+      if (shown === view) renderThread(j);
+    }).catch(function () {})
+      .finally(function () { busy.thread = false; });
+  }
+  function openThread(id) {
+    $("threadErr").textContent = "";
+    show("thread");
+    openId = id;
+    shown = { thread: null, ids: {} };
+    $("msgs").replaceChildren();
+    $("threadMeta").textContent = "";
+    $("title").textContent = "Thread";
+    $("reply").value = "";
+    clearPending();
+    var view = shown;
+    call("GET", "/threads/" + id).then(function (j) {
+      if (shown === view) renderThread(j);
+    }).catch(function (e) {
+      if (shown === view) $("threadErr").textContent = e.message;
+    });
+  }
+  function drawPending() {
+    var box = $("pending");
+    box.replaceChildren();
+    pending.forEach(function (p, i) {
+      var cell = el("div", "pend");
+      var img = el("img");
+      img.src = p.url;
+      img.alt = "Photo to send";
+      var x = el("button", null, "×");
+      x.type = "button";
+      x.title = "Remove photo";
+      x.addEventListener("click", function () { pending.splice(i, 1); drawPending(); });
+      cell.appendChild(img);
+      cell.appendChild(x);
+      box.appendChild(cell);
+    });
+    box.classList.toggle("hidden", !pending.length);
+    updateComposer();
+  }
+  function updateComposer() {
+    var ready = shown.thread !== null;
+    $("reply").disabled = !ready;
+    $("pick").disabled = !ready || pending.length >= MAX_PHOTOS;
+    $("send").disabled = !ready || busy.send;
+  }
+  function clearPending() { pending = []; drawPending(); }
+  function toJpeg(file) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onerror = function () { reject(new Error("Couldn't read that photo.")); };
+      fr.onload = function () {
+        var img = new Image();
+        img.onerror = function () { reject(new Error("That file isn't a photo.")); };
+        img.onload = function () {
+          var k = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+          var c = document.createElement("canvas");
+          c.width = Math.max(1, Math.round(img.naturalWidth * k));
+          c.height = Math.max(1, Math.round(img.naturalHeight * k));
+          var g = c.getContext("2d");
+          g.fillStyle = "#fff";
+          g.fillRect(0, 0, c.width, c.height);
+          g.drawImage(img, 0, 0, c.width, c.height);
+          c.toBlob(function (blob) {
+            if (!blob) { reject(new Error("Couldn't read that photo.")); return; }
+            resolve({ blob: blob, url: c.toDataURL("image/jpeg", 0.85) });
+          }, "image/jpeg", 0.85);
+        };
+        img.src = fr.result;
+      };
+      fr.readAsDataURL(file);
+    });
+  }
+  function addFiles(files) {
+    var view = shown;
+    if (view.thread === null) return;
+    var list = Array.prototype.filter.call(files, function (f) { return f.type.indexOf("image/") === 0; });
+    var room = MAX_PHOTOS - pending.length;
+    if (list.length > room) $("threadErr").textContent = "Up to " + MAX_PHOTOS + " photos per message.";
+    list.slice(0, Math.max(0, room)).forEach(function (f) {
+      toJpeg(f).then(function (p) {
+        if (shown === view && pending.length < MAX_PHOTOS) { pending.push(p); drawPending(); }
+      }).catch(function (e) { if (shown === view) $("threadErr").textContent = e.message; });
+    });
+  }
+  function send() {
+    var draft = $("reply").value;
+    var text = draft.trim();
+    var view = shown;
+    var id = view.thread;
+    if ((!text && !pending.length) || id === null || busy.send) return;
+    busy.send = true;
+    updateComposer();
+    var sent = pending.slice();
+    var req;
+    if (sent.length) {
+      var fd = new FormData();
+      fd.append("text", text);
+      sent.forEach(function (p, i) { fd.append("photos", p.blob, "photo" + i + ".jpg"); });
+      req = call("POST", "/threads/" + id + "/reply/upload", fd);
+    } else {
+      req = call("POST", "/threads/" + id + "/reply", { text: text });
+    }
+    req.then(function (j) {
+      if (shown !== view) return;
+      if ($("reply").value === draft) $("reply").value = "";
+      pending = pending.filter(function (p) { return sent.indexOf(p) < 0; });
+      drawPending();
+      $("threadErr").textContent = "";
+      renderThread(j);
+      window.scrollTo(0, document.body.scrollHeight);
+    }).catch(function (e) { if (shown === view) $("threadErr").textContent = e.message; })
+      .finally(function () { busy.send = false; updateComposer(); });
+  }
+  $("login").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    call("POST", "/login", { password: $("pw").value }).then(function () {
+      $("pw").value = "";
+      $("loginErr").textContent = "";
+      loadThreads();
+    }).catch(function (e) { $("loginErr").textContent = e.message; });
+  });
+  $("send").addEventListener("click", send);
+  $("pick").addEventListener("click", function () { $("file").click(); });
+  $("file").addEventListener("change", function () { addFiles($("file").files); $("file").value = ""; });
+  $("reply").addEventListener("paste", function (ev) {
+    var items = ev.clipboardData ? ev.clipboardData.files : null;
+    if (items && items.length) { ev.preventDefault(); addFiles(items); }
+  });
+  $("reply").addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); send(); }
+  });
+  $("back").addEventListener("click", function () {
+    show("list");
+    shown = { thread: null, ids: {} };
+    clearPending();
+    loadThreads();
+  });
+  $("out").addEventListener("click", function () {
+    call("POST", "/logout").finally(function () { show("login"); });
+  });
+  $("sum").addEventListener("click", function () {
+    var box = $("summary");
+    box.classList.remove("hidden");
+    box.textContent = "Summarising every thread…";
+    $("sum").disabled = true;
+    call("POST", "/summarise").then(function (j) {
+      box.textContent = j.error ? j.error : j.summary + (j.total > j.threads ? "\n\n(" + j.threads + " of " + j.total + " threads read.)" : "");
+    }).catch(function (e) { box.textContent = e.message; })
+      .finally(function () { $("sum").disabled = false; });
+  });
+  setInterval(function () {
+    if (document.visibilityState === "visible" && openId != null) refreshThread();
+  }, 4000);
+  setInterval(function () {
+    if (document.visibilityState === "visible" && !$("list").classList.contains("hidden")) loadThreads(true);
+  }, 10000);
+  loadThreads();
+})();
+</script>
+</body>
+</html>

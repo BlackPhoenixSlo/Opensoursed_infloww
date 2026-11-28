@@ -1559,7 +1559,8 @@ def _resolve_account_id(request: Request | None) -> str:
     if request is not None:
         explicit = request.headers.get("x-account-id") or request.query_params.get("account_id")
     if explicit and account_registry.get_account(explicit) is None:
-        raise HTTPException(status_code=404, detail=f"Unknown account_id {explicit!r}")
+        raise HTTPException(status_code=404, detail={
+            "error": "unknown_account", "message": f"Unknown account_id {explicit!r}"})
     # A chatter's set is the UNION across every owner that linked them; None = nobody signed in, so nothing is gated.
     user = _get_request_user()
     chatter = _get_request_chatter() if user is None else None
@@ -2088,6 +2089,7 @@ def _proxy(call, *, client: OFClient | None = None, send: bool = False, started:
     loaded_token = _proxy_clients.set(loaded)
     req = _request_ctx.get()
     background = _current_priority() == "background"
+    priority = of_pacing.BACKGROUND if background else of_pacing.USER_READ
     try:
         if req is not None:
             try:
@@ -2121,13 +2123,15 @@ def _proxy(call, *, client: OFClient | None = None, send: bool = False, started:
             guard = PRE_DISPATCH.set(_before_send)
             try:
                 return of_pacing.absorb_429(
-                    aid, _attempt, prio=of_pacing.PERSON_SEND, send_deadline=send_deadline, clock=_time_mod.monotonic)
+                    aid, _attempt, prio=priority, send_deadline=send_deadline, clock=_time_mod.monotonic)
             finally:
                 PRE_DISPATCH.reset(guard)
         if getattr(req, "method", None) == "GET":
             return of_pacing.absorb_429(
-                aid, _attempt, prio=of_pacing.BACKGROUND if background else of_pacing.USER_READ)
+                aid, _attempt, prio=priority)
         return _attempt()
+    except of_pacing.ReadPacingExpired as e:
+        raise HTTPException(status_code=503, detail={"upstream_status": "timeout", "upstream_body": str(e)}) from e
     except of_pacing.SendDispatchExpired as e:
         raise HTTPException(status_code=504, detail="Send window expired before dispatch.") from e
     except send_tripwire.SendBudgetSpent as e:

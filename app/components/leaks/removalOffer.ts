@@ -7,11 +7,12 @@ export type Removal = {
   notices_updated_at: string | null;
   stale: boolean;
   counts: Record<string, number> | null;
+  offer_snoozed_until: string | null;
 };
 
 export type OfferAngle = "came_back" | "cached" | "live_30d" | "new_week" | "visible" | "clean";
 
-export type RemovalOffer = { brand: string; contact_url: string | null; angle: OfferAngle; n: number };
+export type RemovalOffer = { brand: string; contact_url: string; angle: OfferAngle; n: number };
 
 export const OFFER_HEADING = "Removal help";
 export const CONTACT_CTA = "Contact us to start removal";

@@ -1222,22 +1222,27 @@ def case_job_start_and_failure_log_lines():
     def _backend(_job):
         yield None, None
 
-    def _body(_page, _ctx):
-        raise RuntimeError("couldn't open OnlyFans in the remote browser: net::ERR_TIMED_OUT")
-
-    job = _job()
-    tap = _LogTap()
-    logging.getLogger().addHandler(tap)
-    orig = rl._browserbase_backend
-    rl._browserbase_backend = _backend
-    try:
-        rl._serve(job, secrets=(OF_PW,), body=_body)
-    finally:
-        rl._browserbase_backend = orig
-        logging.getLogger().removeHandler(tap)
-    assert f"remote login {job.id} started platform=onlyfans" in tap.lines, tap.lines
-    assert (f"remote login {job.id} failed platform=onlyfans: RuntimeError: couldn't open OnlyFans in the remote"
-            " browser: net::ERR_TIMED_OUT") in tap.lines, tap.lines
+    for followup, kind in [
+        ([], "challenge"),
+        ([rl.decide.Poll(2, otp=True)], "timed_out"),
+        ([rl.decide.Poll(2)], "timed_out"),
+    ]:
+        job = _job()
+        tap = _LogTap()
+        logging.getLogger().addHandler(tap)
+        orig = rl._browserbase_backend, rl._poll, rl.wait
+        rl._browserbase_backend = _backend
+        polls = iter([rl.decide.Poll(1, challenge=True), *followup, rl.decide.Poll(3, expired=True)])
+        rl._poll = lambda *_: next(polls)
+        rl.wait = lambda *_: None
+        try:
+            rl._serve(job, secrets=(OF_PW,), body=lambda page, ctx: rl._drive_until_logged_in(job, page, ctx))
+        finally:
+            rl._browserbase_backend, rl._poll, rl.wait = orig
+            logging.getLogger().removeHandler(tap)
+        assert f"remote login {job.id} started platform=onlyfans" in tap.lines, tap.lines
+        assert any(f"remote login {job.id} failed platform=onlyfans kind={kind}: " in line
+                   and rl.TIMED_OUT in line for line in tap.lines), tap.lines
 
 
 _harness.run()

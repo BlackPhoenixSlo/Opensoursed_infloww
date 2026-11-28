@@ -6,6 +6,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { IfButton, IfHelp, IfInput, IfLabel } from "@/components/ui/infloww";
 import { relay } from "@/lib/relay";
 
+import { afterWatchWrite } from "./leakKeys";
 import {
   ALIAS_LANE_LABEL, ALIASES_MAX, aliasLane, buildPayload, canSubmit, INITIAL_FORM, isTrimmed, leakIdentityFormReducer, TRIMMED_NOTE,
   validate,
@@ -39,15 +40,12 @@ export function IdentityForm({ creatorId, scopeAccountId, start, trimmed, onDone
     mutationFn: (body: LeakIdentityPayload) =>
       relay.put<{ synced: boolean }>(`/admin/leaks/watches/${creatorId}`, body, { accountId: scopeAccountId }),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["leak-tracker", "roster"] });
-      void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId, scopeAccountId] });
-      void qc.invalidateQueries({ queryKey: ["leak-tracker", "all"] });
+      void afterWatchWrite(qc, creatorId);
       onDone();
     },
     onError: (e: Error) => {
       dispatch({ type: "saveFailed", message: e.message });
-      void qc.invalidateQueries({ queryKey: ["leak-tracker", "roster"] });
-      void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId, scopeAccountId] });
+      void afterWatchWrite(qc, creatorId);
     },
   });
   const submit = (e: FormEvent<HTMLFormElement>) => {

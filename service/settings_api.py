@@ -20,7 +20,7 @@ from permissions import (
     _role, data_scope, denied_actions, denied_cards, enforced, granted_pages, narrowest_scope, opt_in_granted,
 )
 from settings_schema import (
-    CHATTING_PAGES, FLAGS, TABS, version_rows, versions, applied_blob, blob_at, parse_blob, read_blob,
+    CHATTING_PAGES, DEFAULT_ON_FLAGS, FLAGS, TABS, version_rows, versions, applied_blob, blob_at, parse_blob, read_blob,
 )
 
 router = APIRouter(prefix="/admin/settings", tags=["settings"])
@@ -231,7 +231,7 @@ async def _applied_in(s, ctx: AgencyContext) -> dict[str, Any]:
             "denied_actions": sorted(denied_actions(ctx, roles)),
             "denied_cards": sorted(denied_cards(ctx, roles)),
         },
-        "flags": {name: flags.get(name) is True for name in FLAGS}
+        "flags": {name: flags.get(name, name in DEFAULT_ON_FLAGS) is True for name in FLAGS}
         | {leak_tracker.FLAG: leak_tracker.page_on(ctx, flags, roles)},
         "reports": {"creator_cols": reports.get("creator_cols")},
     }
@@ -270,7 +270,8 @@ async def get_applied(request: Request) -> dict[str, Any]:
     `denied_actions` the `<page>#<action>` Function permissions its role denies
     (`permissions.denied_actions`), `denied_cards` the Dashboard cards it
     hides (`permissions.denied_cards`). `flags` holds every `settings_schema.FLAGS`
-    name, false unless the Agency stored it true, except `leak_tracker`, true unless
+    name: a `settings_schema.DEFAULT_ON_FLAGS` name (`fansly_manager`) true unless the Agency
+    stored it false, any other false unless stored true, except `leak_tracker`, true unless
     stored false (and only where `leak_tracker.page_on` lets the session in). 401 signed out.
 
     An owner session (the Master included) is its own Agency and is never

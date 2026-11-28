@@ -170,7 +170,7 @@ def case_the_instance_key_backs_an_agency_without_its_own_and_setup_never_shows_
     with _tracker() as t:
         r = OWNER_A.get("/admin/leaks/setup")
         assert r.json() == {"key": "set", "masked": None, "is_owner": True, "can_write": True,
-                            "brand": ME["brand"], "source": "instance"}, r.json()
+                            "brand": ME["brand"], "source": "instance", "previews": True}, r.json()
         assert INSTANCE_KEY not in r.text and INSTANCE_KEY[-4:] not in r.text
         assert OWNER_A.put("/admin/leaks/key", json={"key": OWN_KEY}).json()["source"] == "own"
         own = OWNER_A.get("/admin/leaks/setup").json()
@@ -540,7 +540,10 @@ def case_f4_a_changed_instance_key_leaves_the_agency_able_to_paste_its_own():
         assert r.status_code == 200, r.text
         assert asyncio.run(leak_tracker.binding(A)) == (OWN_TENANT, False)
         assert not asyncio.run(leak_tracker.pending(A)), "no delete is parked under a tenant no key reaches"
-        assert OWNER_A.put("/admin/leaks/key", json={"key": ""}).status_code == 200
+        assert _watches()
+        r = OWNER_A.put("/admin/leaks/key", json={"key": ""})
+        assert r.status_code == 409, r.text
+        assert asyncio.run(leak_tracker.agency_key(A)) == (OWN_KEY, False)
 
 
 def case_an_own_key_while_the_instance_tenant_backs_off_is_refused_503_and_moves_nothing():

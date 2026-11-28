@@ -385,6 +385,51 @@ async def case_walk_429_closes_gate_for_reads():
     assert calls == 2
 
 
+async def case_walk_respects_read_budget():
+    _knobs()
+    clock = _Clock()
+    gate = of_pacing._Gate(closed=True, cool_until=clock.t + of_pacing.READ_BUDGET_S + 1)
+    of_pacing._gates["a1"] = gate
+    with patch.object(of_pacing.time, "monotonic", clock), patch.object(of_pacing.time, "sleep", clock.sleep):
+        async def run():
+            return of_pacing.paced("a1", lambda: "dispatched")
+
+        try:
+            with of_pacing.read_budget(of_pacing.READ_BUDGET_S):
+                await of_pacing.walk("a1", "test", run)
+        except of_pacing.ReadPacingExpired:
+            pass
+        else:
+            raise AssertionError("a budgeted walk must stop before the deadline")
+    assert not clock.slept and not gate.queue
+
+
+async def case_walk_with_expired_budget_dispatches_on_open_gate():
+    _knobs()
+
+    async def run():
+        return of_pacing.paced("a1", lambda: "dispatched")
+
+    with of_pacing.read_budget(0):
+        assert await of_pacing.walk("a1", "test", run) == "dispatched"
+
+
+async def case_walk_dispatches_when_recovery_ends_at_deadline():
+    _knobs()
+    clock = _Clock()
+    gate = of_pacing._Gate(gap=of_pacing.MIN_GAP_S, clean_since=clock.t)
+    of_pacing._gates["a1"] = gate
+
+    async def run():
+        clock.sleep(of_pacing.CLEAN_STEP_S)
+        return of_pacing.paced("a1", lambda: "dispatched")
+
+    with patch.object(of_pacing.time, "monotonic", clock), patch.object(of_pacing.time, "sleep", clock.sleep):
+        with of_pacing.read_budget(of_pacing.CLEAN_STEP_S):
+            assert await of_pacing.walk("a1", "test", run) == "dispatched"
+    assert gate.gap is None and clock.slept == [of_pacing.CLEAN_STEP_S]
+
+
 def case_cancelled_probe_and_waiter_release():
     _knobs()
     clock = _Clock()
@@ -445,6 +490,25 @@ def case_late_429_extends_cooldown_without_climbing():
     except _E429:
         pass
     assert g.cool_until == clock.t + 60 > cool and (g.step, g.epoch) == (step, epoch), vars(g)
+
+
+def case_late_cloudflare_429_holds_recovery_gap_until_the_window_ends():
+    _knobs(JITTER_S=0.0)
+    clock = _Clock()
+    of_pacing._wall = lambda: 100.0
+    g = of_pacing._Gate()
+    of_pacing._close("a1", g, _E429(), clock.t)
+    late = _E429("Cloudflare Error 1015")
+    try:
+        of_pacing._gate_call("a1", g, lambda: (_ for _ in ()).throw(late), False, g.epoch - 1, clock)
+    except _E429:
+        pass
+    assert g.step == 1
+    of_pacing._open("a1", g, clock.t + of_pacing.COOLDOWNS_S[0])
+    of_pacing._step(g, clock.t + 199)
+    assert g.gap == of_pacing.PAGE_GAP_S, vars(g)
+    of_pacing._step(g, clock.t + 200)
+    assert g.gap == of_pacing.PAGE_GAP_S / 2, vars(g)
 
 
 def case_list_read_budget_bounds_a_closed_gate():

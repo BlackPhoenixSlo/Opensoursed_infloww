@@ -1,16 +1,18 @@
 "use client";
 
 import { FileText, Folder, HardDrive, Image as ImageIcon, Link as LinkIcon, Send, type LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import type { InfiniteData, UseInfiniteQueryResult } from "@tanstack/react-query";
 
 import { TableSkeleton } from "@/components/ui/Skeleton";
 import { EmptyState, IfButton } from "@/components/ui/infloww";
 import { cn } from "@/lib/utils";
 
+import { leakKeys } from "./leakKeys";
 import { useLeakPages } from "./leakRead";
 import { KIND_LABEL, LEGEND, PILL_LABEL, seenNote, timeline, viewerZone, type Leak, type LeakPage, type LeakPill } from "./leakView";
 
-const KIND_ICON: Record<string, LucideIcon> = { page: FileText, mega: Folder, telegram: Send, file_host: HardDrive, media: ImageIcon };
+export const KIND_ICON: Record<string, LucideIcon> = { page: FileText, mega: Folder, telegram: Send, file_host: HardDrive, media: ImageIcon };
 
 const PILL_CLASS: Record<LeakPill, string> = {
   live: "bg-err/10 text-err",
@@ -80,11 +82,11 @@ function LeakRows({ label, leaks, creator }: { label: string; leaks: Leak[]; cre
   );
 }
 
-export function LeakPages({ label, query, creator }: {
-  label: string;
-  query: UseInfiniteQueryResult<InfiniteData<LeakPage>>;
-  creator?: CreatorLink;
-}) {
+type PagesBody =
+  | { label: string; creator?: CreatorLink; render?: never }
+  | { render: (leaks: Leak[], more: boolean) => ReactNode; label?: never; creator?: never };
+
+export function LeakPages({ query, ...shown }: { query: UseInfiniteQueryResult<InfiniteData<LeakPage>> } & PagesBody) {
   const pages = query.data?.pages ?? [];
   let body;
   if (pages[0]?.leaks === null) body = <p className="text-[14px] text-muted">{NOT_REACHABLE_LEAKS}</p>;
@@ -93,7 +95,7 @@ export function LeakPages({ label, query, creator }: {
     body = (
       <>
         {pages.some((p) => p.stale) && <p className="mb-2 text-[13px] text-muted">Showing the last good copy.</p>}
-        {leaks.length ? <LeakRows label={label} leaks={leaks} creator={creator} />
+        {shown.render ? shown.render(leaks, query.hasNextPage) : leaks.length ? <LeakRows label={shown.label} leaks={leaks} creator={shown.creator} />
           : <p className="text-[14px] text-muted">No Leaks found yet.</p>}
         {query.isFetchNextPageError && <p role="alert" className="mt-3 text-[14px] text-err">Couldn&apos;t load more Leaks.</p>}
         {query.hasNextPage && (
@@ -115,7 +117,7 @@ export function AllLeaks({ accountId, names, onPick }: {
   names: Record<string, string>;
   onPick: (accountId: string) => void;
 }) {
-  const all = useLeakPages<LeakPage>(["leak-tracker", "all", accountId], "/admin/leaks/all", accountId);
+  const all = useLeakPages<LeakPage>(leakKeys.all(accountId), "/admin/leaks/all", accountId);
   return (
     <section aria-label="All Models">
       <h2 className="mb-2 text-[16px] font-medium text-fg">All Leaks</h2>

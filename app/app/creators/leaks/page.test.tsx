@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -41,6 +39,7 @@ import { IfConfirmHost } from "@/components/ui/ifConfirm";
 import { relay, RelayError } from "@/lib/relay";
 import { QueryClient } from "@tanstack/react-query";
 import { renderWithProviders } from "@/test-utils";
+import { asAll, CREATOR_LEAKS, CURSOR, drill, golden, LOCAL, MERGED, MIA_SERVICE, NO_LEAKS, ROSTER, row, serve, setup, tracked, untracked } from "./leakPageHarness";
 
 const relayGet = relay.get as unknown as Mock;
 const relayPut = relay.put as unknown as Mock;
@@ -48,67 +47,9 @@ const relayPost = relay.post as unknown as Mock;
 const relayDelete = relay.delete as unknown as Mock;
 const KEY = "ltk_" + "a".repeat(40);
 const setupGets = () => relayGet.mock.calls.filter(([path]) => path === "/admin/leaks/setup").length;
-const setup = (over: Record<string, unknown> = {}) =>
-  ({ key: "missing", masked: null, is_owner: true, can_write: true, brand: null, ...over });
-const UNKNOWN = { seeded: false, paused: false, paused_since: null, last_checked_at: null, next_check_at: null, counts: null, today: null };
-const LOCAL = { platform: "onlyfans", username: "miavale", display_name: "Mia Vale", on: true, synced: true, reachable: true };
-const ROSTER = {
-  rows: [{ account_id: "acc-a", name: "Creator A", ...LOCAL, ...UNKNOWN }],
-  untracked: [{ account_id: "acc-b", name: "Creator B" }],
-  stale: false,
-  fetched_at: "2026-11-27T12:00:00+00:00",
-};
-const MIA_SERVICE = {
-  seeded: true, paused: false, paused_since: null, last_checked_at: "2026-11-27T04:05:00Z", next_check_at: "2026-11-28T04:00:00Z",
-  counts: { cached: 1, came_back_30d: 1, found_on_first_scan: 3, gone: 0, listed: 1, live: 1, new_today: 1, not_checked: 1 },
-};
-const ROWAN_SERVICE = {
-  seeded: false, paused: true, paused_since: "2026-11-20T09:00:00Z", last_checked_at: null, next_check_at: "2026-11-28T04:00:00Z",
-  counts: { cached: 0, came_back_30d: 0, found_on_first_scan: 0, gone: 0, listed: 0, live: 0, new_today: 0, not_checked: 0 },
-};
-const MERGED = {
-  ...ROSTER,
-  rows: [
-    { account_id: "acc-a", name: "Creator A", ...LOCAL, ...MIA_SERVICE },
-    { account_id: "acc-c", name: "Creator C", ...LOCAL, username: "rowanash", ...ROWAN_SERVICE },
-  ],
-};
-const MIA = { username: "miavale", verified: true, display_name: "Mia Vale" };
-const untracked = (suggested: Record<string, unknown> = MIA) => ({ tracked: false, identity: null, suggested, synced: false });
-const tracked = (synced = true) => ({
-  tracked: true, synced, suggested: null,
-  identity: { platform: "onlyfans", ...MIA, aliases: [], instagram: null, x: null, on: true },
-});
-const NO_LEAKS = { leaks: [], next_cursor: null, stale: false, fetched_at: null };
-const golden = (name: string) => JSON.parse(readFileSync(
-  resolve(__dirname, "../../../../service/tests/fixtures/leak_tracker_v1", `${name}.json`), "utf8")).response;
-const ACCOUNT_OF: Record<string, string> = { w_miavale_0001: "acc-a", w_rowanash_0002: "acc-c" };
-const asAll = (name: string) => {
-  const { leaks, next_cursor } = golden(name);
-  return {
-    leaks: leaks.map(({ watch_id, ...l }: { watch_id: string }) => ({ ...l, account_id: ACCOUNT_OF[watch_id] })),
-    next_cursor, stale: false, fetched_at: "2026-11-27T12:00:00+00:00",
-  };
-};
-const CREATOR_LEAKS = golden("creator_leaks").leaks;
-const CURSOR = golden("leaks").next_cursor as string;
-const drill = (leaks: unknown[], next_cursor: string | null = null, stale = false) =>
-  ({ ...tracked(), leaks, next_cursor, stale, fetched_at: "2026-11-27T12:00:00+00:00" });
 const MEDIA = "img, video, audio, picture, iframe, source, object, embed";
 const leakIds = (list: HTMLElement) => within(list).getAllByRole("listitem").filter((li) => li.dataset.leak).map((li) => li.dataset.leak);
-type Answer = unknown | (() => unknown);
-const serve = (s: Record<string, unknown>, routes: Record<string, Answer> = {}) =>
-  relayGet.mockImplementation(async (path: string) => {
-    const all: Record<string, Answer> = {
-      "/admin/leaks/setup": s, "/admin/leaks/roster": ROSTER, "/admin/leaks/all": NO_LEAKS,
-      "/admin/leaks/watches/acc-a": tracked(), "/admin/leaks/watches/acc-b": untracked(), ...routes,
-    };
-    if (!(path in all)) throw new RelayError(404, "Not Found");
-    const v = all[path];
-    return typeof v === "function" ? (v as () => unknown)() : v;
-  });
 const saveIn = () => within(screen.getByRole("form", { name: "Leak identity" })).getByRole("button", { name: "Save" });
-const row = (name: string) => screen.getAllByTestId("of-creator-row").find((r) => r.textContent?.includes(name));
 const pick = async (name: string) => {
   await waitFor(() => expect(row(name)).toBeTruthy());
   fireEvent.click(row(name)!);
@@ -339,7 +280,7 @@ describe("/creators/leaks", () => {
         r.textContent?.match(/Creator [A-D]/)?.[0], within(r).getByTestId("of-creator-note").textContent,
       ]));
       expect(notes).toEqual({
-        "Creator A": "1 up now · 1 new today",
+        "Creator A": "1 up now",
         "Creator B": "Not tracked",
         "Creator C": "Paused since 20 Nov",
         "Creator D": "Found on first scan · 5",
@@ -374,7 +315,7 @@ describe("/creators/leaks", () => {
     renderWithProviders(<Page />);
     expect((await screen.findByRole("status")).textContent).toBe("The removal service is not reachable. Showing the last good copy.");
     const note = within(row("Creator A")!).getByTestId("of-creator-note").textContent ?? "";
-    expect(note).toMatch(/^1 up now · 1 new today · last checked (Today|Yesterday) \d\d:05$/);
+    expect(note).toMatch(/^1 up now · last checked (Today|Yesterday) \d\d:05$/);
     expect(document.body.textContent).not.toContain("12:00");
   });
 
@@ -584,7 +525,8 @@ describe("/creators/leaks", () => {
     expect(relayDelete).toHaveBeenCalledTimes(1);
     expect(client.getQueryData(otherRoster)).toEqual(MERGED);
     expect(client.getQueryData(otherWatch)).toEqual(tracked());
-    expect(client.getQueryState(otherRoster)?.isInvalidated).toBe(false);
+    expect(client.getQueryState(otherRoster)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(otherWatch)?.isInvalidated).toBe(true);
   });
 
   it("cancelling the delete sends nothing and keeps the drill-in", async () => {
@@ -649,9 +591,11 @@ describe("/creators/leaks", () => {
     await pick("Creator B");
     fireEvent.click(screen.getByRole("button", { name: "Track this Creator" }));
     await screen.findByLabelText(/^Handle/);
+    relayGet.mockClear();
     fireEvent.click(saveIn());
     expect((await screen.findByRole("alert")).textContent).toBe("Another Creator in this agency already uses that handle");
     expect(screen.getByRole("form", { name: "Leak identity" })).toBeTruthy();
+    await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/leaks/setup", { accountId: null }));
   });
 
   it("a save the service did not take yet reads saved, synced later", async () => {
@@ -769,11 +713,11 @@ describe("/creators/leaks lists the Leaks", () => {
     renderWithProviders(<Page />);
     const pane = await pick("Creator A");
     const list = await within(pane).findByRole("list", { name: "Creator A Leaks" });
-    expect(leakIds(list)).toEqual(["lk_0004", "lk_0003", "lk_0001", "lk_0002"]);
+    expect(leakIds(list)).toEqual(["lk_0005", "lk_0004", "lk_0003", "lk_0001", "lk_0002"]);
     expect(pane.textContent).toContain("@miavale · verified · Tracking on · Last checked");
     const counts = pane.querySelector('dl[aria-label="Counts"]')!;
     expect([...counts.querySelectorAll("div")].map((d) => d.textContent)).toEqual(
-      ["Up now11 cached", "Gone0", "Listed1", "New today1"]);
+      ["Up now11 cached", "Gone0", "Listed1"]);
     const item = (id: string) => list.querySelector(`[data-leak="${id}"]`) as HTMLElement;
     for (const id of ["lk_0003", "lk_0001", "lk_0002"]) {
       expect(item(id).textContent).toContain("Found on first scan");
@@ -815,10 +759,10 @@ describe("/creators/leaks lists the Leaks", () => {
     });
     renderWithProviders(<Page />);
     const pane = await pick("Creator A");
-    expect(leakIds(await within(pane).findByRole("list", { name: "Creator A Leaks" }))).toEqual(["lk_0004", "lk_0003"]);
+    expect(leakIds(await within(pane).findByRole("list", { name: "Creator A Leaks" }))).toEqual(["lk_0005", "lk_0004"]);
     fireEvent.click(within(pane).getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(leakIds(within(pane).getByRole("list", { name: "Creator A Leaks" })))
-      .toEqual(["lk_0004", "lk_0003", "lk_0001", "lk_0002"]));
+      .toEqual(["lk_0005", "lk_0004", "lk_0003", "lk_0001", "lk_0002"]));
     expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-a?cursor=c2", { accountId: null });
   });
 
@@ -859,9 +803,8 @@ describe("/creators/leaks lists the Leaks", () => {
   const COVERED = [
     LANES[0], LANES[1],
     { ...LANES[2], state: "reduced", reason: "listing_rotated", last_success_at: "2026-11-27T04:03:00Z", next_attempt_on: "2026-11-28" },
-    { ...LANES[3], state: "waiting", reason: "cap_global", next_attempt_on: "2026-11-28" },
-    { ...LANES[4], state: "reduced", reason: "cap_global", last_success_at: "2026-11-26T05:00:00Z", trimmed: TRIMMED },
-    LANES[5],
+    { ...LANES[3], state: "reduced", reason: "cap_global", last_success_at: "2026-11-26T05:00:00Z", trimmed: TRIMMED },
+    LANES[4],
   ];
   const covered = { ...drill(CREATOR_LEAKS), lanes: COVERED };
   const laneText = (pane: HTMLElement, lane: string) => pane.querySelector(`[data-lane="${lane}"]`)?.textContent ?? "";
@@ -873,16 +816,16 @@ describe("/creators/leaks lists the Leaks", () => {
     const pane = await pick("Creator A");
     const coverage = await within(pane).findByRole("region", { name: "Coverage" });
     expect(within(coverage).getAllByRole("listitem").map((li) => li.dataset.lane)).toEqual(
-      ["origin_probe", "mega_lookup", "listing_recheck", "google_fresh", "google_full", "registry_crawl"]);
+      ["origin_probe", "mega_lookup", "listing_recheck", "google_full", "registry_crawl"]);
     expect(laneText(coverage, "origin_probe")).toMatch(/^Link checkOKlast OK .+ agonext attempt Sat 28 Nov( 2026)?$/);
     expect(laneText(coverage, "mega_lookup")).toMatch(/^MegaFailedlast OK .+ ago/);
     expect(laneText(coverage, "listing_recheck")).toContain("Leak-site pagesReduced");
     expect(laneText(coverage, "listing_recheck")).toContain("each is re-read every few days");
-    expect(laneText(coverage, "google_fresh")).toMatch(/^Google \(past day\)Waiting on budgetnext attempt Sat 28 Nov( 2026)?/);
     expect(laneText(coverage, "google_full")).toContain("Google full searchReduced");
     expect(laneText(coverage, "google_full")).toContain("Skipped: Mia V, Instagram");
     expect(laneText(coverage, "registry_crawl")).toBe("Leak-site searchNot run yet");
-    expect(coverage.textContent).toContain("Known links are checked daily.");
+    expect(coverage.textContent).toContain("Each Creator is checked once a week on its scan day");
+    expect(coverage.textContent).not.toContain("Google (past day)");
     expect(pane.textContent?.toLowerCase()).not.toContain("next full search");
   });
 
@@ -893,7 +836,7 @@ describe("/creators/leaks lists the Leaks", () => {
     fireEvent.click(select);
     fireEvent.click(screen.getByRole("option", { name: /Creator A/ }));
     const coverage = await screen.findByRole("region", { name: "Coverage" });
-    expect(within(coverage).getAllByRole("listitem")).toHaveLength(6);
+    expect(within(coverage).getAllByRole("listitem")).toHaveLength(5);
     for (let el: HTMLElement | null = coverage; el && el !== container; el = el.parentElement) {
       expect(el.className).not.toMatch(WIDE);
     }
@@ -942,39 +885,45 @@ describe("/creators/leaks lists the Leaks", () => {
   });
 });
 
-describe("/creators/leaks shows the day's change", () => {
-  type Service = { watch_id: string; account_id: string; today: Record<string, unknown> } & Record<string, unknown>;
+describe("/creators/leaks shows the week's change", () => {
+  type Service = { watch_id: string; account_id: string; this_week: Record<string, unknown> } & Record<string, unknown>;
   const service = ({ watch_id: _w, account_id: _a, lanes: _l, ...rest }: Service & { lanes?: unknown }) => rest;
-  const [MIA_DAY, ROWAN_DAY] = golden("creators").creators as Service[];
-  const PARTIAL_DAY = golden("creator_one") as Service;
+  const [MIA_WEEK, ROWAN_WEEK] = golden("creators").creators as Service[];
+  const PARTIAL_WEEK = golden("creator_one") as Service;
   const EXTRA = [{ id: "acc-d", nickname: "Creator D" }, { id: "acc-e", nickname: "Creator E" }, { id: "acc-f", nickname: "Creator F" }];
-  const TODAY_ROSTER = {
+  const QUIET = { ...MIA_WEEK.this_week, came_back: 0, gone: 0 };
+  const WEEK_ROSTER = {
     ...ROSTER,
     rows: [
-      { account_id: "acc-a", name: "Creator A", ...LOCAL, ...service(MIA_DAY) },
-      { account_id: "acc-c", name: "Creator C", ...LOCAL, username: "rowanash", ...service(ROWAN_DAY) },
-      { account_id: "acc-d", name: "Creator D", ...LOCAL, ...service(PARTIAL_DAY) },
-      { account_id: "acc-e", name: "Creator E", ...LOCAL, ...MIA_SERVICE,
-        today: { ...MIA_DAY.today, state: "pending", new: 0, first_scan: 3 } },
-      { account_id: "acc-f", name: "Creator F", ...LOCAL, ...MIA_SERVICE, today: { ...MIA_DAY.today, state: "coverage_reduced", new: 0 } },
+      { account_id: "acc-a", name: "Creator A", ...LOCAL, ...service(MIA_WEEK) },
+      { account_id: "acc-c", name: "Creator C", ...LOCAL, username: "rowanash", ...service(ROWAN_WEEK) },
+      { account_id: "acc-d", name: "Creator D", ...LOCAL, ...service(PARTIAL_WEEK) },
+      { account_id: "acc-e", name: "Creator E", ...LOCAL, ...MIA_SERVICE, this_week: { ...QUIET, state: "pending", new: 0, first_scan: 3 } },
+      { account_id: "acc-f", name: "Creator F", ...LOCAL, ...MIA_SERVICE, this_week: { ...QUIET, state: "coverage_reduced", new: 0 } },
       { account_id: "acc-x", name: "Creator X", ...LOCAL, ...MIA_SERVICE,
-        today: { ...MIA_DAY.today, state: "partial", new: 5, gone: 2, first_scan: 7 } },
+        this_week: { ...QUIET, state: "partial", new: 5, gone: 2, first_scan: 7 } },
     ],
   };
-  const LINE = "2 new today · 0 came back · 0 gone · checked 1 of 4 · 2 partial · 3 found on first scans";
+  const LINE = "2 new this week · 2 came back · 4 gone · checked 1 of 4 · 2 partial · 3 found on first scans";
   const WIDE = /(^|\s)(w-\[\d{3,}px\]|min-w-\[\d{3,}px\]|overflow-x-(auto|scroll))/;
   const chipOf = (r: HTMLElement | undefined) => (r && within(r).queryByTestId("of-creator-chip")?.textContent) ?? null;
 
-  beforeEach(() => { ACCOUNTS.push(...EXTRA); });
-  afterEach(() => { ACCOUNTS.splice(3); });
+  beforeEach(() => {
+    ACCOUNTS.push(...EXTRA);
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-27T12:00:00Z") });
+  });
+  afterEach(() => {
+    ACCOUNTS.splice(3);
+    vi.useRealTimers();
+  });
 
-  it("opens with the Agency's Today line over the Creators in the column, and each entry shows New today and its day marker", async () => {
-    serve(setup({ key: "set" }), { "/admin/leaks/roster": TODAY_ROSTER, "/admin/leaks/watches/acc-d": drill(CREATOR_LEAKS) });
+  it("opens with the Agency's This week line over the Creators in the column, and each entry shows new this week and its marker", async () => {
+    serve(setup({ key: "set" }), { "/admin/leaks/roster": WEEK_ROSTER, "/admin/leaks/watches/acc-d": drill(CREATOR_LEAKS) });
     const { container } = renderWithProviders(<Page />);
-    const today = await screen.findByRole("region", { name: "Today" });
-    expect(today.textContent).toBe(LINE);
+    const week = await screen.findByRole("region", { name: "This week" });
+    expect(week.textContent).toBe(LINE);
     const main = container.querySelector("[data-leak-view]")!.parentElement!;
-    expect(main.firstElementChild).toBe(today);
+    expect(main.firstElementChild).toBe(week);
     await waitFor(() => expect(row("Creator F")).toBeTruthy());
     expect(row("Creator X")).toBeUndefined();
     const entries = Object.fromEntries(["A", "B", "C", "D", "E", "F"].map((n) => {
@@ -982,25 +931,29 @@ describe("/creators/leaks shows the day's change", () => {
       return [n, [r && within(r).getByTestId("of-creator-note").textContent, chipOf(r)]];
     }));
     expect(entries).toEqual({
-      A: ["1 up now · 1 new today", null],
+      A: ["1 up now · 1 new this week", null],
       B: ["Not tracked", null],
       C: ["Paused since 20 Nov", "Paused"],
-      D: ["1 up now · 1 new today", "Partial check"],
+      D: ["1 up now · 1 new this week", "Partial check"],
       E: ["1 up now", "Checking…"],
       F: ["1 up now", "Reduced"],
     });
     fireEvent.click(row("Creator D")!);
-    await screen.findByRole("region", { name: "Creator D" });
-    expect(screen.getByRole("region", { name: "Today" }).textContent).toBe(LINE);
+    const pane = await screen.findByRole("region", { name: "Creator D" });
+    await within(pane).findByRole("list", { name: "Creator D Leaks" });
+    const counts = pane.querySelector('dl[aria-label="Counts"]')!;
+    expect([...counts.querySelectorAll("div")].map((d) => d.textContent)).toContain("New this week1");
+    expect(counts.textContent).not.toContain("New today");
+    expect(screen.getByRole("region", { name: "This week" }).textContent).toBe(LINE);
   });
 
-  it("at phone width the Today line tops the main pane and the Creator dropdown carries the day markers", async () => {
-    serve(setup({ key: "set" }), { "/admin/leaks/roster": TODAY_ROSTER });
+  it("at phone width the This week line tops the main pane and the Creator dropdown carries the markers", async () => {
+    serve(setup({ key: "set" }), { "/admin/leaks/roster": WEEK_ROSTER });
     const { container } = renderWithProviders(<Page />);
     const select = await screen.findByRole("combobox", { name: "Creator" });
-    const today = await screen.findByRole("region", { name: "Today" });
-    expect(today.textContent).toBe(LINE);
-    expect(today.closest(".md\\:hidden")).toBeNull();
+    const week = await screen.findByRole("region", { name: "This week" });
+    expect(week.textContent).toBe(LINE);
+    expect(week.closest(".md\\:hidden")).toBeNull();
     fireEvent.click(select);
     const chips = Object.fromEntries(screen.getAllByRole("option").map((o) => [
       o.textContent?.match(/Creator [A-F]|All Models/)?.[0], within(o).queryByTestId("of-creator-chip")?.textContent ?? null,
@@ -1011,15 +964,247 @@ describe("/creators/leaks shows the day's change", () => {
     });
     fireEvent.click(screen.getByRole("option", { name: /Creator D/ }));
     expect(container.querySelector("[data-leak-view]")?.getAttribute("data-leak-view")).toBe("acc-d");
-    for (let el: HTMLElement | null = today; el && el !== container; el = el.parentElement) expect(el.className).not.toMatch(WIDE);
-    for (const el of today.querySelectorAll("*")) expect(el.getAttribute("class") ?? "").not.toMatch(WIDE);
+    for (let el: HTMLElement | null = week; el && el !== container; el = el.parentElement) expect(el.className).not.toMatch(WIDE);
+    for (const el of week.querySelectorAll("*")) expect(el.getAttribute("class") ?? "").not.toMatch(WIDE);
   });
 
-  it("with no day read from the service there is no Today line and no marker", async () => {
+  it("with no this_week anywhere (a pre-change service) there is no This week line and no marker, and the roster loads", async () => {
     serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED });
     renderWithProviders(<Page />);
     await waitFor(() => expect(row("Creator C")).toBeTruthy());
+    expect(row("Creator A")!.textContent).toContain("1 up now");
+    expect(screen.queryByRole("region", { name: "This week" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Today" })).toBeNull();
     expect(screen.queryAllByTestId("of-creator-chip")).toEqual([]);
+  });
+});
+
+describe("/creators/leaks Refresh now", () => {
+  const WEEK = golden("creator_one").this_week as Record<string, unknown>;
+  const hoursFromNow = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const read = (over: Record<string, unknown> = {}) =>
+    ({ ...drill(CREATOR_LEAKS), this_week: { ...WEEK, state: "complete" }, next_refresh_at: hoursFromNow(-2), ...over });
+  const WIDE = /(^|\s)(w-\[\d{3,}px\]|min-w-\[\d{3,}px\]|overflow-x-(auto|scroll))/;
+  const button = (name: string | RegExp) => screen.findByRole("button", { name });
+  const watchGets = () => relayGet.mock.calls.filter(([path]) => path === "/admin/leaks/watches/acc-a").length;
+  const ONCE = "One refresh per Creator every 24 hours";
+  const off = (b: HTMLElement) => b.getAttribute("aria-disabled") === "true";
+  const rosterGets = () => relayGet.mock.calls.filter(([path]) => path === "/admin/leaks/roster").length;
+
+  const ROSTER_WITHOUT_A = { ...MERGED, rows: MERGED.rows.slice(1), untracked: [...MERGED.untracked, { account_id: "acc-a", name: "Creator A" }] };
+  const openDesktop = async () => { await pick("Creator A"); };
+  const openPhone = async () => {
+    fireEvent.click(await screen.findByRole("combobox", { name: "Creator" }));
+    fireEvent.click(screen.getByRole("option", { name: /Creator A/ }));
+  };
+
+  it.each([["desktop", openDesktop], ["phone", openPhone]] as const)(
+    "at %s width: Refresh now, then Refreshing…, then Checking… and the drill-in is read again", async (_w, open) => {
+      let queued = false;
+      let answer: (v: unknown) => void = () => {};
+      serve(setup({ key: "set" }), {
+        "/admin/leaks/roster": MERGED,
+        "/admin/leaks/watches/acc-a": () => (queued ? read({ this_week: { ...WEEK, state: "pending" }, next_refresh_at: hoursFromNow(24) }) : read()),
+      });
+      relayPost.mockImplementation(() => new Promise((r) => { answer = r; }));
+      const { container } = renderWithProviders(<Page />);
+      await open();
+      const now = await button("Refresh now");
+      expect(off(now)).toBe(false);
+      for (let el: HTMLElement | null = now; el && el !== container; el = el.parentElement) expect(el.className).not.toMatch(WIDE);
+      const before = watchGets();
+      fireEvent.click(now);
+      expect(off(await button("Refreshing…"))).toBe(true);
+      expect(relayPost).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/refresh", undefined, { accountId: null });
+      queued = true;
+      answer({ queued_at: hoursFromNow(0), next_refresh_at: hoursFromNow(24) });
+      expect(off(await button("Checking…"))).toBe(true);
+      await waitFor(() => expect(watchGets()).toBeGreaterThan(before));
+      expect(screen.getByRole("button", { name: "Checking…" })).toBeTruthy();
+      expect(relayPost).toHaveBeenCalledTimes(1);
+    });
+
+  it("a queued refresh marks the other scope's roster and drill-in stale too", async () => {
+    serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read() });
+    relayPost.mockResolvedValue({ queued_at: "2026-11-27T12:00:00Z", next_refresh_at: hoursFromNow(24) });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const otherRoster = ["leak-tracker", "roster", "acc-a"];
+    const otherWatch = ["leak-tracker", "watch", "acc-a", "acc-a"];
+    client.setQueryData(otherRoster, MERGED);
+    client.setQueryData(otherWatch, read());
+    renderWithProviders(<Page />, client);
+    await openDesktop();
+    fireEvent.click(await button("Refresh now"));
+    await waitFor(() => expect(client.getQueryState(otherRoster)?.isInvalidated).toBe(true));
+    expect(client.getQueryState(otherWatch)?.isInvalidated).toBe(true);
+  });
+
+  it("a cooldown answer reads Next refresh, disabled, with the once-a-day note", async () => {
+    serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read() });
+    const next = hoursFromNow(16);
+    relayPost.mockRejectedValue(new RelayError(429, { detail: "Refreshed recently", next_refresh_at: next }, "Refreshed recently"));
+    renderWithProviders(<Page />);
+    await openDesktop();
+    fireEvent.click(await button("Refresh now"));
+    const b = await button(/^Next refresh /);
+    expect(off(b)).toBe(true);
+    expect(screen.getByText(ONCE)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it.each([["desktop", openDesktop], ["phone", openPhone]] as const)(
+    "at %s width a read inside the cooldown opens on Next refresh, and a pending week on Checking…", async (_w, open) => {
+      serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read({ next_refresh_at: hoursFromNow(6) }) });
+      renderWithProviders(<Page />);
+      await open();
+      expect(off(await button(/^Next refresh /))).toBe(true);
+      expect(screen.getByText(ONCE)).toBeTruthy();
+      cleanup();
+      serve(setup({ key: "set" }), {
+        "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read({ this_week: { ...WEEK, state: "pending" }, next_refresh_at: null }),
+      });
+      renderWithProviders(<Page />);
+      await open();
+      expect(off(await button("Checking…"))).toBe(true);
+    });
+
+  it("an error shows the detail inline and the button stays enabled", async () => {
+    serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read({ next_refresh_at: null }) });
+    relayPost.mockRejectedValue(new RelayError(503, { detail: "The removal service is not reachable" }, "The removal service is not reachable"));
+    renderWithProviders(<Page />);
+    await openDesktop();
+    fireEvent.click(await button("Refresh now"));
+    expect((await screen.findByRole("alert")).textContent).toBe("The removal service is not reachable");
+    expect(off(await button("Refresh now"))).toBe(false);
+  });
+
+  it("a Team Leader sees no button; nor does a Creator the service reads paused, or an untracked one", async () => {
+    serve(setup({ key: "set", is_owner: false, can_write: false }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read() });
+    renderWithProviders(<Page />);
+    const pane = await pick("Creator A");
+    await within(pane).findByRole("list", { name: "Creator A Leaks" });
+    expect(within(pane).queryByRole("button", { name: /Refresh now|Next refresh|Checking…/ })).toBeNull();
+    cleanup();
+    serve(setup({ key: "set" }), {
+      "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-c": read({ this_week: { ...WEEK, state: "paused" }, next_refresh_at: null }),
+    });
+    renderWithProviders(<Page />);
+    const paused = await pick("Creator C");
+    await within(paused).findByRole("list", { name: "Creator C Leaks" });
+    expect(within(paused).queryByRole("button", { name: "Refresh now" })).toBeNull();
+    const off = await pick("Creator B");
+    await waitFor(() => expect(off.textContent).toContain("Not tracked"));
+    expect(within(off).queryByRole("button", { name: "Refresh now" })).toBeNull();
+    expect(relayPost).not.toHaveBeenCalled();
+  });
+
+  it("a rate limit shows Try again shortly inline, keeps the button enabled and re-reads nothing", async () => {
+    serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read({ next_refresh_at: null }) });
+    relayPost.mockRejectedValue(new RelayError(429, { detail: "Try again shortly", next_refresh_at: null }, "Try again shortly"));
+    renderWithProviders(<Page />);
+    await openDesktop();
+    const before = watchGets();
+    fireEvent.click(await button("Refresh now"));
+    expect((await screen.findByRole("alert")).textContent).toBe("Try again shortly");
+    expect(off(await button("Refresh now"))).toBe(false);
+    expect(watchGets()).toBe(before);
+  });
+
+  it("a disabled button keeps focus and a click does nothing; the note describes it", async () => {
+    serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read({ next_refresh_at: hoursFromNow(6) }) });
+    renderWithProviders(<Page />);
+    await openDesktop();
+    const b = await button(/^Next refresh /);
+    expect(b.hasAttribute("disabled")).toBe(false);
+    b.focus();
+    fireEvent.click(b);
+    expect(document.activeElement).toBe(b);
+    expect(relayPost).not.toHaveBeenCalled();
+    expect(document.getElementById(b.getAttribute("aria-describedby")!)?.textContent).toBe(ONCE);
+    expect(screen.getAllByRole("status").some((el) => el.textContent?.startsWith("Next refresh "))).toBe(true);
+  });
+
+  it("a 409 watch_paused re-reads the drill-in and the button goes away", async () => {
+    let paused = false;
+    serve(setup({ key: "set" }), {
+      "/admin/leaks/roster": () => (paused ? { ...MERGED, rows: MERGED.rows.map((r) => (r.account_id === "acc-a" ? { ...r, paused: true } : r)) } : MERGED),
+      "/admin/leaks/watches/acc-a": () => (paused ? read({ this_week: { ...WEEK, state: "paused" }, next_refresh_at: null }) : read()),
+    });
+    relayPost.mockImplementation(async () => {
+      paused = true;
+      throw new RelayError(409, { detail: "Tracking is off for this Creator" }, "Tracking is off for this Creator");
+    });
+    renderWithProviders(<Page />);
+    await openDesktop();
+    const before = [watchGets(), rosterGets()];
+    fireEvent.click(await button("Refresh now"));
+    await waitFor(() => expect(watchGets()).toBeGreaterThan(before[0]));
+    expect(rosterGets()).toBeGreaterThan(before[1]);
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Refresh now|Next refresh|Checking…/ })).toBeNull());
+  });
+
+  it("a 404 (the watch was deleted upstream) re-reads the drill-in and the roster", async () => {
+    let gone = false;
+    serve(setup({ key: "set" }), {
+      "/admin/leaks/roster": () => (gone ? ROSTER_WITHOUT_A : MERGED),
+      "/admin/leaks/watches/acc-a": () => (gone ? untracked() : read()),
+    });
+    relayPost.mockImplementation(async () => {
+      gone = true;
+      throw new RelayError(404, { detail: "Not Found" }, "Not Found");
+    });
+    renderWithProviders(<Page />);
+    await openDesktop();
+    const before = [watchGets(), rosterGets()];
+    fireEvent.click(await button("Refresh now"));
+    await waitFor(() => expect(watchGets()).toBeGreaterThan(before[0]));
+    expect(rosterGets()).toBeGreaterThan(before[1]);
+    await waitFor(() => expect(row("Creator A")?.textContent).toContain("Not tracked"));
+  });
+
+  it("a refused key from refresh re-reads the setup", async () => {
+    serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read() });
+    relayPost.mockRejectedValue(new RelayError(409, { detail: { error: "key_invalid", message: "Key no longer valid" } }, "Key no longer valid"));
+    renderWithProviders(<Page />);
+    await openDesktop();
+    const before = setupGets();
+    fireEvent.click(await button("Refresh now"));
+    await waitFor(() => expect(setupGets()).toBeGreaterThan(before));
+  });
+
+  it.each([
+    ["switched off in the drill-in", { identity: { ...tracked().identity, on: false } }],
+    ["not yet synced to the service", { synced: false }],
+  ])("no button when the Creator is %s", async (_label, over) => {
+    serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read(over) });
+    renderWithProviders(<Page />);
+    const pane = await pick("Creator A");
+    await within(pane).findByRole("list", { name: "Creator A Leaks" });
+    expect(within(pane).queryByRole("button", { name: /Refresh now|Next refresh|Checking…/ })).toBeNull();
+  });
+
+  it("a pending read is read again every 30 s and, once done, the roster is read again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let done = false;
+      serve(setup({ key: "set" }), {
+        "/admin/leaks/roster": MERGED,
+        "/admin/leaks/watches/acc-a": () => (done ? read() : read({ this_week: { ...WEEK, state: "pending" }, next_refresh_at: null })),
+      });
+      renderWithProviders(<Page />);
+      await openDesktop();
+      expect(off(await button("Checking…"))).toBe(true);
+      const before = [watchGets(), rosterGets()];
+      done = true;
+      await vi.advanceTimersByTimeAsync(30_000);
+      await waitFor(() => expect(watchGets()).toBeGreaterThan(before[0]));
+      expect(off(await button("Refresh now"))).toBe(false);
+      await waitFor(() => expect(rosterGets()).toBeGreaterThan(before[1]));
+      const settled = watchGets();
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(watchGets()).toBe(settled);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

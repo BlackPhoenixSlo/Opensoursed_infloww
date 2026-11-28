@@ -1,6 +1,6 @@
 import { parseUtc } from "@/lib/format";
 
-export type LaneName = "origin_probe" | "mega_lookup" | "listing_recheck" | "google_fresh" | "google_full" | "registry_crawl";
+export type LaneName = "origin_probe" | "mega_lookup" | "listing_recheck" | "google_full" | "registry_crawl";
 export type LaneState = "ok" | "waiting" | "reduced" | "failed" | "never" | "paused";
 export type LeakTrimmed = { field: string; value: string };
 
@@ -27,14 +27,13 @@ export type LaneRow = {
 };
 
 export const LANE_ORDER: readonly LaneName[] = [
-  "origin_probe", "mega_lookup", "listing_recheck", "google_fresh", "google_full", "registry_crawl",
+  "origin_probe", "mega_lookup", "listing_recheck", "google_full", "registry_crawl",
 ];
 
 export const LANE_LABEL: Record<LaneName, string> = {
   origin_probe: "Link check",
   mega_lookup: "Mega",
   listing_recheck: "Leak-site pages",
-  google_fresh: "Google (past day)",
   google_full: "Google full search",
   registry_crawl: "Leak-site search",
 };
@@ -54,8 +53,8 @@ const REASON: Record<string, string> = {
   listing_rotated: "Too many pages to re-read in one day, so each is re-read every few days",
 };
 
-export const FRESHNESS = "Known links are checked daily. New Google results show within a day, or within a week on a reduced day. "
-  + "Images, videos and new sites show within a week.";
+export const FRESHNESS = "Each Creator is checked once a week on its scan day, and again when an Owner or Admin presses Refresh now "
+  + "(at most once a day). Images, videos and new sites show after the next check.";
 
 function ago(iso: string, now: Date): string | null {
   const d = parseUtc(iso);
@@ -115,8 +114,8 @@ export function laneRows(lanes: LeakLane[], now: Date): LaneRow[] {
 
 export type DayState = "pending" | "complete" | "partial" | "coverage_reduced" | "paused";
 
-export type LeakToday = {
-  day: string;
+export type LeakWeek = {
+  since: string;
   state: DayState;
   new: number;
   first_scan: number;
@@ -124,12 +123,12 @@ export type LeakToday = {
   gone: number;
 };
 
-export type TodayStrip = { new: number; cameBack: number; gone: number; firstRun: number; checked: number; partial: number; total: number };
+export type WeekStrip = { new: number; cameBack: number; gone: number; firstRun: number; checked: number; partial: number; total: number };
 
-export function todayStrip(watches: { today: LeakToday | null; paused: boolean; on: boolean }[]): TodayStrip | null {
-  if (!watches.some((w) => w.today)) return null;
-  const s: TodayStrip = { new: 0, cameBack: 0, gone: 0, firstRun: 0, checked: 0, partial: 0, total: 0 };
-  for (const { today: t, paused, on } of watches) {
+export function weekStrip(watches: { this_week: LeakWeek | null; paused: boolean; on: boolean }[]): WeekStrip | null {
+  if (!watches.some((w) => w.this_week)) return null;
+  const s: WeekStrip = { new: 0, cameBack: 0, gone: 0, firstRun: 0, checked: 0, partial: 0, total: 0 };
+  for (const { this_week: t, paused, on } of watches) {
     if (t) {
       s.new += t.new;
       s.cameBack += t.came_back;
@@ -144,8 +143,8 @@ export function todayStrip(watches: { today: LeakToday | null; paused: boolean; 
   return s;
 }
 
-export function todayLine(s: TodayStrip): string {
-  const bits = [`${s.new} new today`, `${s.cameBack} came back`, `${s.gone} gone`, `checked ${s.checked} of ${s.total}`];
+export function weekLine(s: WeekStrip): string {
+  const bits = [`${s.new} new this week`, `${s.cameBack} came back`, `${s.gone} gone`, `checked ${s.checked} of ${s.total}`];
   if (s.partial) bits.push(`${s.partial} partial`);
   if (s.firstRun) bits.push(`${s.firstRun} found on first scans`);
   return bits.join(" · ");
@@ -161,12 +160,12 @@ export const DAY_MARKER_LABEL: Record<DayMarker, string> = {
   partial: "Partial check", reduced: "Reduced", pending: "Checking…", paused: "Paused",
 };
 
-export const dayMarker = (today: LeakToday | null): DayMarker | null => (today ? MARKER[today.state] ?? null : null);
+export const dayMarker = (week: LeakWeek | null): DayMarker | null => (week ? MARKER[week.state] ?? null : null);
 
-export function rosterChips(rows: { account_id: string; today: LeakToday | null }[]): Record<string, string> {
+export function rosterChips(rows: { account_id: string; this_week: LeakWeek | null }[]): Record<string, string> {
   const chips: Record<string, string> = {};
   for (const r of rows) {
-    const m = dayMarker(r.today);
+    const m = dayMarker(r.this_week);
     if (m) chips[r.account_id] = DAY_MARKER_LABEL[m];
   }
   return chips;

@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "path": "/v1/watches/w_rowanash_0002/refresh",
+  "request": null,
+  "response": {
+    "error": "watch_paused"
+  },
+  "status": 409
+}

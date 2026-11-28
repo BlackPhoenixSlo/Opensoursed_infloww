@@ -28,6 +28,7 @@ import token_auth
 from account_security import TwoFactorChallenge, password_sign_in
 from agency_scope import agency_account_ids
 from db.engine import get_session
+from db.of_writer import immediate_session
 import session_stamps
 import signed_cookie
 import split_inbox
@@ -693,12 +694,14 @@ async def admin_delete_user(user_id: str, body: DeleteUserBody = Body(...)) -> d
     _assert_admin_password(body.admin_password)
     import leak_tracker
     await leak_tracker.before_user_delete(user_id)
-    async with get_session() as s:
+    async with immediate_session() as s:
         row = (await s.execute(
             select(User).where(User.id == user_id)
         )).scalar_one_or_none()
         if row is None:
             raise HTTPException(status_code=404, detail=f"unknown user {user_id!r}")
+        if await leak_tracker.has_stones(s, user_id) or await leak_tracker.has_watches(s, user_id):
+            raise leak_tracker.user_delete_pending()
         events.on_commit(s, "assignment_changed", agency=user_id)
         await s.execute(delete(User).where(User.id == user_id))
     return {"ok": True, "deleted_user_id": user_id}
