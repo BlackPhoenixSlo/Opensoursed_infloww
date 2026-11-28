@@ -31,8 +31,10 @@ from db.models import (  # noqa: E402
     Account, Action, AutomationRun, AutomationRule, Fan, LifecycleMessageClaim, MassBroadcastCache, MassRun, Message,
     ScheduledJob, SmartList, SubscriberCrawl, SubscriberSnapshot, WelcomeSent,
 )
-from fansly_shim import FanslyShimClient  # noqa: E402
+from _kind_verdict_seeds import FAN as _OWN_FAN, OWN_MESSAGE as _OWN_MID  # noqa: E402
+from fansly_shim import FanslyShimClient, marker_calls  # noqa: E402
 from side_effect_gate import branch_refusal  # noqa: E402
+from stateful_fake import StatefulFansly  # noqa: E402
 
 _TMP = tempfile.TemporaryDirectory(prefix="fansly_automation_gates_")
 account_registry.SESSIONS_DIR = Path(_TMP.name)
@@ -85,6 +87,9 @@ class _OF(_Recorder):
     def mass_message_history(self, **_kw):
         self.calls.append(("history",))
         return {"items": [], "hasMore": False}
+
+    def unsend_mass_message(self, queue_id):
+        return self.cancel_scheduled(queue_id)
 
     def set_subscription_discount(self, user_id, discount, period):
         self.calls.append(("discount", int(user_id)))
@@ -152,7 +157,7 @@ async def _account(aid: str, *fans: int) -> None:
 _CAST, _OLD_CAST, _CHAT_FAN, _CHAT_MID, _COPY_MID = 7101, 7102, 5101, 51010001, 51010002
 
 
-async def _seed_unsend(aid: str) -> None:
+async def _seed_unsend(aid: str, chat: tuple[int, int] = (_CHAT_FAN, _CHAT_MID)) -> None:
     await _account(aid)
     now = datetime.utcnow()
     async with get_session() as s:
@@ -162,7 +167,7 @@ async def _seed_unsend(aid: str) -> None:
         s.add(MassRun(account_id=aid, queue_id=_OLD_CAST, automation_kind="mass_premade", audience_filter="{}",
                       recipient_count=1, status="ok", body="old blast", sent_at=now - timedelta(hours=30),
                       completed_at=now - timedelta(hours=30), unsent_at=now - timedelta(hours=1)))
-        s.add(Message(account_id=aid, fan_id=_CHAT_FAN, message_id=_CHAT_MID, direction="out", body="hi there",
+        s.add(Message(account_id=aid, fan_id=chat[0], message_id=chat[1], direction="out", body="hi there",
                       media_count=0, created_at=now - timedelta(hours=2)))
         s.add(Message(account_id=aid, fan_id=_CHAT_FAN, message_id=_COPY_MID, direction="out", body="old blast",
                       media_count=0, raw_json=json.dumps({"queueId": _OLD_CAST}),
@@ -190,7 +195,7 @@ async def case_fansly_unsend_drops_the_mass_lane_and_runs_per_chat():
     finally:
         _restore()
     assert fake.calls == [("unsend", _CHAT_MID, _CHAT_FAN)], fake.calls
-    assert r.get("target_skips") == {"mass": "platform_lacks:mass_message_history"}, r
+    assert r.get("target_skips") == {"mass": "platform_lacks:unsend_mass_message"}, r
     assert r["status"] == "ok" and "reason" not in r, r
     assert not r.get("mass_refresh_failed"), r
     assert await _unsend_state(aid) == (False, True, False), await _unsend_state(aid)
@@ -223,7 +228,7 @@ async def case_fansly_unsend_drops_explicit_mass_targets():
     finally:
         _restore()
     assert fake.calls == [("unsend", _CHAT_MID, _CHAT_FAN)], fake.calls
-    assert r.get("target_skips") == {"mass": "platform_lacks:mass_message_history"}, r
+    assert r.get("target_skips") == {"mass": "platform_lacks:unsend_mass_message"}, r
     assert await _unsend_state(aid) == (False, True, False), await _unsend_state(aid)
 
 
@@ -238,6 +243,74 @@ async def case_of_unsend_still_cancels_explicit_mass_targets():
     assert fake.calls == [("cancel", _OLD_CAST), ("unsend", _CHAT_MID, _CHAT_FAN)], fake.calls
     assert "target_skips" not in r, r
     assert await _unsend_state(aid) == (False, True, True), await _unsend_state(aid)
+
+
+_LACKS_UNSEND = "platform_lacks:unsend_mass_message"
+_OWN = (int(_OWN_FAN), int(_OWN_MID))
+
+
+async def _mass_rows(aid: str) -> list:
+    out = []
+    async with get_session() as s:
+        for model in (MassBroadcastCache, MassRun, Message):
+            rows = (await s.execute(select(model).where(model.account_id == aid))).scalars().all()
+            out.append(sorted(repr({c.name: getattr(r, c.name) for c in model.__table__.columns})
+                              for r in rows if getattr(r, "message_id", None) != _OWN[1]))
+    return out
+
+
+async def _stateful_unsend(aid: str, payload: dict):
+    await _seed_unsend(aid, chat=_OWN)
+    account_registry.save_meta(aid, {"id": aid, "nickname": aid, "platform": "fansly"})
+    before = await _mass_rows(aid)
+    fake, markers, history = StatefulFansly(), [], []
+    _use(fake.client())
+    token = marker_calls.set(markers)
+    job_id = await ax.enqueue_job(aid, "unsend_messages", payload=payload)
+    try:
+        with patch.object(FanslyShimClient, "mass_message_history", lambda *a, **k: history.append(k)), \
+                patch.object(audiences, "close_funnel_discovery_for_queue") as funnel:
+            result = await run_once(aid, "unsend_messages")
+    finally:
+        marker_calls.reset(token)
+        _restore()
+    async with get_session() as s:
+        run = await s.get(AutomationRun, result["run_id"])
+        jobs = (await s.execute(select(ScheduledJob.id, ScheduledJob.status, ScheduledJob.attempts)
+                                .where(ScheduledJob.account_id == aid))).all()
+        chat = await s.get(Message, (aid, *_OWN))
+        actions = (await s.execute(select(Action.action, Action.target_id)
+                                   .where(Action.account_id == aid))).all()
+    assert (markers, history, funnel.call_count) == ([], [], 0), (markers, history, funnel.call_args_list)
+    assert [tuple(j) for j in jobs] == [(job_id, "done", 1)], jobs
+    assert await _mass_rows(aid) == before
+    stats = json.loads(run.stats_json)
+    assert (run.status, stats.get("reason"), stats.get("target_skips")) == (
+        result["status"], result.get("reason"), {"mass": _LACKS_UNSEND}), (run.status, stats)
+    return result, fake.calls, bool(chat.is_unsent), [tuple(a) for a in actions]
+
+
+async def case_fansly_mass_unsend_with_history_built_refuses_before_any_request_or_write():
+    mass_only = {"policy": {"mass_text_hours": 8}}
+    for i, payload in enumerate((mass_only, {**mass_only, "dry_run": True})):
+        result, calls, unsent, actions = await _stateful_unsend(f"880311{i}", payload)
+        assert (result["status"], result["reason"]) == ("skipped", _LACKS_UNSEND), result
+        assert (calls, unsent, actions) == ([], False, []), (calls, actions)
+        assert result.get("would_unsend", []) == [], result
+
+
+async def case_fansly_mixed_unsend_dry_run_lists_only_the_chat_target():
+    result, calls, unsent, actions = await _stateful_unsend("8803112", {**_UNSEND_POLICY, "dry_run": True})
+    assert (result["status"], result.get("reason")) == ("ok", None), result
+    assert result["would_unsend"] == [{"kind": "chat", "fan_id": _OWN[0], "message_id": _OWN[1]}], result
+    assert (calls, unsent, actions) == ([], False, []), (calls, actions)
+
+
+async def case_fansly_mixed_unsend_makes_only_the_chat_request_and_flips():
+    result, calls, unsent, actions = await _stateful_unsend("8803113", _UNSEND_POLICY)
+    assert (result["status"], result.get("reason"), result["unsent"]) == ("ok", None, 1), result
+    assert calls == [("POST", "/message/delete", {"messageId": _OWN_MID}, {})], calls
+    assert (unsent, actions) == (True, [("unsend_message", _OWN_MID)]), (unsent, actions)
 
 
 _LM_MESSAGES = [{"variants": ["renew for 20% off"], "discount": {"percent": 20, "months": 2}},
@@ -569,7 +642,7 @@ async def case_fansly_unsend_only_skips_if_all_lanes_refused():
     aid = "8803108"
     await _account(aid)
     account_registry.save_meta(aid, {"platform": "fansly"})
-    reason = "platform_lacks:mass_message_history"
+    reason = "platform_lacks:unsend_mass_message"
     with patch.object(ax, "_make_client", side_effect=AssertionError("client loaded")) as load:
         for policy, want in (
             ({"mass_text_hours": 8}, "skipped"),
@@ -591,7 +664,7 @@ async def case_fansly_unsend_dry_run_excludes_mass_targets():
     account_registry.save_meta(aid, {"platform": "fansly"})
     for payload in (_EXPLICIT, _UNSEND_POLICY):
         result = await run_once(aid, "unsend_messages", payload={**payload, "dry_run": True})
-        assert result["target_skips"] == {"mass": "platform_lacks:mass_message_history"}, result
+        assert result["target_skips"] == {"mass": "platform_lacks:unsend_mass_message"}, result
         assert [t["kind"] for t in result["would_unsend"]] == ["chat"], result
 
 

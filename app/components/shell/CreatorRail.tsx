@@ -26,7 +26,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
 }) {
   const { accounts, value, onChange, all, watchers, notes, chips } = creators;
   return (
-    <div className="flex min-h-0 min-w-0 flex-1" style={{ ["--shell-top" as string]: `calc(var(--chrome-top) + ${top})` }}>
+    <div className="flex min-h-0 min-w-0 flex-1 md:flex-initial md:h-[calc(var(--vvh)-var(--shell-top))]" style={{ ["--shell-top" as string]: `calc(var(--chrome-top) + ${top})` }}>
       <CreatorColumn
         accounts={accounts}
         value={value}
@@ -43,7 +43,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
             <IfCreatorSelect accounts={accounts} value={value} onChange={onChange} onAll={all?.pick} allLabel={all?.label} watchers={watchers} chips={chips} />
           </div>
         )}
-        <div className={cn("min-w-0 flex-1", className)}>{children}</div>
+        <div className={cn("min-h-0 min-w-0 flex-1 md:overflow-y-auto", className)}>{children}</div>
       </div>
     </div>
   );

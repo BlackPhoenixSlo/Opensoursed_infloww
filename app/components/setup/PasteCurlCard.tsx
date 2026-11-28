@@ -18,15 +18,14 @@ import { BRAND_NAME } from "@/lib/brand";
 
 const EXTENSION_URL = `https://chromewebstore.google.com/detail/chatterly-login-capture/${EXTENSION_ID}`;
 
-const PASTE_FORM_ID = "extension-login-form";
-
-export default function PasteCurlCard({ extInstalled, onLinked, initialNickname = "", attach, active = true, onBusy }: {
+export default function PasteCurlCard({ extInstalled, onLinked, initialNickname = "", attach, active = true, onBusy, formId }: {
   extInstalled: boolean | null;
   onLinked?: (accountId: string) => void;
   initialNickname?: string;
   attach?: (accountId: string) => Promise<boolean>;
   active?: boolean;
   onBusy?: (busy: boolean) => void;
+  formId?: string;
 }) {
   const qc = useQueryClient();
   const [state, dispatch] = useReducer(pasteCurlReducer, undefined, initialPasteCurl);
@@ -103,7 +102,7 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
   }
 
   return (
-    <form id={PASTE_FORM_ID} className="space-y-4" onSubmit={(e) => { e.preventDefault(); if (canSubmit(state)) void submit(); }}>
+    <form id={formId} className="space-y-4" onSubmit={(e) => { e.preventDefault(); if (canSubmit(state)) void submit(); }}>
       <ol className="space-y-3 text-[14px] leading-[22px]">
         <li className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <span><span className="text-muted">1.</span> Install the Chatterly Login Capture extension in Chrome.</span>
@@ -181,7 +180,7 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
 
       {active && (
         <EditorFooter>
-          <IfButton type="submit" form={PASTE_FORM_ID} variant="primary" disabled={!canSubmit(state)} className="max-md:hidden">
+          <IfButton type="submit" form={formId} variant="primary" disabled={!canSubmit(state)} className="max-md:hidden">
             {state.busy ? "Linking…" : "Link account"}
           </IfButton>
         </EditorFooter>

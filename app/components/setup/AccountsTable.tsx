@@ -15,9 +15,11 @@ import { EmptyState, HB_TABLE, HbPager } from "@/components/ui/infloww";
 import { OnlyfansLine } from "@/components/shell/inflowwIcons";
 import { PlatformLogo } from "@/components/shell/PlatformSwitcher";
 import { fetchAccounts, type AccountsResp } from "@/hooks/useAccounts";
-import { PLATFORM_NAME, accountPlatform, type Platform } from "@/lib/platform";
+import {
+  DEFAULT_PLATFORM, PLATFORM_NAME, accountPlatform, hasSession, isPlatform, platformRow, type AccountPlatform, type Platform,
+} from "@/lib/platform";
 import { useOutsideClose } from "@/components/ui/Menu";
-import { ROW_LINK_TITLE as ROW_LINK, type SectionKey } from "@/components/setup/AddCreatorModal";
+import { LINKERS, ROW_LINK_TITLE as ROW_LINK, type SectionKey } from "@/components/setup/AddCreatorModal";
 import { EditAccountModal, EditDraftModal } from "@/components/setup/EditCreatorModal";
 import { FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import { CreatorToaster, INFLOWWWW_PROXY, T, toast, useProxyList } from "@/components/setup/creatorFlow";
@@ -65,9 +67,10 @@ export function connectivity(a: AccountMeta, h: Health | undefined, read: { load
       ? { label: "Session captured", tone: "muted", title: "watcher account: not probed", connected: true }
       : down({ label: "—", tone: "muted", title: "no captured session" });
   }
-  const fansly = a.platform === "fansly";
+  const row = platformRow(accountPlatform(a));
+  const rebind = !!row && hasSession(row);
   const settled = sessionConnectivity(a);
-  if (settled) return down(settled.dead && fansly ? { ...settled, title: FANSLY_T.rebind } : settled);
+  if (settled) return down(settled.dead && rebind ? { ...settled, title: FANSLY_T.rebind } : settled);
   if (read.error) return down({ label: "—", title: read.error.message, tone: "muted" });
   if (!read.loaded) return down({ label: "Pending connection", tone: "muted" });
   if (!h) return down({ label: "—", title: "no health answer for this Creator", tone: "muted" });
@@ -75,7 +78,7 @@ export function connectivity(a: AccountMeta, h: Health | undefined, read: { load
   // A timed-out probe is no verdict on the session: the relay stopped waiting but the OF call is still running upstream.
   if (h.timed_out) return down({ label: "Pending connection", title: h.message, tone: "muted" });
   if (h.error === "no_session") return down({ label: "Not connected", tone: "muted" });
-  return down({ label: "Disconnected", tone: "err", title: fansly ? FANSLY_T.rebind : h.error || "down" });
+  return down({ label: "Disconnected", tone: "err", title: rebind ? FANSLY_T.rebind : h.error || "down" });
 }
 
 interface RowCells {
@@ -122,12 +125,12 @@ const COLUMNS: ReadonlyArray<{
   { key: "creators-manage#43", head: "Action", width: 104, sticky: true, cell: (c) => c.actions },
 ];
 
-function AccountCell({ platform }: { platform: Platform }) {
+function AccountCell({ platform }: { platform: AccountPlatform }) {
   return (
     <span className="flex items-center gap-1.5 whitespace-nowrap">
-      {platform === "fansly"
-        ? <PlatformLogo platform="fansly" className="h-3.5 w-3.5" />
-        : <OnlyfansLine aria-hidden className="h-3.5 w-3.5 shrink-0" />}
+      {platform === DEFAULT_PLATFORM
+        ? <OnlyfansLine aria-hidden className="h-3.5 w-3.5 shrink-0" />
+        : isPlatform(platform) && <PlatformLogo platform={platform} className="h-3.5 w-3.5" />}
       {PLATFORM_NAME[platform]}
     </span>
   );
@@ -322,7 +325,7 @@ export default function AccountsTable({ onLink, onAdd, children }: {
                     onLinkAnother={onAdd && (() => onAdd({
                       linkAnother: {
                         creator: { name: profile?.name || a.nickname || "", gender: profile?.gender ?? "", avatar: profile?.avatar },
-                        linked: [accountPlatform(a)],
+                        linked: [accountPlatform(a)].filter(isPlatform),
                       },
                     }))}
                     isDefault={accountsQ.data?.active_account_id === a.id}
@@ -458,9 +461,11 @@ function Row({
   onToggleActive: () => void;
   onDelete: () => void;
 }) {
-  const fansly = account.platform === "fansly";
+  const row = platformRow(accountPlatform(account));
   const watcher = account.role === "watcher";
-  const onLink = onLinkAt && fansly ? () => onLinkAt("fansly", account.id) : onLinkAt;
+  const onLink = row && onLinkAt
+    ? () => (LINKERS[row.relink].pinsAccount ? onLinkAt(row.relink, account.id) : onLinkAt(row.relink))
+    : undefined;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(account.nickname || account.id);
 
@@ -480,7 +485,7 @@ function Row({
     <div className="flex items-center gap-3" title={extras}>
       {profile?.avatar
         ? <img src={profile.avatar} alt="" aria-hidden className="h-6 w-6 shrink-0 rounded-full object-cover" />
-        : accountPlatform(account) === "onlyfans"
+        : row?.bindsProxy
           ? (
             <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full" aria-hidden>
               <AccountAvatarPicture account={{ ...account, color: account.color || "#888" }} letters={0} initialClassName="" health={avatarHealth} />
@@ -510,7 +515,7 @@ function Row({
 
   const { connected } = conn;
   const caps: RowCaps = {
-    edit: !connected, recovery: !connected && !fansly,
+    edit: !connected, recovery: !connected && !!row && LINKERS[row.relink].recovery,
     linkAnother: !watcher, toggleActive: !watcher, makeDefault: !isDefault && !watcher,
   };
   const actions = (
@@ -520,10 +525,10 @@ function Row({
           <button type="button" aria-label="Edit" title="Edit" onClick={onEdit} className={ACT}>
             <Pencil className="h-4 w-4" aria-hidden />
           </button>
-        ) : (
+        ) : row && (
           <button
             type="button" aria-label={ROW_LINK} title={ROW_LINK}
-            onClick={() => onLink?.("browserbase")}
+            onClick={() => onLink?.()}
             className={ACT}
           >
             <Link2 className="h-4 w-4" aria-hidden />
@@ -532,6 +537,7 @@ function Row({
         <RowMenu
           label={label}
           caps={caps}
+          site={row?.label}
           onLink={onLink}
           onEdit={onEdit}
           onLinkAnother={onLinkAnother}
@@ -558,11 +564,12 @@ function Row({
 interface RowCaps { edit: boolean; recovery: boolean; linkAnother: boolean; toggleActive: boolean; makeDefault: boolean }
 
 function RowMenu({
-  label, caps, onLink, onEdit, onLinkAnother, onDelete, onRename, onActivate, active, onToggleActive,
+  label, caps, site, onLink, onEdit, onLinkAnother, onDelete, onRename, onActivate, active, onToggleActive,
 }: {
   label: string;
   caps: RowCaps;
-  onLink?: (at: SectionKey) => void;
+  site?: string;
+  onLink?: () => void;
   onEdit: () => void;
   onLinkAnother?: () => void;
   onDelete: () => void;
@@ -618,7 +625,7 @@ function RowMenu({
           {item("Delete", onDelete, { danger: true, icon: Trash2 })}
           {caps.recovery && (
             <div role="group" aria-label="Recovery" className={MENU_RULE}>
-              {item("Log in to account via OnlyFans", onLink && (() => onLink("browserbase")))}
+              {item(`Log in to account via ${site}`, onLink)}
               {item("Log in to account via Login+")}
             </div>
           )}

@@ -3,7 +3,7 @@ import { useCallback, useRef, useState } from "react";
 
 import type { AccountDetails, useSaveAccountDetails } from "@/components/setup/creatorFlow";
 import type { CreatorDetails } from "@/lib/creatorProfiles";
-import { PLATFORMS, type Platform } from "@/lib/platform";
+import { PLATFORMS, platformRow, type Platform } from "@/lib/platform";
 import type { Employee } from "@/lib/relay";
 
 export type Method = "browser" | "extension";
@@ -42,7 +42,7 @@ export type WizardAction =
   | { type: "submitErr" }
   | { type: "busy"; source: BusySource; value: boolean };
 
-const defaultMethod = (p: Platform): Method => (p === "fansly" ? "extension" : "browser");
+const defaultMethod = (p: Platform): Method => platformRow(p).loginDefault;
 
 export function initialWizard({ recovery, method, draft, linkAnother }: {
   recovery?: Platform;

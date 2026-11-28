@@ -6,9 +6,9 @@ import type { ChatterFlatAccountDTO } from "@/contexts/ChatterContext";
 import { useOptionalUser } from "@/contexts/UserContext";
 import { chatterAccountsQuery } from "@/lib/chatterAccounts";
 import { ownerAccountsQuery, type AccountsResp } from "@/lib/ownerAccounts";
-import { accountPlatform, can, useFallbackPlatform, type Capability, type Platform } from "@/lib/platform";
+import { accountPlatform, can, useFallbackPlatform, type Capability, type AccountPlatform } from "@/lib/platform";
 
-export function useAccountPlatform(accountId: string | null | undefined): Platform | null {
+export function useAccountPlatform(accountId: string | null | undefined): AccountPlatform | null {
   const user = useOptionalUser()?.user;
   const owner = useQuery<AccountsResp>({ ...ownerAccountsQuery(user?.user_id), enabled: false }).data;
   const chatter = useQuery<ChatterFlatAccountDTO[]>({ ...chatterAccountsQuery, enabled: false }).data;

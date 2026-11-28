@@ -30,9 +30,9 @@ import {
 } from "@/lib/chatsCache";
 import { relayNow, relayOffsetKnown } from "@/lib/ageClock";
 import { platformHonours, type ChatListFilter } from "@/lib/chatFilters";
-import { accountPlatform, type Platform } from "@/lib/platform";
+import { accountPlatform, type AccountPlatform } from "@/lib/platform";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
-import { markUnknown, seenNow, unknownIds, useUnknownAccounts, type Seen } from "@/lib/unknownAccounts";
+import { directIds, markDirect, markUnknown, seenNow, unknownIds, useUnknownAccounts, type Seen } from "@/lib/unknownAccounts";
 import { useAccounts, usePlatformAccounts } from "./useAccounts";
 import { useAccountPlatform } from "./useCan";
 import { avatarThumb, mergeOFUserName, ofUserNameKey, type OFUserName } from "./useOFUser";
@@ -415,31 +415,65 @@ async function fetchCellsPage(
 ): Promise<Omit<StampedPage, "session" | "askedAt" | "askedSeq">> {
   const focus = relayFocus();
   let refused: unknown = null;
+  const excluded = bundle ? directIds() : null;
   const results = await askCells<CellPart[]>(m, readFrom, signal, async ({ cell, accounts, signal: s }) => {
     const cursorOf = (id: string) => cellCursors?.[id] ?? offset;
-    const first = cursorOf(accounts[0]);
-    if (bundle && accounts.every((id) => cursorOf(id) === first)) {
-      const b = bundleChats(await cellBundle(m, cell, accounts, first, s, tag.caller));
-      for (const id of b.gone) markUnknown(id, seen);
-      const parts = b.chats.map((c) => ({ accountId: c.accountId, ...readChatPage(c.body as ScannedChatsResponse, c.accountId, qc) }));
-      return { value: parts, partial: [...new Set([...b.partial, ...b.failed])] };
-    }
-    const settled = await Promise.allSettled(accounts.map(async (accountId) => {
+    const bundled = bundle ? accounts.filter((id) => !excluded?.has(id)) : [];
+    const first = cursorOf(bundled[0]);
+    const canBundle = bundled.length > 0 && bundled.every((id) => cursorOf(id) === first);
+    const parts: CellPart[] = [];
+    let partial: string[] = [];
+    const direct = new Map<string, Promise<void>>();
+    const settled = new Map<string, PromiseSettledResult<ScannedChatsResponse>>();
+    const readDirect = (id: string) => {
       const search = new URLSearchParams(qs);
-      search.set("offset", String(cursorOf(accountId)));
-      return { accountId, ...readChatPage(await relay.get<ScannedChatsResponse>(
-        `/api/of/v2/chats?${search}`, { accountId, priority: accountId === focus ? priority : "background", ...tag }, s, { refresh },
-      ), accountId, qc) };
-    }));
-    s.throwIfAborted();
-    settled.forEach((r, i) => { if (r.status === "rejected") markIfUnknown(accounts[i], r.reason, seen); });
-    const deep = settled.find((r, i): r is PromiseRejectedResult =>
-      r.status === "rejected" && (isDeepRefused(r.reason) || (cursorOf(accounts[i]) > 0 && isRateLimited(r.reason))));
-    if (deep) refused ??= deep.reason;
-    return {
-      value: settled.flatMap((r) => r.status === "fulfilled" ? [r.value] : []),
-      partial: accounts.filter((_, i) => settled[i].status === "rejected"),
+      search.set("offset", String(cursorOf(id)));
+      direct.set(id, relay.get<ScannedChatsResponse>(
+        `/api/of/v2/chats?${search}`, { accountId: id, priority: id === focus ? priority : "background", ...tag }, s, { refresh },
+      ).then(
+        (value) => { if (!s.aborted) settled.set(id, { status: "fulfilled", value }); },
+        (reason: unknown) => { if (!s.aborted) settled.set(id, { status: "rejected", reason }); },
+      ));
     };
+    for (const id of accounts) {
+      if (!canBundle || excluded?.has(id)) readDirect(id);
+    }
+    if (canBundle) {
+      const b = bundleChats(await cellBundle(m, cell, bundled, first, s, tag.caller));
+      s.throwIfAborted();
+      for (const id of b.gone) markUnknown(id, seen);
+      for (const id of b.unsupported) {
+        markDirect(id, seen);
+        if (bundled.includes(id)) readDirect(id);
+      }
+      for (const c of b.chats) parts.push({ accountId: c.accountId, ...readChatPage(c.body as ScannedChatsResponse, c.accountId, qc) });
+      partial = [...new Set([...b.partial, ...b.failed])].filter((id) => !direct.has(id));
+    }
+    if (direct.size && !s.aborted) {
+      let stop: () => void;
+      const deadline = new Promise<void>((resolve) => { stop = resolve; });
+      s.addEventListener("abort", stop!, { once: true });
+      try {
+        await Promise.race([Promise.all(direct.values()), deadline]);
+      } finally {
+        s.removeEventListener("abort", stop!);
+      }
+    }
+    signal?.throwIfAborted();
+    if (!canBundle) s.throwIfAborted();
+    for (const id of direct.keys()) {
+      const r = settled.get(id);
+      if (r?.status === "fulfilled") {
+        parts.push({ accountId: id, ...readChatPage(r.value, id, qc) });
+        continue;
+      }
+      partial.push(id);
+      if (r?.status === "rejected") {
+        markIfUnknown(id, r.reason, seen);
+        if (isDeepRefused(r.reason) || (cursorOf(id) > 0 && isRateLimited(r.reason))) refused ??= r.reason;
+      }
+    }
+    return { value: parts, partial };
   });
   signal?.throwIfAborted();
   if (refused) throw refused;
@@ -501,7 +535,7 @@ function untilIdle(qc: QueryClient, hash: string): Promise<void> {
 type ChatAccount = Pick<AccountMeta, "id" | "platform">;
 
 function readFromIds(
-  scope: Scope, accountIds: readonly string[], platformOf: (accountId: string) => Platform | null,
+  scope: Scope, accountIds: readonly string[], platformOf: (accountId: string) => AccountPlatform | null,
   filter: ChatListParams["filter"], listId: ChatListParams["listId"], unknown: ReadonlySet<string>,
 ): string[] {
   return (scope.kind === "model" ? [scope.accountId] : accountIds)

@@ -14,8 +14,6 @@ export const FANSLY_T = {
   rebind: "Authorization failed, please rebind the account",
 } as const;
 
-export const FANSLY_FORM_ID = "fansly-session-form";
-
 interface FanslySessionBody {
   token: string;
   id?: string | null;

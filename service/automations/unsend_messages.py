@@ -470,7 +470,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     refused = {}
     for kind, capabilities in (
-        ("mass", ("mass_message_history",)),
+        ("mass", ("unsend_mass_message", "mass_message_history")),
         ("story", ("delete_story",)),
         ("hide_upload", ("vault_media_lookup_hash", "hide_vault_media")),
     ):
@@ -529,7 +529,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     for i, t in enumerate(targets):
         try:
             if t["kind"] == "mass":
-                await asyncio.to_thread(client.cancel_scheduled, t["queue_id"])
+                await asyncio.to_thread(client.unsend_mass_message, t["queue_id"])
                 flipped = await _flip_mass_unsent(account_id, t.get("mass_run_id"))
                 copies_flipped += await _flip_queue_copies(
                     account_id, t.get("queue_id"))

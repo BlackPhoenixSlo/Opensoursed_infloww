@@ -104,6 +104,64 @@ def main() -> int:
           f"fixture tip: isTip with no tipAmount, got {tips}", fails)
     print("2008 unlocks the fan's priced message and banks nothing; tips carry no amount")
 
+    class _PageProbe(shim.FanslyShimClient):
+        def __init__(self, pages):
+            self.pages = list(pages)
+            self.calls = []
+            class _S:
+                account_id = ACCOUNT_ID
+            self.session = _S()
+
+        def _as_group_id(self, chat_id):
+            return str(chat_id)
+
+        def _fan_id_for_group(self, group_id):
+            return None
+
+        def _purchases_by_fan(self):
+            return {}
+
+        def _request(self, method, path, *, params=None, json_body=None, **kw):
+            self.calls.append((method, path, dict(params or {})))
+            return {"messages": self.pages.pop(0)}
+
+    def _msg(i, deleted=None):
+        return {"id": str(i), "senderId": "777", "content": f"m{i}",
+                "createdAt": 1764000000000 + i, "deletedAt": deleted}
+
+    def _ids(page):
+        return [x["id"] for x in page["list"]]
+
+    def _befores(probe):
+        return [c[2].get("before") for c in probe.calls]
+
+    pp = _PageProbe([[_msg(5), _msg(4, 1764000009000), _msg(3)]])
+    got = pp.get_messages("g1", limit=3)
+    check(_ids(got) == ["5", "3"] and got["hasMore"] is True and len(pp.calls) == 1,
+          f"messages: one deleted row drops, others in order, raw hasMore kept, got {got} {pp.calls}", fails)
+    pp = _PageProbe([[_msg(5), _msg(4, 1764000009000), _msg(3)]])
+    got = pp.get_messages("g1", limit=4)
+    check(_ids(got) == ["5", "3"] and got["hasMore"] is False,
+          f"messages: short raw page with a deleted row keeps hasMore false, got {got}", fails)
+
+    pp = _PageProbe([[_msg(9, 1), _msg(8, 1)], [_msg(7), _msg(6)]])
+    got = pp.get_messages("g1", limit=2)
+    check(_ids(got) == ["7", "6"] and got["hasMore"] is True
+          and _befores(pp) == [None, "8"] and all(c[2]["limit"] == "2" for c in pp.calls),
+          f"messages: all-deleted page walks before its lowest raw id, got {got} {pp.calls}", fails)
+
+    pp = _PageProbe([[_msg(9, 1), _msg(8, 1)], [_msg(7, 1), _msg(6, 1)],
+                     [_msg(5, 1), _msg(4, 1)], [_msg(3, 1), _msg(2, 1)], [_msg(1)]])
+    got = pp.get_messages("g1", limit=2, before_id=10)
+    check(_befores(pp) == ["10", "8", "6", "4"] and _ids(got) == [] and got["hasMore"] is True,
+          f"messages: walk stops after 3 extra pages, got {got} {pp.calls}", fails)
+
+    pp = _PageProbe([[_msg(2, 1), _msg(1, 1)]])
+    got = pp.get_messages("g1", limit=3)
+    check(_ids(got) == [] and got["hasMore"] is False and len(pp.calls) == 1,
+          f"messages: all-deleted last page gives no rows and hasMore false, got {got} {pp.calls}", fails)
+    print("messages: deleted rows drop, raw hasMore kept, an all-deleted page walks at most 3 more")
+
     replied = shim.of_chat_row(
         {"groupId": "g1", "unreadCount": 3,
          "lastMessageId": "200", "lastUnreadMessageId": "100"},

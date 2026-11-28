@@ -11,9 +11,9 @@ import {
   buildAccountPayload, canBack, canClose, canNext, canPickPlatform, signInBusy, profileName, useWizardReducer, type Method,
   type BusySource, type WizardState,
 } from "@/components/setup/addCreatorWizard";
-import { PLATFORMS, PLATFORM_NAME, type Platform } from "@/lib/platform";
+import { PLATFORMS, PLATFORM_NAME, hasSession, platformRow, type Platform, type PlatformRow } from "@/lib/platform";
 import BrowserbaseLoginCard from "@/components/setup/BrowserbaseLoginCard";
-import FanslyPasteSessionCard, { FANSLY_FORM_ID, FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
+import FanslyPasteSessionCard, { FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import {
   CreatorsDetailsForm, EditCreatorForm, HB_DIM, LinkedLine, T, creatorDetailsError,
   assignedIds, currentProxy, proxyText, toast, useProxyList, useRoster, useSaveAccountDetails,
@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
 
 export const DESKTOP_ONLY_LINE = "The extension and keys are desktop-only. On a phone, link a creator with Browser login.";
 const MOBILE_PASTE_LINE = "The extension needs desktop Chrome. On a phone, use Browser login.";
-const MOBILE_FANSLY_LINE = "The Fansly paste session is desktop-only. On a phone, use Browser login.";
+const mobileSessionLine = (label: string) => `The ${label} paste session is desktop-only. On a phone, use Browser login.`;
 
 const SECTIONS = {
   paste: { id: "add-creator-paste-curl", name: "Extension", platform: "onlyfans", method: "extension" },
@@ -39,6 +39,16 @@ const SECTIONS = {
   fanslyBrowser: { id: "add-creator-fansly-browser", name: "Fansly browser login", platform: "fansly", method: "browser" },
 } as const;
 export type SectionKey = keyof typeof SECTIONS;
+
+type Relink = PlatformRow["relink"];
+
+export const LINKERS: Record<Relink, { pinsAccount: boolean; modalSubmit: boolean; recovery: boolean }> = {
+  browserbase: { pinsAccount: false, modalSubmit: false, recovery: true },
+  fansly: { pinsAccount: true, modalSubmit: true, recovery: false },
+};
+
+export const profileLine = (row: PlatformRow | undefined, username: string | null | undefined): string | undefined =>
+  row?.profileHost && username ? `${row.profileHost}/${username}` : undefined;
 
 function Section({ k, hidden, children }: { k: SectionKey; hidden?: boolean; children: ReactNode }) {
   const s = SECTIONS[k];
@@ -63,7 +73,7 @@ const METHODS: { method: Method; title: string; sub: string; icon: typeof Globe;
 ];
 
 function MethodChoice({ state, onChange }: { state: WizardState; onChange: (m: Method) => void }) {
-  const fansly = state.platform === "fansly";
+  const { loginDefault } = platformRow(state.platform);
   return (
     <div role="radiogroup" aria-label="Login method" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       {METHODS.map(({ method, title, sub, icon: Icon, tag }) => {
@@ -84,7 +94,7 @@ function MethodChoice({ state, onChange }: { state: WizardState; onChange: (m: M
             <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[16px] font-semibold text-fg">
               <Icon className={cn("h-5 w-5", on ? "text-accent" : "text-muted")} aria-hidden />
               <span className="whitespace-nowrap">{title}</span>
-              {tag && !fansly && <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[12px] font-medium text-accent">{tag}</span>}
+              {tag && method === loginDefault && <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[12px] font-medium text-accent">{tag}</span>}
             </span>
             <span className="text-[13px] leading-[18px] text-muted">{sub}</span>
           </label>
@@ -110,7 +120,8 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   });
   const { step, details, platform, method, recovery, fresh } = state;
   // dispatch says whether the wizard took the action: a save runs only on a taken submitStart, so a double-click saves once
-  const of = platform === "onlyfans";
+  const row = platformRow(platform);
+  const linker = LINKERS[row.relink];
   const linkedId = step.kind === "linked" ? step.accountId : null;
   const meQ = useAccountAvatar(linkedId);
   const ofName = profileName(meQ.data);
@@ -151,12 +162,12 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   const cancel = <IfButton onClick={close} disabled={!closable}>{T.cancel}</IfButton>;
 
   // A Platform's sign-ins stay mounted (`hidden`, never conditionally rendered): unmounting BrowserbaseLoginCard cancels its running job.
-  const loginCards: Record<Platform, ReactNode> = {
-    onlyfans: (
+  const loginCards: Record<Relink, (r: PlatformRow, on: boolean) => ReactNode> = {
+    browserbase: (r, on) => (
       <>
-        <Section k="browserbase" hidden={!of || method !== "browser"}>
+        <Section k="browserbase" hidden={!on || method !== "browser"}>
           <BrowserbaseLoginCard
-            onLinked={linked("onlyfans")} initialNickname={nickname} keepProxy={recovery} active={of && method === "browser"}
+            platform={r.key} onLinked={linked(r.key)} initialNickname={nickname} keepProxy={recovery} active={on && method === "browser"}
             onBusy={reportBusy.login} expectedAccountId={expectedAccountId}
           />
           {!recovery && (
@@ -165,31 +176,31 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
             </Link>
           )}
         </Section>
-        <Section k="paste" hidden={!of || method !== "extension"}>
+        <Section k="paste" hidden={!on || method !== "extension"}>
           <div className="hidden md:block">
             <PasteCurlCard
-              extInstalled={extInstalled} onLinked={linked("onlyfans")} initialNickname={nickname}
-              attach={recovery ? undefined : attachDefaultProxy} active={of && method === "extension"} onBusy={reportBusy.extension}
+              extInstalled={extInstalled} onLinked={linked(r.key)} initialNickname={nickname} formId={r.extensionFormId}
+              attach={recovery ? undefined : attachDefaultProxy} active={on && method === "extension"} onBusy={reportBusy.extension}
             />
           </div>
           <p className="md:hidden text-sm text-muted">{MOBILE_PASTE_LINE}</p>
         </Section>
       </>
     ),
-    fansly: (
+    fansly: (r, on) => (
       <>
-        <Section k="fanslyBrowser" hidden={of || method !== "browser"}>
+        <Section k="fanslyBrowser" hidden={!on || method !== "browser"}>
           <BrowserbaseLoginCard
-            platform="fansly" onLinked={linked("fansly")} initialNickname={nickname} keepProxy={recovery}
-            active={!of && method === "browser"} onBusy={reportBusy.login} expectedAccountId={expectedAccountId}
+            platform={r.key} onLinked={linked(r.key)} initialNickname={nickname} keepProxy={recovery}
+            active={on && method === "browser"} onBusy={reportBusy.login} expectedAccountId={expectedAccountId}
           />
         </Section>
-        {platform === "fansly" && (
+        {on && (
           <Section k="fansly" hidden={method !== "extension"}>
-            <p className="md:hidden text-sm text-muted">{MOBILE_FANSLY_LINE}</p>
+            <p className="md:hidden text-sm text-muted">{mobileSessionLine(r.label)}</p>
             <div className="hidden md:block">
               <FanslyPasteSessionCard
-                onLinked={linked("fansly")} initialNickname={nickname} formId={FANSLY_FORM_ID} expectedAccountId={expectedAccountId}
+                onLinked={linked(r.key)} initialNickname={nickname} formId={r.extensionFormId} expectedAccountId={expectedAccountId}
                 onBusy={reportBusy.paste}
               />
             </div>
@@ -240,7 +251,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
               </label>
             ))}
           </div>
-          {platform === "fansly" && <p className="md:hidden text-sm text-muted">{MOBILE_FANSLY_LINE}</p>}
+          {hasSession(row) && <p className="md:hidden text-sm text-muted">{mobileSessionLine(row.label)}</p>}
         </div>
       );
       footer = (
@@ -258,7 +269,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
             <p className={cn("text-sm", HB_DIM)}>{T.stepOf(3, 3)} · {T.linkPlatformAccount(PLATFORM_NAME[platform])}</p>
           )}
           <MethodChoice state={state} onChange={(value) => dispatch({ type: "setField", field: "method", value })} />
-          {PLATFORMS.map(({ key }) => <Fragment key={key}>{loginCards[key]}</Fragment>)}
+          {PLATFORMS.map((r) => <Fragment key={r.key}>{loginCards[r.relink](r, r.key === platform)}</Fragment>)}
           {PLATFORMS.filter(({ key }) => key !== platform && canPickPlatform(state, key)).map(({ key, label }) => (
             <button
               key={key} type="button" onClick={() => dispatch({ type: "setField", field: "platform", value: key })}
@@ -274,8 +285,8 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
         <>
           {cancel}
           {canBack(state) && <IfButton onClick={() => dispatch({ type: "back" })}>{T.back}</IfButton>}
-          {!of && method === "extension" && (
-            <IfButton variant="primary" type="submit" form={FANSLY_FORM_ID} className="max-md:hidden">{T.done}</IfButton>
+          {linker.modalSubmit && method === "extension" && (
+            <IfButton variant="primary" type="submit" form={row.extensionFormId} className="max-md:hidden">{T.done}</IfButton>
           )}
         </>
       );
@@ -293,7 +304,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
               />
             </div>
           )}
-          {of && <LinkedCreatorProxy key={step.accountId} accountId={step.accountId} onBusy={reportBusy.proxy} />}
+          {row.bindsProxy && <LinkedCreatorProxy key={step.accountId} accountId={step.accountId} onBusy={reportBusy.proxy} />}
         </div>
       );
       footer = recovery ? <IfButton variant="primary" disabled={state.busy.proxy} onClick={onClose}>{T.done}</IfButton> : (
@@ -317,7 +328,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   }
 
   return (
-    <IfModal title={title} width={600} onClose={close} closable={closable} footer={footer} footerSlot={step.kind === "login" && (of || method === "browser")}>
+    <IfModal title={title} width={600} onClose={close} closable={closable} footer={footer} footerSlot={step.kind === "login" && (!linker.modalSubmit || method === "browser")}>
       {body}
     </IfModal>
   );
@@ -326,25 +337,23 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
 function LinkedAccount({ accountId, platform }: { accountId: string; platform: Platform }) {
   const meQ = useAccountAvatar(accountId);
   const me = meQ.data;
-  const fansly = platform === "fansly";
+  const row = platformRow(platform);
   const proxiesQ = useProxyList(true);
   return (
     <div className="space-y-4">
       <LinkedLine />
       <AccountChip
-        accountId={accountId} name={me?.name} username={me?.username} avatar={fansly ? pickAvatarUrl(me) : proxyImage(pickAvatarUrl(me), accountId)}
-        sub={fansly && me?.username ? fanslyProfile(me.username) : undefined}
+        accountId={accountId} name={me?.name} username={me?.username} avatar={row.bindsProxy ? proxyImage(pickAvatarUrl(me), accountId) : pickAvatarUrl(me)}
+        sub={profileLine(row, me?.username)}
       />
-      {fansly && meQ.isSuccess && !me && <p className="text-sm text-err">{FANSLY_T.accountInfoError}</p>}
-      {platform === "onlyfans" && proxiesQ.isSuccess && proxiesQ.isFetchedAfterMount && (
+      {hasSession(row) && meQ.isSuccess && !me && <p className="text-sm text-err">{FANSLY_T.accountInfoError}</p>}
+      {row.bindsProxy && proxiesQ.isSuccess && proxiesQ.isFetchedAfterMount && (
         <p className={cn("text-sm", HB_DIM)}>{proxyText(currentProxy(proxiesQ.data, accountId), proxiesQ.data)}</p>
       )}
-      {platform === "onlyfans" && proxiesQ.isError && <p className="text-sm text-err">Couldn&apos;t read this account&apos;s proxy.</p>}
+      {row.bindsProxy && proxiesQ.isError && <p className="text-sm text-err">Couldn&apos;t read this account&apos;s proxy.</p>}
     </div>
   );
 }
-
-export const fanslyProfile = (username: string) => `fansly.com/${username}`;
 
 export function AccountChip({ accountId, name, username, avatar, sub }: {
   accountId: string; name?: string | null; username?: string | null; avatar?: string | null;

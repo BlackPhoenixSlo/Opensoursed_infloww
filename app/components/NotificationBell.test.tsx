@@ -10,7 +10,7 @@ const { relayGet, relayPost } = vi.hoisted(() => ({
 vi.mock("@/lib/relay", () => ({
   relay: { get: (...args: unknown[]) => relayGet(...args), post: (...args: unknown[]) => relayPost(...args) },
 }));
-type Acc = { id: string; nickname: string; session_dead_at?: string };
+type Acc = { id: string; nickname: string; session_dead_at?: string; platform?: string };
 const ONE: Acc[] = [{ id: "acc-1", nickname: "Creator One" }];
 const scope = vi.hoisted(() => ({ accountId: "acc-1" as string | null, accounts: [] as Acc[] }));
 vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => scope.accounts }));
@@ -255,17 +255,18 @@ describe("NotificationBell (Messages Pro, All Models)", () => {
   const button = () => screen.getByRole("button", { name: /^Notifications/ });
   const badge = () => button().querySelector("span")?.textContent ?? null;
 
-  function setup() {
+  const ACCOUNTS: Acc[] = [
+    { id: "acc-1", nickname: "One" }, { id: "acc-2", nickname: "Two" }, { id: "acc-3", nickname: "Three" },
+    { id: "acc-4", nickname: "Four" }, { id: "acc-dead", nickname: "Dead", session_dead_at: "2026-11-01" },
+  ];
+  const COUNTS: [string, number][] = [["acc-1", 3], ["acc-2", 0], ["acc-3", 4], ["acc-dead", 9]];
+
+  function setup(accounts: Acc[] = ACCOUNTS, counts: [string, number][] = COUNTS) {
     scope.accountId = null;
-    scope.accounts = [
-      { id: "acc-1", nickname: "One" }, { id: "acc-2", nickname: "Two" }, { id: "acc-3", nickname: "Three" },
-      { id: "acc-4", nickname: "Four" }, { id: "acc-dead", nickname: "Dead", session_dead_at: "2026-11-01" },
-    ];
+    scope.accounts = accounts;
     relayGet.mockResolvedValue({ list: [] });
     const client = makeTestQueryClient();
-    for (const [id, n] of [["acc-1", 3], ["acc-2", 0], ["acc-3", 4], ["acc-dead", 9]] as const) {
-      client.setQueryData(["of-notif-count", id], n);
-    }
+    for (const [id, n] of counts) client.setQueryData(["of-notif-count", id], n);
     return renderWithProviders(<NotificationBell variant="messages-pro" classNames={PRO} />, client);
   }
 
@@ -333,6 +334,44 @@ describe("NotificationBell (Messages Pro, All Models)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("a Fansly Creator: opening sends no mark-read", async () => {
+    scope.accountId = "acc-f";
+    scope.accounts = [{ id: "acc-f", nickname: "Fansly One", platform: "fansly" }];
+    armRead("acc-f");
+    relayGet.mockResolvedValue({ list: [] });
+    renderWithProviders(<NotificationBell variant="messages-pro" classNames={PRO} />);
+    await userEvent.click(button());
+    await screen.findByText("No notifications.");
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(posted()).toEqual([]);
+  });
+
+  it("mixed scope: Mark all read writes only the OnlyFans Creators and reports no failure", async () => {
+    setup(
+      [{ id: "acc-1", nickname: "One", platform: "onlyfans" }, { id: "acc-f", nickname: "Fan", platform: "fansly" }],
+      [["acc-1", 3], ["acc-f", 5]],
+    );
+    relayPost.mockResolvedValue({ counters: { all: 0 } });
+    expect(badge()).toBe("8");
+    await userEvent.click(button());
+    await userEvent.click(await screen.findByRole("button", { name: "Mark all read" }));
+    expect(await screen.findByRole("button", { name: "Mark all read" })).toBeEnabled();
+    expect(posted()).toEqual(["acc-1"]);
+    await waitFor(() => expect(badge()).toBe("5"));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("Fansly-only scope: no Mark all read button", async () => {
+    setup(
+      [{ id: "acc-f", nickname: "Fan", platform: "fansly" }, { id: "acc-g", nickname: "Gan", platform: "fansly" }],
+      [["acc-f", 5]],
+    );
+    await userEvent.click(button());
+    await screen.findByText("No notifications.");
+    expect(screen.queryByRole("button", { name: "Mark all read" })).toBeNull();
+    expect(posted()).toEqual([]);
   });
 });
 

@@ -224,6 +224,7 @@ async def handle_event(event: dict) -> None:
     # Update message readers before fan-out so a refetch sees the event
     relay_hooks.fire_inbound_message(account_id, event_type, event)
     prior = event_transcoder.patch_inbox_at_receipt(account_id, event)
+    event_transcoder.drop_unsent_thread_pages(account_id, event)
 
     events_persist.enqueue(account_id, event_type, persistable, event, prior)
 

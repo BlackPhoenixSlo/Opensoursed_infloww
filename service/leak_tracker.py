@@ -9,7 +9,7 @@ import re
 import time
 import uuid
 from collections import defaultdict
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Literal
@@ -18,27 +18,30 @@ from weakref import WeakValueDictionary
 
 import httpx
 from fastapi import HTTPException, Request
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import account_health
 import account_page
+import accounts
 import agency_scope
 import platforms
 import runtime_switches
 from agency_context import AgencyContext, agency_context
 from automations._knobs import test_mode
 from db.engine import get_session
-from db.of_writer import immediate_session
-from db.models import (
-    LeakTrackerTenant, LeakWatch, LeakWatchAutoSkip, LeakWatchOptOut, LeakWatchTombstone, UserAccount,
+from db.of_writer import immediate_session, snapshot_session
+from db.models import LeakWatch, LeakWatchAutoSkip, LeakWatchOptOut, LeakWatchTombstone, UserAccount
+from leak_tenant import (
+    Binding, bind_tenant, binding, bound_tenant, bury_watches, drop_retired, has_stones, has_watches, land_stone,
+    opt_out, persist_claim, retired_credential, write_key,
 )
 from permissions import leak_page_granted, leak_writer, removal_offer_viewer
 from send_ops import cells
 from settings_schema import applied_blob
-from tenant_keys import NON_LLM_PROVIDERS, TRACKER_PROVIDER as PROVIDER, get_key, owners_of_many, set_keys
+from tenant_keys import TRACKER_PROVIDER as PROVIDER, get_key, owners_of_many
 
 log = logging.getLogger("of-relay.leak_tracker")
 
@@ -47,7 +50,6 @@ KEY_SHAPE = re.compile(r"ltk_[A-Za-z0-9]{32,}")
 TIMEOUT = httpx.Timeout(10.0, connect=3.0)
 INLINE_TIMEOUT = httpx.Timeout(15.0, connect=3.0)
 INLINE_BUDGET_S = 20
-NOT_BOUND = "Connect the removal service again before deleting"
 USER_DELETE_PENDING = "Leak watch deletes are still pending at the removal service; try again later"
 USER_DELETE_PENDING_OFF = ("Leak watch deletes are still pending at the removal service and the Leak tracker is "
                            "switched off on this server; switch it back on so they can finish, then try again")
@@ -95,7 +97,7 @@ class Gates:
 
 
 RefusalKind = Literal["not_found", "key_invalid", "handle_taken", "account_taken", "creator_cap", "waitlist", "identity",
-                      "watch_deleted", "unbound", "exists", "watch_paused"]
+                      "watch_deleted", "watch_changed", "unbound", "exists", "watch_paused"]
 
 
 class Refused(Exception):
@@ -151,7 +153,10 @@ def instance_key() -> str:
 
 
 async def instance_tenant() -> str | None:
-    key = instance_key()
+    return await _resolve_instance_tenant(instance_key())
+
+
+async def _resolve_instance_tenant(key: str) -> str | None:
     if not key:
         return None
     if key in _tenants:
@@ -170,20 +175,32 @@ async def instance_tenant() -> str | None:
     return _tenants[key]
 
 
+def _instance_candidate(held: Binding | None) -> str:
+    return instance_key() if held is None or held.via_instance else ""
+
+
 async def agency_key(agency_user_id: str, *, session: AsyncSession | None = None) -> tuple[str, bool]:
     own = await get_key(agency_user_id, PROVIDER, session=session)
     if own:
         return own, False
-    inst = await _fallback_key(agency_user_id, session=session)
+    inst = _instance_candidate(await binding(agency_user_id, session=session))
     return inst, bool(inst)
 
 
-async def _fallback_key(agency_user_id: str, *, session: AsyncSession | None = None) -> str:
-    inst = instance_key()
-    if not inst:
-        return ""
-    held = await binding(agency_user_id, session=session)
-    return inst if held is None or held[1] else ""
+async def _credential_candidate(agency: str, s: AsyncSession) -> tuple[str, bool, Binding | None]:
+    held = await binding(agency, session=s)
+    own = await get_key(agency, PROVIDER, session=s)
+    return (own, False, held) if own else (_instance_candidate(held), True, held)
+
+
+async def verified_key(agency: str, *, session: AsyncSession | None = None) -> tuple[str, Binding] | None:
+    async with (snapshot_session() if session is None else nullcontext(session)) as s:
+        key, via_instance, held = await _credential_candidate(agency, s)
+    if not key or held is None:
+        return None
+    if via_instance and await _resolve_instance_tenant(key) != held.tenant_id:
+        return None
+    return key, held
 
 
 async def require_gates(request: Request, *, need_key: bool) -> Gates:
@@ -359,19 +376,12 @@ def drop_watch_copies(agency_user_id: str, watch_id: str) -> None:
             _copies[k] = ({w: c for w, c in body.items() if w != watch_id}, at)
 
 
-async def opt_out(agency_user_id: str, account_id: str) -> None:
-    async with get_session() as s:
-        await s.execute(sqlite_insert(LeakWatchOptOut).values(
-            agency_user_id=agency_user_id, account_id=account_id, created_at=datetime.utcnow(),
-        ).on_conflict_do_nothing())
-
-
 async def forget_watch(agency_user_id: str, watch_id: str) -> None:
-    async with get_session() as s:
-        account_id = await s.scalar(select(LeakWatch.account_id).where(LeakWatch.watch_id == watch_id))
-        await s.execute(delete(LeakWatch).where(LeakWatch.watch_id == watch_id))
-    if account_id is not None:
-        await opt_out(agency_user_id, account_id)
+    async with immediate_session() as s:
+        account_id = await s.scalar(delete(LeakWatch).where(
+            LeakWatch.watch_id == watch_id, LeakWatch.agency_user_id == agency_user_id).returning(LeakWatch.account_id))
+        if account_id is not None:
+            await opt_out(agency_user_id, account_id, session=s)
     drop_watch_copies(agency_user_id, watch_id)
 
 
@@ -388,70 +398,36 @@ async def me(agency_user_id: str | None, key: str) -> Me:
     return Me(tenant_id=body["tenant_id"], brand=brand if isinstance(brand, str) and brand else None)
 
 
-async def bind_tenant(agency_user_id: str, tenant_id: str, *, via_instance: bool = False) -> tuple[str, bool] | None:
-    async with get_session() as s:
-        await s.execute(sqlite_insert(LeakTrackerTenant).values(
-            agency_user_id=agency_user_id, tenant_id=tenant_id, bound_at=datetime.utcnow(), via_instance=via_instance,
-        ).on_conflict_do_nothing(index_elements=[LeakTrackerTenant.agency_user_id]))
-    return await binding(agency_user_id)
-
-
 async def bind_instance(agency_user_id: str) -> bool:
-    tenant = await instance_tenant()
-    if tenant is None:
+    if (tenant := await instance_tenant()) is None:
         return False
     held = await bind_tenant(agency_user_id, tenant, via_instance=True)
-    return held is not None and held[0] == tenant
+    return held is not None and held.tenant_id == tenant
 
 
-async def rebind(agency_user_id: str, tenant_id: str) -> None:
-    held = await binding(agency_user_id)
-    stones = held is not None and not held[1]
-    if held is not None and held[1]:
-        inst = await instance_tenant()
-        if inst is None:
-            raise Unreachable()
-        stones = held[0] == inst
-    now = datetime.utcnow()
-    async with get_session() as s:
-        rows = list((await s.scalars(select(LeakWatch).where(LeakWatch.agency_user_id == agency_user_id))).all())
-        if rows and stones:
-            await s.execute(sqlite_insert(LeakWatchTombstone).values([
-                {"watch_id": w.watch_id, "agency_user_id": agency_user_id, "account_id": w.account_id,
-                 "tenant_id": held[0], "requested_at": now} for w in rows
-            ]).on_conflict_do_nothing(index_elements=[LeakWatchTombstone.watch_id]))
-        for w in rows:
-            w.watch_id, w.synced_at, w.synced_paused, w.updated_at = str(uuid.uuid4()), None, None, now
-        await s.execute(update(LeakTrackerTenant).where(LeakTrackerTenant.agency_user_id == agency_user_id)
-                        .values(tenant_id=tenant_id, bound_at=now, via_instance=False))
-    drop_copies(agency_user_id)
-    _wake.set()
-
-
-async def bound_tenant(agency_user_id: str) -> str | None:
-    held = await binding(agency_user_id)
-    return held[0] if held else None
-
-
-async def binding(agency_user_id: str, *, session: AsyncSession | None = None) -> tuple[str, bool] | None:
-    async with (get_session() if session is None else nullcontext(session)) as s:
-        row = (await s.execute(select(LeakTrackerTenant.tenant_id, LeakTrackerTenant.via_instance).where(
-            LeakTrackerTenant.agency_user_id == agency_user_id))).first()
-    return (row[0], bool(row[1])) if row else None
+async def claim_tenant(agency: str, tenant_id: str, key: str) -> Literal["bound", "other_tenant"]:
+    result = await persist_claim(agency, tenant_id, key, instance_key())
+    if result == "other_tenant":
+        return result
+    forget_invalid(agency)
+    drop_copies(agency)
+    if result == "rebound":
+        _wake.set()
+    return "bound"
 
 
 async def store_key(agency_user_id: str, key: str, *, pending_message: str | None = None) -> None:
-    if not key and pending_message is not None:
-        async with immediate_session() as s:
+    disconnecting = not key and pending_message is not None
+    async with (immediate_session() if disconnecting else get_session()) as s:
+        if disconnecting:
             if await has_stones(s, agency_user_id):
                 raise HTTPException(status_code=409, detail=pending_message)
+            held = await binding(agency_user_id, session=s)
             if (await get_key(agency_user_id, PROVIDER, session=s)
-                    and not await _fallback_key(agency_user_id, session=s)
+                    and not _instance_candidate(held)
                     and await has_watches(s, agency_user_id)):
                 raise HTTPException(status_code=409, detail="Stop tracking every Creator before disconnecting")
-            await set_keys(agency_user_id, {PROVIDER: key}, known=NON_LLM_PROVIDERS, session=s)
-    else:
-        await set_keys(agency_user_id, {PROVIDER: key}, known=NON_LLM_PROVIDERS)
+        await write_key(s, agency_user_id, key)
     forget_invalid(agency_user_id)
     drop_copies(agency_user_id)
 
@@ -471,11 +447,11 @@ def watch_body(account_id: str, paused: bool, *, platform: str, username: str, v
             "paused": paused}
 
 
-_save_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
+_save_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
-def watch_lock(agency: str, account_id: str) -> asyncio.Lock:
-    return _save_locks.setdefault((agency, account_id), asyncio.Lock())
+def watch_lock(watch_id: str) -> asyncio.Lock:
+    return _save_locks.setdefault(watch_id, asyncio.Lock())
 
 
 def watch_synced(w: LeakWatch) -> bool:
@@ -493,17 +469,20 @@ async def sync_watches(now: datetime | None = None) -> None:
         for w in (await s.execute(select(LeakWatch).order_by(LeakWatch.id))).scalars():
             by_agency[w.agency_user_id].append(w)
     for agency, watches in by_agency.items():
-        key, _ = await agency_key(agency)
-        if not key or key_invalid(agency):
+        if key_invalid(agency) or (credential := await verified_key(agency)) is None:
             continue
+        key, _ = credential
         async with get_session() as s:
             flag = tracker_on(await applied_blob(s, agency, "flags"))
+        enrolling = 0
         for w in watches:
+            if w.synced_at is None and (enrolling >= ENSURE_BATCH or capped(key, now)):
+                continue
             bit = paused(w.on, flag, w.account_id in off)
             if watch_synced(w) and w.synced_paused == bit and w.synced_at >= day:
                 continue
             current = (LeakWatch.watch_id == w.watch_id, LeakWatch.updated_at == w.updated_at)
-            async with watch_lock(agency, w.account_id):
+            async with watch_lock(w.watch_id):
                 async with get_session() as s:
                     if await s.scalar(select(LeakWatch.id).where(*current)) is None:
                         continue
@@ -512,9 +491,11 @@ async def sync_watches(now: datetime | None = None) -> None:
                                   instagram=w.instagram, x=w.x)
                 if not deployment_on():
                     return
+                enrolling += w.synced_at is None
                 try:
                     r = await call(agency, key, "PUT", f"/v1/watches/{w.watch_id}", json=body)
                 except Down:
+                    log.warning("leak watch sync: %s could not reach the service", w.watch_id)
                     break
                 except Unreachable:
                     log.warning("leak watch sync: %s failed on the service side", w.watch_id)
@@ -526,6 +507,9 @@ async def sync_watches(now: datetime | None = None) -> None:
                     continue
                 if r.status_code == 429:
                     break
+                if (error := refusal(r)) is not None and error.kind in ("creator_cap", "waitlist"):
+                    _capped[key] = now + AUTO_RETRY
+                    continue
                 if not watch_acknowledged(r, w.watch_id):
                     log.warning("leak watch sync: %s received no matching acknowledgement (HTTP %d)", w.watch_id, r.status_code)
                     continue
@@ -535,39 +519,45 @@ async def sync_watches(now: datetime | None = None) -> None:
                                     .values(updated_at=at, synced_at=at, synced_paused=bit))
 
 
+_removing: set[tuple[str, str | None]] = set()
+
+
+def _creator_available(account: str, agency: str) -> bool:
+    return ((account, None) not in _removing and (account, agency) not in _removing
+            and accounts.account_dir(account).is_dir())
+
+
+@asynccontextmanager
+async def removing_watches(account_id: str, agency_user_id: str | None = None):
+    scope = (account_id, agency_user_id)
+    if scope in _removing:
+        raise HTTPException(status_code=409, detail="This Creator is already being removed")
+    _removing.add(scope)
+    try:
+        await drop_watches(account_id=account_id, agency_user_id=agency_user_id)
+        yield
+    finally:
+        _removing.remove(scope)
+
+
 async def drop_watches(*, account_id: str | None = None, agency_user_id: str | None = None) -> None:
-    if account_id is None and agency_user_id is None:
-        raise ValueError("drop_watches needs an account or an Agency")
-    q = select(LeakWatch, LeakTrackerTenant.tenant_id).outerjoin(
-        LeakTrackerTenant, LeakTrackerTenant.agency_user_id == LeakWatch.agency_user_id)
-    if account_id is not None:
-        q = q.where(LeakWatch.account_id == account_id)
-    if agency_user_id is not None:
-        q = q.where(LeakWatch.agency_user_id == agency_user_id)
-    now = datetime.utcnow()
-    async with get_session() as s:
-        hits = (await s.execute(q)).all()
-        if not hits:
-            return
-        if any(tenant is None for _, tenant in hits):
-            raise HTTPException(status_code=409, detail=NOT_BOUND)
-        await s.execute(sqlite_insert(LeakWatchTombstone).values([
-            {"watch_id": w.watch_id, "agency_user_id": w.agency_user_id, "account_id": w.account_id,
-             "tenant_id": tenant, "requested_at": now} for w, tenant in hits
-        ]).on_conflict_do_nothing(index_elements=[LeakWatchTombstone.watch_id]))
-        await s.execute(delete(LeakWatch).where(LeakWatch.watch_id.in_([w.watch_id for w, _ in hits])))
-    for w, _ in hits:
+    async with immediate_session() as s:
+        hits = await bury_watches(s, account_id=account_id, agency_user_id=agency_user_id)
+    _buried(hits)
+
+
+async def untrack(agency_user_id: str, account_id: str) -> None:
+    async with immediate_session() as s:
+        await opt_out(agency_user_id, account_id, session=s)
+        hits = await bury_watches(s, account_id=account_id, agency_user_id=agency_user_id)
+    _buried(hits)
+
+
+def _buried(hits: list[LeakWatch]) -> None:
+    for w in hits:
         drop_watch_copies(w.agency_user_id, w.watch_id)
-    _wake.set()
-
-
-async def has_watches(s: AsyncSession, agency: str) -> bool:
-    return await s.scalar(select(LeakWatch.id).where(LeakWatch.agency_user_id == agency).limit(1)) is not None
-
-
-async def has_stones(s: AsyncSession, agency: str) -> bool:
-    return await s.scalar(select(LeakWatchTombstone.watch_id).where(
-        LeakWatchTombstone.agency_user_id == agency).limit(1)) is not None
+    if hits:
+        _wake.set()
 
 
 async def pending(agency_user_id: str) -> bool:
@@ -580,6 +570,7 @@ def user_delete_pending() -> HTTPException:
 
 
 async def _missed(watch_id: str, error: str, *, attempted: bool = True) -> None:
+    log.warning("leak watch delete: %s missed (%s)", watch_id, error)
     t = LeakWatchTombstone.__table__
     async with get_session() as s:
         await s.execute(update(t).where(t.c.watch_id == watch_id).values(
@@ -597,46 +588,53 @@ async def land_tombstones(agency_user_id: str | None = None, *, timeout: httpx.T
         for t in (await s.execute(q)).scalars():
             by_agency[t.agency_user_id].append(t)
     for agency, stones in by_agency.items():
-        key, _ = await agency_key(agency)
-        if not key or key_invalid(agency):
-            continue
-        tenant = await bound_tenant(agency)
-        inst = instance_key() if any(t.tenant_id != tenant for t in stones) else ""
-        inst_tenant = await instance_tenant() if inst else None
+        credentials: dict[str, tuple[str, str | None]] = {}
+        retired = None
+        if not key_invalid(agency) and (credential := await verified_key(agency)):
+            key, held = credential
+            credentials[held.tenant_id] = (key, agency)
+        if any(t.tenant_id not in credentials for t in stones):
+            if (inst := instance_key()) and (tenant := await _resolve_instance_tenant(inst)):
+                credentials.setdefault(tenant, (inst, None))
+            if retired := await retired_credential(agency):
+                credentials.setdefault(retired.tenant_id, (retired.key, None))
+        refused: set[str] = set()
         for t in stones:
-            use, who = _stone_key(t.tenant_id, tenant, key, agency, inst, inst_tenant)
+            use, who = credentials.get(t.tenant_id, ("", None))
             if not use:
-                await _missed(t.watch_id, "tenant_mismatch", attempted=False)
+                if not key_invalid(agency):
+                    await _missed(t.watch_id, "tenant_mismatch", attempted=False)
                 continue
-            at = t.requested_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-            try:
-                r = await call(who, use, "DELETE", f"/v1/watches/{t.watch_id}?requested_at={at}",
-                               timeout=timeout)
-            except Down:
-                await _missed(t.watch_id, "unreachable")
-                break
-            except Unreachable:
-                await _missed(t.watch_id, "service_error")
+            if use in refused:
                 continue
-            except KeyRefused:
-                await _missed(t.watch_id, "key_invalid")
-                break
-            if 200 <= r.status_code < 300:
+            async with watch_lock(t.watch_id):
                 async with get_session() as s:
-                    await s.execute(delete(LeakWatchTombstone).where(LeakWatchTombstone.watch_id == t.watch_id))
-                continue
-            await _missed(t.watch_id, f"http_{r.status_code}")
-            if r.status_code == 429:
-                break
-
-
-def _stone_key(stone_tenant: str, tenant: str | None, key: str, agency: str, inst: str,
-               inst_tenant: str | None) -> tuple[str, str | None]:
-    if stone_tenant == tenant:
-        return key, agency
-    if inst and stone_tenant == inst_tenant:
-        return inst, None
-    return "", None
+                    if await s.get(LeakWatchTombstone, t.watch_id) is None:
+                        continue
+                at = t.requested_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+                try:
+                    r = await call(who, use, "DELETE", f"/v1/watches/{t.watch_id}?requested_at={at}",
+                                   timeout=timeout)
+                except Down:
+                    await _missed(t.watch_id, "unreachable")
+                    break
+                except Unreachable:
+                    await _missed(t.watch_id, "service_error")
+                    continue
+                except KeyRefused:
+                    if retired and use == retired.key:
+                        await drop_retired(agency, retired.tenant_id)
+                        log.warning("leak watch delete: %s missed (retired_key_refused)", t.watch_id)
+                    else:
+                        await _missed(t.watch_id, "key_invalid")
+                    refused.add(use)
+                    continue
+                if 200 <= r.status_code < 300 or r.status_code in (404, 410):
+                    await land_stone(agency, t.watch_id, t.tenant_id)
+                    continue
+                await _missed(t.watch_id, f"http_{r.status_code}")
+                if r.status_code == 429:
+                    break
 
 
 async def before_user_delete(agency_user_id: str) -> None:
@@ -711,19 +709,31 @@ def _body(r: httpx.Response) -> dict[str, Any] | None:
     return body if isinstance(body, dict) else None
 
 
+_REFUSALS: dict[tuple[int, str | None], RefusalKind] = {
+    (409, "account_taken"): "account_taken",
+    (409, "creator_cap"): "creator_cap",
+    (409, "waitlist"): "waitlist",
+    (409, "watch_paused"): "watch_paused",
+    (422, None): "identity",
+    (404, None): "not_found",
+}
+
+
 def refusal(r: httpx.Response) -> Refused | None:
     body = _body(r) or {}
-    if r.status_code == 409 and body.get("error") == "account_taken":
-        return Refused("account_taken")
-    if r.status_code == 409 and body.get("error") == "creator_cap":
+    error = body.get("error")
+    kind = _REFUSALS.get((r.status_code, error if isinstance(error, str) else None))
+    if kind is None:
+        kind = _REFUSALS.get((r.status_code, None))
+    if kind is None:
+        return None
+    if kind == "creator_cap":
         cap = body.get("creators_max")
-        return Refused("creator_cap", cap if isinstance(cap, int) else None)
-    if r.status_code == 409 and body.get("error") == "waitlist":
-        return Refused("waitlist")
-    if r.status_code == 422:
+        return Refused(kind, cap if isinstance(cap, int) else None)
+    if kind == "identity":
         field = body.get("field")
-        return Refused("identity", field if isinstance(field, str) and field else None)
-    return None
+        return Refused(kind, field if isinstance(field, str) and field else None)
+    return Refused(kind)
 
 
 class Cooldown(Exception):
@@ -744,6 +754,8 @@ def _retry_after(r: httpx.Response, body: dict[str, Any]) -> int | None:
 async def refresh(agency: str, key: str, watch_id: str) -> dict[str, str]:
     if key_invalid(agency):
         raise Refused("key_invalid")
+    if (credential := await verified_key(agency)) is None or credential[0] != key:
+        raise Refused("unbound")
     try:
         r = await call(agency, key, "POST", f"/v1/watches/{watch_id}/refresh")
     except KeyRefused:
@@ -761,12 +773,8 @@ async def refresh(agency: str, key: str, watch_id: str) -> dict[str, str]:
         raise Cooldown(at if isinstance(at, str) else None, _retry_after(r, body))
     if r.status_code == 429:
         raise Cooldown(None, _retry_after(r, body))
-    if r.status_code == 409 and body.get("error") == "watch_paused":
-        raise Refused("watch_paused")
-    if r.status_code == 409 and body.get("error") == "waitlist":
-        raise Refused("waitlist")
-    if r.status_code == 404:
-        raise Refused("not_found")
+    if (refused := refusal(r)) is not None and refused.kind in ("watch_paused", "waitlist", "not_found"):
+        raise refused
     raise ContractError()
 
 
@@ -779,7 +787,7 @@ async def push(agency: str, key: str, watch_id: str, body: dict[str, Any]) -> bo
         return watch_acknowledged(r, watch_id)
     if gone(r):
         raise Gone()
-    if refused := refusal(r):
+    if (refused := refusal(r)) is not None and refused.kind not in ("watch_paused", "not_found"):
         raise refused
     return False
 
@@ -790,68 +798,89 @@ async def save_watch(agency: str, key: str, account_id: str, ident: dict[str, An
         raise Refused("key_invalid")
     platform = platforms.for_account(account_id).key
     row = await watch(agency, account_id)
-    now = datetime.utcnow()
-    current = identity_out(row) if row is not None else None
-    changed = current is None or any(current[field] != value for field, value in ident.items())
-    consent = {"consent_at": now, "consent_by": consent_by} if changed else {}
-    if await handle_taken(agency, platform, account_id, ident["username"]):
-        raise Refused("handle_taken")
-    kept = row is not None and row.verified and row.username == ident["username"]
-    seen = await live(account_id, platform) if verified and not kept else None
-    verified = verified and (kept or (seen is not None and seen["username"].lower() == ident["username"]))
-    values = {"platform": platform, "username": ident["username"], "verified": verified,
-              "display_name": ident["display_name"], "aliases_json": json.dumps(ident["aliases"]),
-              "instagram": ident["instagram"], "x": ident["x"]}
-    if row is None and await bound_tenant(agency) is None and not await bind_instance(agency):
-        raise Refused("unbound")
-    if row is None:
-        watch_id, on = str(uuid.uuid4()), True
-        try:
-            async with immediate_session() as s:
-                usable, _ = await agency_key(agency, session=s)
-                if not usable or account_id not in await agency_scope.agency_account_ids(s, agency):
-                    raise Refused("not_found")
-                s.add(LeakWatch(
-                    agency_user_id=agency, account_id=account_id, watch_id=watch_id, on=on,
-                    created_at=now, updated_at=now, **consent, **values,
-                ))
-        except IntegrityError:
-            if await handle_taken(agency, platform, account_id, ident["username"]):
-                raise Refused("handle_taken") from None
-            if await watch(agency, account_id) is not None:
-                raise Refused("exists") from None
-            raise
-    else:
-        watch_id, on = row.watch_id, row.on
-    bit = paused(on, True, await account_health.is_deactivated(account_id))
-    try:
-        pushed = await push(agency, key, watch_id, watch_body(account_id, bit, **values))
-    except Gone:
-        await forget_watch(agency, watch_id)
-        raise Refused("watch_deleted") from None
-    except Refused:
-        if row is None:
-            async with get_session() as s:
-                await s.execute(delete(LeakWatch).where(LeakWatch.watch_id == watch_id))
-        raise
-    async with get_session() as s:
-        live_row = await s.scalar(select(LeakWatch).where(LeakWatch.watch_id == watch_id))
-        if live_row is not None:
-            for k, v in {**values, **consent}.items():
-                setattr(live_row, k, v)
-            live_row.updated_at = now
-            if pushed:
-                live_row.synced_at = now
-                live_row.synced_paused = bit
+    automatic = consent_by == AUTO_CONSENT
+    while True:
+        now = datetime.utcnow()
+        current = identity_out(row) if row is not None else None
+        changed = current is None or any(current[field] != value for field, value in ident.items())
+        consent = {"consent_at": now, "consent_by": consent_by} if changed else {}
+        if await handle_taken(agency, platform, account_id, ident["username"]):
+            raise Refused("handle_taken")
+        kept = row is not None and row.verified and row.username == ident["username"]
+        seen = await live(account_id, platform) if verified and not kept else None
+        confirmed = verified and (kept or (seen is not None and seen["username"].lower() == ident["username"]))
+        values = {"platform": platform, "username": ident["username"], "verified": confirmed,
+                  "display_name": ident["display_name"], "aliases_json": json.dumps(ident["aliases"]),
+                  "instagram": ident["instagram"], "x": ident["x"]}
+        if automatic and row is not None:
+            raise Refused("exists")
+        if row is None and await bound_tenant(agency) is None and not await bind_instance(agency):
+            raise Refused("unbound")
+        if row is not None and ((credential := await verified_key(agency)) is None or credential[0] != key):
+            raise Refused("unbound")
+        inst_tenant = await _resolve_instance_tenant(key) if row is None and key == instance_key() else None
+        watch_id = str(uuid.uuid4()) if row is None else row.watch_id
+        async with watch_lock(watch_id):
             if row is None:
-                await s.execute(delete(LeakWatchOptOut).where(LeakWatchOptOut.agency_user_id == agency,
-                                                              LeakWatchOptOut.account_id == account_id))
-    return pushed
+                try:
+                    async with immediate_session() as s:
+                        if (account_id not in await agency_scope.agency_account_ids(s, agency)
+                                or not _creator_available(account_id, agency)):
+                            raise Refused("not_found")
+                        candidate, via_instance, held = await _credential_candidate(agency, s)
+                        if not candidate:
+                            raise Refused("not_found")
+                        if candidate != key or held is None or (via_instance and held.tenant_id != inst_tenant):
+                            raise Refused("unbound")
+                        if automatic:
+                            if not tracker_on(await applied_blob(s, agency, "flags")):
+                                raise Refused("watch_paused")
+                            if await _auto_blocked(agency, {account_id}, now, session=s):
+                                raise Refused("exists")
+                        s.add(LeakWatch(
+                            agency_user_id=agency, account_id=account_id, watch_id=watch_id, on=True,
+                            created_at=now, updated_at=now, **consent, **values,
+                        ))
+                except IntegrityError:
+                    if await handle_taken(agency, platform, account_id, ident["username"]):
+                        raise Refused("handle_taken") from None
+                    row = await watch(agency, account_id)
+                    if row is None:
+                        raise
+                    if automatic:
+                        raise Refused("exists") from None
+                    continue
+            if (current_row := await watch(agency, account_id)) is None or current_row.watch_id != watch_id:
+                raise Refused("watch_changed")
+            now = datetime.utcnow()
+            bit = paused(current_row.on, True, await account_health.is_deactivated(account_id))
+            try:
+                pushed = await push(agency, key, watch_id, watch_body(account_id, bit, **values))
+            except Gone:
+                await forget_watch(agency, watch_id)
+                raise Refused("watch_deleted") from None
+            except Refused:
+                if row is None:
+                    async with get_session() as s:
+                        await s.execute(delete(LeakWatch).where(LeakWatch.watch_id == watch_id))
+                raise
+            async with immediate_session() as s:
+                result = await s.execute(update(LeakWatch).where(LeakWatch.watch_id == watch_id).values(
+                    **values, **consent, updated_at=func.max(LeakWatch.updated_at, now),
+                    **({"synced_at": now, "synced_paused": bit} if pushed else {}),
+                ))
+                if not result.rowcount:
+                    raise Refused("watch_changed")
+                if row is None and not automatic:
+                    await s.execute(delete(LeakWatchOptOut).where(LeakWatchOptOut.agency_user_id == agency,
+                                                                  LeakWatchOptOut.account_id == account_id))
+            return pushed
 
 
-async def _auto_blocked(agency: str, ids: set[str], now: datetime) -> set[str]:
+async def _auto_blocked(agency: str, ids: set[str], now: datetime, *,
+                        session: AsyncSession | None = None) -> set[str]:
     found: set[str] = set()
-    async with get_session() as s:
+    async with (get_session() if session is None else nullcontext(session)) as s:
         for t, extra in ((LeakWatch, ()), (LeakWatchOptOut, ()), (LeakWatchTombstone, ()),
                          (LeakWatchAutoSkip, (LeakWatchAutoSkip.retry_after > now,))):
             found |= set((await s.scalars(select(t.account_id).where(
@@ -877,28 +906,25 @@ async def ensure_watches(agency: str, key: str, account_ids: Iterable[str], now:
     ids -= await _auto_blocked(agency, ids, now)
     owners = await owners_of_many(ids)
     off = await account_health.deactivated_ids()
-    todo = sorted(aid for aid, who in owners.items()
-                  if aid not in off and platforms.for_account(aid).key == "onlyfans" and agency in who)
+    eligible = (aid for aid, who in owners.items() if aid not in off
+                and platforms.for_account(aid).key == "onlyfans" and agency in who)
     made = 0
-    for aid in todo[:ENSURE_BATCH]:
+    for aid in sorted(aid for aid in eligible if _creator_available(aid, agency))[:ENSURE_BATCH]:
         ident = auto_identity(await live(aid, "onlyfans"))
         if ident is None:
             await _skip_auto(agency, aid, "no_identity", now)
             continue
-        async with watch_lock(agency, aid):
-            if await _auto_blocked(agency, {aid}, now):
-                continue
-            try:
-                synced = await save_watch(agency, key, aid, ident, verified=True, consent_by=AUTO_CONSENT)
-            except Refused as e:
-                if e.kind in ("creator_cap", "waitlist"):
-                    _capped[key] = now + AUTO_RETRY
-                    return made
-                if e.kind in ("key_invalid", "unbound"):
-                    return made
-                if e.kind not in ("exists", "not_found"):
-                    await _skip_auto(agency, aid, e.kind, now)
-                continue
+        try:
+            synced = await save_watch(agency, key, aid, ident, verified=True, consent_by=AUTO_CONSENT)
+        except Refused as e:
+            if e.kind in ("creator_cap", "waitlist"):
+                _capped[key] = now + AUTO_RETRY
+                return made
+            if e.kind in ("key_invalid", "unbound", "watch_paused"):
+                return made
+            if e.kind not in ("exists", "not_found", "watch_changed"):
+                await _skip_auto(agency, aid, e.kind, now)
+            continue
         made += 1
         if not synced:
             break

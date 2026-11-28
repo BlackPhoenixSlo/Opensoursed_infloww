@@ -811,6 +811,8 @@ def case_rebalance_leaves_a_tier_alone_table():
     rows = [
         ([("a", 0, ["1", "2"], None), ("b", 0, [], None), ("c", 0, [], None)], {"bad": ["c"]}, []),
         ([("a", 0, ["1", "2"], None), ("b", 0, [], None)], {"due": ["a"]}, []),
+        ([("a", 0, ["1", "2"], None), ("b", 0, [], None), ("c", 1, [], None)], {"bad": ["c"]}, []),
+        ([("a", 0, ["1", "2"], None), ("b", 0, [], None), ("c", 1, [], None)], {"due": ["c"]}, []),
         ([("a", 0, ["1", "2"], None), ("b", 0, ["3"], None)], {}, []),
         ([("a", 0, ["1"], None), ("b", 0, [], None)], {}, []),
         ([("a", 0, ["1", "2"], None), ("b", 0, [], None)], {"deactivated": ["2"]}, []),
@@ -827,6 +829,21 @@ def case_rebalance_leaves_a_tier_alone_table():
         assert _loads_by_label() == before and seen == probed, (entries, kw, seen)
 
 
+def case_rebalance_rejects_wrong_country_learned_by_probe():
+    _rebalance_registry(("a", 0, ["1", "2"], "Berlin, DE"), ("b", 0, [], None))
+    geo = {}
+
+    def verify(p):
+        geo[p["label"]] = "Paris, FR"
+        return True
+
+    step = proxy_registry.rebalance_step(bad=set(), due=set(), geo=lambda p: geo.get(p["label"]),
+                                         verify=verify, deactivated=frozenset(), rng=_FirstRng())
+    assert geo == {"b": "Paris, FR"}
+    assert step is None
+    assert _loads_by_label() == {"a": ["1", "2"], "b": []}
+
+
 def case_rebalance_picks_an_answering_same_country_target():
     _rebalance_registry(("a", 0, ["1", "2", "3"], "Berlin, DE"), ("b", 0, [], None), ("c", 0, [], "Paris, FR"),
                         ("d", 0, [], None))
@@ -835,6 +852,14 @@ def case_rebalance_picks_an_answering_same_country_target():
     assert seen == ["b", "d"], seen
     _rebalance_registry(("a", 0, ["1", "2"], None), ("b", 0, [], "Paris, FR"))
     assert _step() == ("2", "a", "b"), "an unknown source country takes any idle peer"
+
+
+def case_rebalance_skips_an_unfixable_stack():
+    _rebalance_registry(("us", 0, ["1", "2", "3"], "US"), ("eu", 0, ["4", "5"], "DE"),
+                        ("idle", 0, [], "DE"))
+    seen = []
+    assert _step(seen=seen) == ("5", "eu", "idle")
+    assert seen == ["idle"] and _loads_by_label() == {"us": ["1", "2", "3"], "eu": ["4"], "idle": ["5"]}
 
 
 def case_rebalance_loses_a_race_to_a_concurrent_bind():
@@ -846,6 +871,18 @@ def case_rebalance_loses_a_race_to_a_concurrent_bind():
     got = proxy_registry.rebalance_step(bad=set(), due=set(), geo=lambda p: None, verify=verify,
                                         deactivated=frozenset(), rng=_FirstRng())
     assert got is None and _loads_by_label() == {"a": ["1", "2"], "b": ["7"]}, (got, _loads_by_label())
+
+
+def case_rebalance_leaves_the_last_creator_in_place():
+    _rebalance_registry(("a", 0, ["1", "2"], None), ("b", 0, [], None), ("c", 1, [], None))
+
+    def verify(p):
+        proxy_registry.assign_account("c", "1")
+        return True
+
+    got = proxy_registry.rebalance_step(bad=set(), due=set(), geo=lambda p: None, verify=verify,
+                                        deactivated=frozenset(), rng=_FirstRng())
+    assert got is None and _loads_by_label() == {"a": ["2"], "b": [], "c": ["1"]}
 
 
 def case_assign_fallback_table():

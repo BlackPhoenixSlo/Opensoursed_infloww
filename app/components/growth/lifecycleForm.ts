@@ -81,6 +81,10 @@ export interface LifecycleRules {
   refusal: string | null;
 }
 
+export function lifecycleRefusal(title: string, platformRefusal: string | null, freeRefusal: string | null): string | null {
+  return platformRefusal ? `${title}: not on this platform` : freeRefusal;
+}
+
 const collect = (s: LifecycleDraft) => collectExtras(s.extras, { frequency: true });
 
 function cleanMessages(s: LifecycleDraft): LifecycleMessage[] {

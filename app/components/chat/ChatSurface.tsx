@@ -185,10 +185,10 @@ export function ChatSurface({
     if ((handle.data?.length ?? 0) === 0) return;
     perfPaintOnce(messagesPaintKey(accountId, fanId), "chat.messages", {
       count: handle.data?.length ?? 0,
-      ofSettled: handle.dataUpdatedAt > 0,
+      ofSettled: handle.headSettled,
       phase: "initial",
     });
-  }, [accountId, fanId, handle.data, handle.dataUpdatedAt]);
+  }, [accountId, fanId, handle.data, handle.headSettled]);
 
   const fanQ = useFan(accountId, fanId);
 

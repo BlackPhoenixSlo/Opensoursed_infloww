@@ -6,7 +6,7 @@ import { Lock, X } from "lucide-react";
 
 import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useAccountPlatform, useCanOrFallback } from "@/hooks/useCan";
-import { accountPlatform, useFallbackPlatform } from "@/lib/platform";
+import { UNKNOWN_PLATFORM, accountPlatform, isPlatform, useFallbackPlatform } from "@/lib/platform";
 import { onlineCountLabel, useOnlineSubscribers } from "@/hooks/useOnlineSubscribers";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { useSmartLists } from "@/hooks/useSmartLists";
@@ -64,8 +64,8 @@ export function MassMessageComposer({
   const platformAccounts = usePlatformAccounts();
   const fallbackPlatform = useFallbackPlatform();
   const launchPlatform = useAccountPlatform(forcedAccountId);
-  const launch = forcedAccountId ? launchPlatform ?? "unknown" : null;
-  const openPlatform = launchPlatform ?? fallbackPlatform;
+  const launch = forcedAccountId ? launchPlatform ?? UNKNOWN_PLATFORM : null;
+  const openPlatform = isPlatform(launchPlatform) ? launchPlatform : fallbackPlatform;
   const { isIncluded } = useAllModelsInclude();
   // No explicit employeeId attributes the send to the Automation system employee (id=2); X-Employee-Id is opt-in per call.
   const { current: currentEmployee } = useEmployee();
@@ -87,7 +87,8 @@ export function MassMessageComposer({
   // Stable per roster: AccountPicker's auto-seed effect depends on it.
   const setAccountId = useCallback((id: string) => {
     const a = platformAccounts.find((x) => x.id === id);
-    dispatch({ type: "setAccount", id, platform: a ? accountPlatform(a) : undefined });
+    const platform = a ? accountPlatform(a) : undefined;
+    dispatch({ type: "setAccount", id, platform: isPlatform(platform) ? platform : undefined });
   }, [dispatch, platformAccounts]);
   // Funnel steps run server-side per replying fan after the opener; inert on the live OF-queue path.
   const funnelsQ = useFunnels();

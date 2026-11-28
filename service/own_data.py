@@ -214,7 +214,7 @@ TABLES = {
         "day user_id provider cost_cents call_count is_capped updated_at"),
     "leak_tracker_tenant": ("",
         "agency_user_id tenant_id bound_at via_instance",
-        ""),
+        "retired_tenant_id retired_key"),
     "leak_watch": ("",
         "id agency_user_id account_id watch_id on platform username verified display_name aliases_json instagram x "
         "consent_at consent_by synced_at synced_paused offer_snoozed_until created_at updated_at",

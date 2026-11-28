@@ -652,7 +652,8 @@ def case_four_photos_roundtrip_crm_hub_owner_and_reply():
     assert got.headers["content-type"] == "image/jpeg"
     assert got.headers["x-content-type-options"] == "nosniff"
     assert got.headers["content-security-policy"] == "default-src 'none'"
-    assert got.headers["cache-control"] == "no-store"
+    assert got.headers["cache-control"] == "private, max-age=86400"
+    assert got.headers["vary"] == "Cookie, Authorization"
     assert got.headers["content-disposition"] == "inline"
     with Image.open(io.BytesIO(got.content)) as im:
         assert im.format == "JPEG" and im.size == (48, 64)
@@ -662,7 +663,7 @@ def case_four_photos_roundtrip_crm_hub_owner_and_reply():
     opened = owner.get(f"/support/api/threads/{t['id']}").json()
     assert [p["id"] for p in opened["messages"][-1]["photos"]] == [p["id"] for p in last["photos"]]
     owned = owner.get(f"/support/api/photos/{first['id']}")
-    assert owned.content == got.content and owned.headers["cache-control"] == "no-store"
+    assert owned.content == got.content and owned.headers["cache-control"] == "private, max-age=86400"
     r = owner.post(f"/support/api/threads/{t['id']}/reply/upload", data={"text": ""}, files=_files(_jpeg(30, 20)))
     assert r.status_code == 200, r.text
     reply = r.json()["messages"][-1]
@@ -735,6 +736,8 @@ def case_send_limit_and_identity_checked_before_decode():
         assert _hub_upload(c, key, _jpeg()).status_code == 429
         r = c.post("/support/api/instance/messages/upload", headers=INST, files=_files(_jpeg()),
                    data={"instance": "AE", "user_key": " "})
+        assert r.status_code == 400, r.text
+        r = c.post("/support/api/instance/messages", headers=INST, json={**who, "instance": " ", "text": "x"})
         assert r.status_code == 400, r.text
         assert _hub_owner().post("/support/api/threads/999999/reply/upload", files=_files(_jpeg())).status_code == 404
         assert decodes == [], decodes

@@ -4,6 +4,8 @@
 import { useMemo } from "react";
 import { useQueries, type Query } from "@tanstack/react-query";
 
+import { useAccounts } from "@/hooks/useAccounts";
+import { accountCan } from "@/lib/platform";
 import { relay } from "@/lib/relay";
 
 export interface TransactionRow {
@@ -50,8 +52,16 @@ export interface FanActivity {
 }
 
 export function useFanActivity(accountIds: string[]): FanActivity & { loaded: boolean } {
+  const accountsQ = useAccounts();
+  const roster = accountsQ.data;
+  const waiting = accountsQ.isLoading;
+  const ids = useMemo(() => {
+    if (waiting) return [];
+    const known = [...(roster?.accounts ?? []), ...(roster?.watchers ?? [])];
+    return accountIds.filter((id) => accountCan(known, id, "fan_activity"));
+  }, [accountIds, roster, waiting]);
   const queries = useQueries({
-    queries: accountIds.map((aid) => ({
+    queries: ids.map((aid) => ({
       queryKey: ["last-purchases", aid] as const,
       enabled: !!aid,
       staleTime: 24 * 60 * 60_000,
@@ -64,11 +74,11 @@ export function useFanActivity(accountIds: string[]): FanActivity & { loaded: bo
   });
 
   const updatedKey = queries.map((q) => q.dataUpdatedAt).join("|");
-  const loaded = queries.every((q) => !q.isPending);
+  const loaded = !waiting && queries.every((q) => !q.isPending);
   return useMemo(
-    () => ({ ...fanActivityFrom(accountIds.map((aid, i) => [aid, queries[i]?.data] as const)), loaded }),
+    () => ({ ...fanActivityFrom(ids.map((aid, i) => [aid, queries[i]?.data] as const)), loaded }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [updatedKey, accountIds, loaded],
+    [updatedKey, ids, loaded],
   );
 }
 

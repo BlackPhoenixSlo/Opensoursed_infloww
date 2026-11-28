@@ -6,7 +6,7 @@ import { Image as ImageIcon, Plus, Search } from "lucide-react";
 import { LazyMassMessageComposer } from "@/components/compose/LazyMassMessageComposer";
 import type { FanId } from "@/lib/fanId";
 import { useCanOrFallback } from "@/hooks/useCan";
-import { can, type Platform } from "@/lib/platform";
+import { can, type AccountPlatform } from "@/lib/platform";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 import { ChatGallery } from "./ChatGallery";
@@ -69,7 +69,7 @@ export function FanListHeader({
 }: {
   title: string;
   creatorId: string | null;
-  scopePlatforms: readonly Platform[];
+  scopePlatforms: readonly AccountPlatform[];
   query: string;
   onQueryChange: (next: string) => void;
   galleryFan: { accountId: string; fanId: FanId } | null;

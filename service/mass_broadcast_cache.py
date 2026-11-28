@@ -14,6 +14,17 @@ from db.models import MassBroadcastCache
 log = logging.getLogger("of-relay.mass_broadcast_cache")
 
 TTL_SECONDS = 24 * 60 * 60
+_MAX_SAFE_INT = 2**53 - 1
+_WALKS: dict[tuple[str, int, int], dict[str, bool]] = {}
+
+
+def note_walk(account_id: str, days_back: int, limit: int, *, has_more: bool, incomplete: bool) -> None:
+    _WALKS[(account_id, days_back, limit)] = {"hasMore": has_more, "incomplete": incomplete}
+
+
+def last_walk(account_id: str, days_back: int, limit: int) -> dict[str, bool] | None:
+    flags = _WALKS.get((account_id, days_back, limit))
+    return dict(flags) if flags is not None else None
 
 
 def _parse_of_date(s: str | None) -> datetime | None:
@@ -39,7 +50,7 @@ def _row_to_dict(row: MassBroadcastCache) -> dict[str, Any]:
     except (ValueError, TypeError):
         previews = []
     return {
-        "id": row.queue_id,
+        "id": str(row.queue_id) if row.queue_id > _MAX_SAFE_INT else row.queue_id,
         "date": row.sent_at.isoformat() + "+00:00" if row.sent_at else None,
         "text": row.body_text,
         "rawText": row.raw_text,
@@ -192,6 +203,16 @@ async def upsert_many(account_id: str, items: list[dict[str, Any]]) -> int:
             await s.execute(stmt)
             written += 1
     return written
+
+
+async def is_cached(account_id: str, queue_id: int) -> bool:
+    async with get_session() as s:
+        return (await s.execute(
+            select(MassBroadcastCache.queue_id).where(
+                MassBroadcastCache.account_id == account_id,
+                MassBroadcastCache.queue_id == int(queue_id),
+            ).limit(1)
+        )).first() is not None
 
 
 async def mark_canceled(account_id: str, queue_id: int) -> bool:

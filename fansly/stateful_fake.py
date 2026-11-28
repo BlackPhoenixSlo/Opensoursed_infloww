@@ -14,6 +14,7 @@ from fansly_shim import FanslyShimClient
 HERE = Path(__file__).resolve().parent
 READS = HERE / "fixtures" / "reads.json"
 WRITES = HERE / "fixtures" / "writes.json"
+BROADCASTS = HERE / "fixtures" / "broadcast.json"
 
 SEND = "RECIPES.md: ## `POST /api/v1/message` — send"
 UNSEND = "RECIPES.md: ## `POST /api/v1/message/delete` — unsend a message"
@@ -26,8 +27,11 @@ SUBSCRIBERS = "RECIPES.md: ### A6/A7 — the first subscriber (gift-code trial, 
 PRESENCE = "RECIPES.md: ## Presence — and why `statusId` is NOT the online flag"
 POSTS = "RECIPES.md: ## Posts — create and delete"
 ACK = "RECIPES.md: ## `POST /api/v1/message/ack` — mark messages read"
+TYPING = "RECIPES.md: ## `POST /api/v1/message/typing` — emit the typing indicator"
+BROADCAST = "RECIPES.md: ### Broadcast schedule / queue / history / cancel (§6.6) — W"
 READS_FIXTURE = "fixtures/reads.json"
 WRITES_FIXTURE = "fixtures/writes.json"
+BROADCAST_FIXTURE = "fixtures/broadcast.json"
 
 MINTED_ROW = "INVENTED: the listing row for a freshly minted thread; the capture has rows only for older threads"
 SORT_IDS = "INVENTED: sortId values; the capture names only the key"
@@ -37,10 +41,17 @@ BARE_SUBSCRIBERS = "ASSUMPTION: a GET /subscribers without limit/offset answers 
 RENEWAL_OFF = ("INVENTED: renewal_off's autoRenew 0 and future endsAt; the capture has only autoRenew 1 "
                "and an endsAt already past")
 ACK_ANSWER = "ASSUMPTION: the ack's `response` field; the recipe shows only the success flag"
+TYPING_ANSWER = "ASSUMPTION: the typing answer's null `response` field; the writes fixture shows only the success flag"
 REFUSED_REMOVE = ("INVENTED: a refused remove keeps the member and echoes the batch without its command; "
                   "no refused remove is captured")
 IGNORED_ID = "ASSUMPTION: ignoredId is a digit string, as in every captured Fansly id body; the recipe names only keys"
 EDIT_ECHO = "ASSUMPTION: /lists/edit answers the list in the POST /lists row shape; the recipe says only `the list`"
+STATS_PAGES = "INVENTED: every stats page after the first; the capture holds one page"
+SCHEDULED_ROWS = ("INVENTED: every scheduled row past one pending one, including the cancelled (status 3) and "
+                  "status-2 rows, and the version, gatewayMetadata and group values; the capture saw one pending "
+                  "row, read [] after its cancel, and records the other fields by key only")
+TEMPLATE_TEXT = ("ASSUMPTION: messageTemplate is the POST /message/broadcast body as a JSON string, its text under "
+                 "`content`; the recipe names only scheduledFor and gatewayMetadata inside it")
 ME_WALLS = "INVENTED: the /account/me envelope and wall object; the capture names only the `walls` field and one wall id"
 WALL = "900264702215319552"
 
@@ -131,6 +142,9 @@ class StatefulFansly:
         self.blocked: set[str] = set()
         self.refused_removes: set[str] = set()
         self.posts: dict[str, dict] = {}
+        broadcasts = json.loads(BROADCASTS.read_text())
+        self.broadcast_pages = broadcasts["feeds"]["walk"]
+        self.scheduled_broadcasts = broadcasts["scheduled"]
         self.calls: list[tuple[str, str, Any, dict]] = []
         self.unmodelled: list[str] = []
         self._next_id = 900_000_000_000_005_000
@@ -256,6 +270,13 @@ def _ack(fake: StatefulFansly, params: dict, body: Any) -> bool:
         group = fake.groups[m["groupId"]]
         group["unreadCount"], group["lastUnreadMessageId"] = 0, None
     return True
+
+
+@_route("POST", "/message/typing", TYPING, WRITES_FIXTURE, TYPING_ANSWER)
+def _typing(fake: StatefulFansly, params: dict, body: Any) -> None:
+    _expect(body, {"groupId": ID}, "POST /message/typing")
+    if body["groupId"] not in fake.groups:
+        raise Unmodelled(f"POST /message/typing: group {body['groupId']} is not a known thread")
 
 
 @_route("GET", "/notifications", READS_RUN, READS_FIXTURE)
@@ -422,3 +443,20 @@ def _delete_post(fake: StatefulFansly, params: dict, body: Any, pid: str) -> Non
     if fake.posts.pop(pid, None) is None:
         raise Unmodelled(f"POST /post/{pid}/delete: only a live own post was captured")
     return None
+
+
+@_route("GET", "/message/broadcast/stats", BROADCAST, BROADCAST_FIXTURE, STATS_PAGES)
+def _broadcast_stats(fake: StatefulFansly, params: dict, body: Any) -> dict:
+    _expect(body, None, "GET /message/broadcast/stats body")
+    _expect_params(params, {"before": TEXT, "limit": "24"}, "GET /message/broadcast/stats")
+    page = fake.broadcast_pages.get(params["before"])
+    if page is None:
+        raise Unmodelled(f"GET /message/broadcast/stats: no fixture page before {params['before']}")
+    return copy.deepcopy(page)
+
+
+@_route("GET", "/message/broadcast/scheduled", BROADCAST, BROADCAST_FIXTURE, SCHEDULED_ROWS, TEMPLATE_TEXT)
+def _scheduled_broadcasts(fake: StatefulFansly, params: dict, body: Any) -> dict:
+    _expect(body, None, "GET /message/broadcast/scheduled body")
+    _expect_params(params, {}, "GET /message/broadcast/scheduled")
+    return copy.deepcopy(fake.scheduled_broadcasts)

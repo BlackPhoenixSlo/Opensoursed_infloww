@@ -19,7 +19,8 @@ OTHER_FAN = "900000000000000003"
 FLAGS = ("INVENTED: ", "ASSUMPTION: ")
 FLAGGED = {("POST", "/group"), ("GET", "/lists/itemsnew"), ("POST", "/lists/commands"), ("GET", "/message"),
            ("POST", "/message"), ("GET", "/subscribers"), ("GET", "/account/me"), ("POST", "/message/ack"),
-           ("POST", "/account/ignore"), ("POST", "/lists/edit")}
+           ("POST", "/account/ignore"), ("POST", "/lists/edit"), ("POST", "/message/typing"),
+           ("GET", "/message/broadcast/stats"), ("GET", "/message/broadcast/scheduled")}
 
 
 def _raises(fn) -> bool:

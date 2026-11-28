@@ -66,7 +66,7 @@ function OwnerBody({ section }: { section: S4SSection }) {
         marks={marks}
         className="md:flex border-r border-border"
       />
-      <div className="min-w-0 flex-1 bg-bg">
+      <div className="min-w-0 flex-1 bg-bg md:h-[calc(var(--vvh)-var(--shell-top))] md:overflow-y-auto">
         {accounts.length > 0 && (
           <div className="px-4 pt-4 md:hidden">
             <IfCreatorSelect accounts={accounts} value={accountId} onChange={setAccountId} />

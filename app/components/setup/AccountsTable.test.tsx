@@ -209,6 +209,56 @@ describe("AccountsTable Creator avatar — no Display image picked", () => {
   });
 });
 
+describe("AccountsTable reads the Platform row", () => {
+  function serve() {
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/admin/accounts") {
+        return Promise.resolve({
+          accounts: [
+            { id: "of-1", nickname: "Oscar", platform: "onlyfans", has_session: true, is_active: true },
+            { id: "fy-1", nickname: "Fiona", platform: "fansly", has_session: true, is_active: true },
+            { id: "my-1", nickname: "Mia", platform: "mym", has_session: true, is_active: true },
+          ],
+          active_account_id: null,
+        });
+      }
+      if (path.startsWith("/health")) {
+        return Promise.resolve({ ok: true, accounts: ["of-1", "fy-1", "my-1"].map((id) => ({ account_id: id, ok: false, error: "401" })) });
+      }
+      return Promise.resolve({});
+    });
+  }
+  const row = (name: string) => screen.getByRole("button", { name: `More actions for ${name}` }).closest("tr")!;
+
+  it("an unregistered key reads Unknown platform with no logo, no relink and no recovery; OnlyFans and Fansly keep theirs", async () => {
+    serve();
+    const onLink = vi.fn();
+    render(<AccountsTable onLink={onLink} />, { wrapper });
+    await screen.findByRole("button", { name: "More actions for Mia" });
+
+    const mia = row("Mia");
+    expect(within(mia).getByText("Unknown platform").querySelector("svg")).toBeNull();
+    expect(within(mia).queryByRole("button", { name: "Link creator account" })).toBeNull();
+    expect(within(mia).getByTitle("401")).toHaveTextContent("Disconnected");
+    fireEvent.click(within(mia).getByRole("button", { name: "More actions for Mia" }));
+    expect(screen.queryByRole("group", { name: "Recovery" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeEnabled();
+    fireEvent.click(within(mia).getByRole("button", { name: "More actions for Mia" }));
+
+    expect(within(row("Fiona")).getByText("Fansly").querySelector('[data-testid="platform-logo-fansly"]')).not.toBeNull();
+    const oscarCell = within(row("Oscar")).getByText("OnlyFans");
+    expect(oscarCell.querySelector("svg")).not.toBeNull();
+    expect(oscarCell.querySelector('[data-testid^="platform-logo-"]')).toBeNull();
+
+    fireEvent.click(within(row("Fiona")).getByRole("button", { name: "Link creator account" }));
+    expect(onLink).toHaveBeenLastCalledWith("fansly", "fy-1");
+    fireEvent.click(within(row("Oscar")).getByRole("button", { name: "Link creator account" }));
+    expect(onLink).toHaveBeenLastCalledWith("browserbase");
+    fireEvent.click(within(row("Oscar")).getByRole("button", { name: "More actions for Oscar" }));
+    expect(screen.getByRole("menuitem", { name: "Log in to account via OnlyFans" })).toBeEnabled();
+  });
+});
+
 describe("AccountsTable — watcher accounts", () => {
   function serve(accounts: object[], watchers?: object[]) {
     relayGet.mockImplementation((path: string) => {
@@ -428,6 +478,8 @@ describe("connectivity", () => {
       { label: "Not connected", tone: "muted" }],
     ["a dead session outranks a failed read", { ...LIVE, session_dead_at: "t" }, undefined, { loaded: false, error: new Error("x") },
       { label: "Disconnected", tone: "err" }],
+    ["loaded, an unregistered Platform down names the error, not the Fansly rebind", { ...LIVE, platform: "mym" },
+      { account_id: "a", ok: false, error: "401" }, LOADED, { label: "Disconnected", tone: "err", title: "401" }],
     ["a dead Fansly session names the rebind", { ...LIVE, platform: "fansly", session_dead_at: "t" }, { account_id: "a", ok: true },
       LOADED, { label: "Disconnected", tone: "err", title: FANSLY_T.rebind }],
   ])("%s", (_name, a, h, read, want) => {

@@ -1840,6 +1840,8 @@ class LeakTrackerTenant(Base):
     tenant_id: Mapped[str] = mapped_column(String, nullable=False)
     bound_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     via_instance: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("0"))
+    retired_tenant_id: Mapped[str | None] = mapped_column(String)
+    retired_key: Mapped[str | None] = mapped_column(Text)
 
 
 class LeakWatch(Base):

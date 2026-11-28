@@ -17,7 +17,7 @@ import {
   type ChatPages,
   type Reply,
 } from "@/lib/chatsCache";
-import { insertByCreatedAt, insertMsg, toUtcIso } from "@/lib/threadCache";
+import { evictMessage, insertByCreatedAt, insertMsg, tombstoneMessage, toUtcIso } from "@/lib/threadCache";
 
 interface ChatMessagePayload {
   id: number;
@@ -239,7 +239,21 @@ export function useInboxRealtime() {
       void qc.invalidateQueries({ queryKey: vaultHistoryKey(accountId, fanId) });
     });
 
+    const offDeleted = eventBus.on("chat_message_deleted", (env: EventEnvelope) => {
+      const accountId = env.__account_id ?? null;
+      const del = env.chat_message_deleted as { id?: FanId; fan_id?: FanId } | undefined;
+      const id = del?.id ?? null;
+      const fanId = del?.fan_id ?? null;
+      if (!accountId || !isValidFanId(id) || !isValidFanId(fanId)) return;
+      const allowed = allowedRef.current;
+      if (allowed.size > 0 && !allowed.has(accountId)) return;
+      tombstoneMessage(accountId, id);
+      qc.getQueryCache().findAll({
+        queryKey: ["messages", accountId],
+        predicate: (q) => String(q.queryKey[2]) === String(fanId),
+      }).forEach((q) => patchQueryData<OFMessage[]>(qc, q.queryKey, (prev) => prev && evictMessage(prev, id)));
+    });
 
-    return () => { offMsg(); offReply(); offTx(); offVault(); };
+    return () => { offMsg(); offReply(); offTx(); offVault(); offDeleted(); };
   }, [qc]);
 }

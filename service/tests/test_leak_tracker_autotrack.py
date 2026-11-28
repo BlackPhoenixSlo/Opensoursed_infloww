@@ -7,17 +7,22 @@ import asyncio  # noqa: E402
 import dataclasses  # noqa: E402
 import inspect  # noqa: E402
 import json  # noqa: E402
+import logging  # noqa: E402
 import os  # noqa: E402
 import time  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
-from datetime import timedelta  # noqa: E402
-from pathlib import Path  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
+from pathlib import Path
+
+from unittest.mock import patch  # noqa: E402
 
 import httpx  # noqa: E402
-from sqlalchemy import delete, select, update  # noqa: E402
+from sqlalchemy.exc import IntegrityError  # noqa: E402
+from sqlalchemy import delete, select, text, update  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 import account_page  # noqa: E402
+import accounts  # noqa: E402
 import leak_tracker  # noqa: E402
 import leak_tracker_api  # noqa: E402
 import relay_host  # noqa: E402
@@ -48,6 +53,7 @@ LIVE = {CREATOR: {"username": "MiaVale", "name": "Mia Vale"}, SECOND: {"username
 async def _seed() -> None:
     async with get_session() as s:
         for aid in (SECOND, THIRD):
+            accounts.account_dir(aid).mkdir(exist_ok=True)
             s.add(Account(id=aid, nickname=f"creator_{aid}", color="#aaaaaa"))
     async with get_session() as s:
         for aid in (SECOND, THIRD):
@@ -58,6 +64,9 @@ async def _seed() -> None:
 asyncio.run(_seed())
 SPAWNED: list = []
 relay_host.spawn_bg = lambda coro, name: SPAWNED.append((name, coro))
+
+
+HTTP_CLIENT = httpx.AsyncClient
 
 
 class Tracker:
@@ -536,32 +545,210 @@ def case_f4_a_changed_instance_key_leaves_the_agency_able_to_paste_its_own():
             return real(request)
         t.handler = moved
         assert asyncio.run(leak_tracker.agency_key(A)) == (other, True)
+        assert OWNER_A.get("/admin/leaks/all").status_code == 503
+        assert not any(c.url.path == "/v1/leaks" for c in t.calls)
+        asyncio.run(leak_tracker.sync_watches(datetime.utcnow() + timedelta(days=1)))
+        assert not any(c.method == "PUT" for c in t.calls)
+        assert OWNER_A.post(f"/admin/leaks/watches/{CREATOR}/refresh").status_code == 503
+        assert not any(c.method == "POST" for c in t.calls)
+        assert OWNER_A.delete(f"/admin/leaks/watches/{CREATOR}").status_code == 200
+        asyncio.run(leak_tracker.land_tombstones())
+        assert not any(c.method == "DELETE" for c in t.calls)
         r = OWNER_A.put("/admin/leaks/key", json={"key": OWN_KEY})
         assert r.status_code == 200, r.text
         assert asyncio.run(leak_tracker.binding(A)) == (OWN_TENANT, False)
-        assert not asyncio.run(leak_tracker.pending(A)), "no delete is parked under a tenant no key reaches"
+        asyncio.run(leak_tracker.land_tombstones())
+        assert not any(c.method == "DELETE" for c in t.calls)
+        async def stones():
+            async with get_session() as session:
+                return list((await session.scalars(select(LeakWatchTombstone))).all())
+        pending = asyncio.run(stones())
+        assert len(pending) == 3
+        assert all(t.tenant_id == INSTANCE_TENANT and t.last_error == "tenant_mismatch"
+                   and t.attempts == 0 for t in pending)
         assert _watches()
         r = OWNER_A.put("/admin/leaks/key", json={"key": ""})
         assert r.status_code == 409, r.text
         assert asyncio.run(leak_tracker.agency_key(A)) == (OWN_KEY, False)
 
 
-def case_an_own_key_while_the_instance_tenant_backs_off_is_refused_503_and_moves_nothing():
+
+def case_rebind_waits_for_the_old_put_and_saves_the_replacement_during_delete():
+    _reset(flags_b=OFF)
+    with _tracker() as t:
+        asyncio.run(leak_tracker.ensure_all())
+        old = _watches()[CREATOR].watch_id
+        old_put = asyncio.Event()
+        finish_put = asyncio.Event()
+        old_delete = asyncio.Event()
+        finish_delete = asyncio.Event()
+
+        async def handle(request):
+            if request.url.path.endswith(old):
+                if request.method == "PUT":
+                    old_put.set()
+                    await finish_put.wait()
+                if request.method == "DELETE":
+                    old_delete.set()
+                    await finish_delete.wait()
+            return t.handler(request)
+
+        async def move():
+            ident = {"username": "revised", "display_name": "Revised", "aliases": [], "instagram": None, "x": None}
+            async def save(key):
+                return await leak_tracker.save_watch(A, key, CREATOR, ident, verified=False, consent_by="test")
+
+            first = asyncio.create_task(save(INSTANCE_KEY))
+            await asyncio.wait_for(old_put.wait(), 2)
+            assert await leak_tracker.claim_tenant(A, OWN_TENANT, OWN_KEY) == "bound"
+            drain = asyncio.create_task(leak_tracker.land_tombstones())
+            try:
+                done, _ = await asyncio.wait({drain}, timeout=0.05)
+                assert not done and not old_delete.is_set()
+                finish_put.set()
+                try:
+                    await first
+                except leak_tracker.Refused as exc:
+                    assert exc.kind == "watch_changed"
+                else:
+                    raise AssertionError("save returned success for the replaced watch")
+                await asyncio.wait_for(old_delete.wait(), 2)
+                assert await asyncio.wait_for(save(OWN_KEY), 2)
+                assert not drain.done()
+            finally:
+                finish_put.set()
+                finish_delete.set()
+                await asyncio.gather(first, drain, return_exceptions=True)
+
+        with patch.object(httpx, "AsyncClient",
+                          side_effect=lambda **kw: HTTP_CLIENT(**kw, transport=httpx.MockTransport(handle))):
+            asyncio.run(move())
+        assert _watches()[CREATOR].username == "revised"
+        assert len([c for c in t.calls if c.method == "DELETE"]) == 3
+        assert not asyncio.run(leak_tracker.pending(A))
+
+
+def case_cross_tenant_claim_retains_the_old_credential_for_deletes():
+    _reset(flags_b=OFF)
+    old_key = "ltk_" + "o" * 40
+    with _tracker() as t:
+        asyncio.run(leak_tracker.ensure_all())
+        real = t.handler
+        def same_tenant(request):
+            if request.url.path == "/v1/me" and request.headers["authorization"] == f"Bearer {old_key}":
+                return httpx.Response(200, json={**ME, "tenant_id": INSTANCE_TENANT})
+            return real(request)
+        t.handler = same_tenant
+        assert OWNER_A.put("/admin/leaks/key", json={"key": old_key}).status_code == 200
+        os.environ["LEAK_TRACKER_KEY"] = OWN_KEY
+        before = {w.watch_id for w in _watches().values()}
+        assert OWNER_A.put("/admin/leaks/key", json={"key": OWN_KEY}).status_code == 400
+        os.environ["LEAK_TRACKER_KEY"] = "ltk_" + "r" * 40
+        claimed = OWNER_A.put("/admin/leaks/key", json={"key": OWN_KEY})
+        assert claimed.status_code == 200, claimed.text
+        assert old_key[-4:] not in claimed.text
+        after = {w.watch_id for w in _watches().values()}
+        assert after and after.isdisjoint(before) and len(after) == len(before)
+        asyncio.run(leak_tracker.land_tombstones())
+        deletes = [c for c in t.calls if c.method == "DELETE"]
+        assert {c.url.path.rsplit("/", 1)[-1] for c in deletes} == before
+        assert {c.headers["authorization"] for c in deletes} == {f"Bearer {old_key}"}
+        assert not asyncio.run(leak_tracker.pending(A))
+
+        async def retired_gone():
+            async with get_session() as s:
+                return (await s.get(LeakTrackerTenant, A)).retired_key is None
+
+        assert asyncio.run(retired_gone())
+
+
+def case_a_refused_retired_key_drops_its_deletes_and_frees_agency_delete():
+    _reset(flags_b=OFF)
+    old_key = "ltk_" + "o" * 40
+    with _tracker() as t:
+        asyncio.run(leak_tracker.ensure_all())
+        assert len(_watches()) >= 2
+        real = t.handler
+
+        def revoked_old(request):
+            bearer = request.headers["authorization"]
+            if request.url.path == "/v1/me" and bearer == f"Bearer {old_key}":
+                return httpx.Response(200, json={**ME, "tenant_id": INSTANCE_TENANT})
+            if request.method == "DELETE" and bearer == f"Bearer {old_key}":
+                t.calls.append(request)
+                return httpx.Response(401)
+            return real(request)
+        t.handler = revoked_old
+        assert OWNER_A.put("/admin/leaks/key", json={"key": old_key}).status_code == 200
+        os.environ["LEAK_TRACKER_KEY"] = "ltk_" + "r" * 40
+        logged: list[str] = []
+        handler = logging.Handler()
+        handler.emit = lambda record: logged.append(record.getMessage())
+        leak_tracker.log.addHandler(handler)
+        try:
+            assert OWNER_A.put("/admin/leaks/key", json={"key": OWN_KEY}).status_code == 200
+            asyncio.run(leak_tracker.land_tombstones())
+        finally:
+            leak_tracker.log.removeHandler(handler)
+        deletes = [c.headers["authorization"] for c in t.calls if c.method == "DELETE"]
+        assert deletes and set(deletes) == {f"Bearer {old_key}"} and len(deletes) < len(_watches()), deletes
+        assert logged and all("missed (retired_key_refused)" in m and old_key not in m for m in logged), logged
+        assert asyncio.run(leak_tracker.retired_credential(A)) is None
+        assert not asyncio.run(leak_tracker.pending(A))
+        asyncio.run(leak_tracker.before_user_delete(A))
+        assert {c.headers["authorization"] for c in t.calls if c.method == "DELETE"} >= {f"Bearer {OWN_KEY}"}
+
+        async def retired_cols():
+            async with get_session() as s:
+                row = await s.get(LeakTrackerTenant, A)
+                return row.retired_tenant_id, row.retired_key
+
+        assert asyncio.run(retired_cols()) == (None, None)
+
+
+def case_revoked_own_key_does_not_block_instance_tenant_deletes():
+    _reset(flags_b=OFF)
+    with _tracker() as t:
+        asyncio.run(leak_tracker.ensure_all())
+        assert OWNER_A.put("/admin/leaks/key", json={"key": OWN_KEY}).status_code == 200
+        real = t.handler
+        def revoke_own(request):
+            if request.method == "PUT" and request.headers["authorization"] == f"Bearer {OWN_KEY}":
+                return httpx.Response(401)
+            return real(request)
+        t.handler = revoke_own
+        asyncio.run(leak_tracker.sync_watches())
+        assert leak_tracker.key_invalid(A)
+        asyncio.run(leak_tracker.land_tombstones())
+        assert {c.headers["authorization"] for c in t.calls if c.method == "DELETE"} == {f"Bearer {INSTANCE_KEY}"}
+        assert not asyncio.run(leak_tracker.pending(A))
+
+
+def case_pasting_instance_key_never_stores_or_masks_it():
+    _reset(flags_b=OFF)
+    with _tracker() as t:
+        r = OWNER_A.put("/admin/leaks/key", json={"key": f" {INSTANCE_KEY} "})
+        assert r.status_code == 400
+        assert INSTANCE_KEY[-4:] not in r.text
+        assert not t.calls
+        assert not asyncio.run(tenant_keys.get_key(A, leak_tracker.PROVIDER))
+
+
+def case_an_own_key_rebind_preserves_deletes_while_the_instance_tenant_backs_off():
     _reset(flags_b=OFF)
     with _tracker():
         asyncio.run(leak_tracker.ensure_all())
-        before = {aid: w.watch_id for aid, w in _watches().items()}
+        before = {w.watch_id for w in _watches().values()}
         leak_tracker._tenants.clear()
         leak_tracker._tenant_misses[INSTANCE_KEY] = (time.monotonic() + 600, 30.0)
-        r = OWNER_A.put("/admin/leaks/key", json={"key": OWN_KEY})
-        assert r.status_code == 503, r.text
-        assert asyncio.run(leak_tracker.binding(A)) == (INSTANCE_TENANT, True)
-        assert {aid: w.watch_id for aid, w in _watches().items()} == before
-        assert not asyncio.run(leak_tracker.pending(A))
-        assert asyncio.run(leak_tracker.get_key(A, leak_tracker.PROVIDER)) == ""
-        leak_tracker._tenant_misses.clear()
         assert OWNER_A.put("/admin/leaks/key", json={"key": OWN_KEY}).status_code == 200
-        assert asyncio.run(leak_tracker.pending(A)), "once the instance tenant is known the old watches are tombstoned"
+        assert asyncio.run(leak_tracker.binding(A)) == (OWN_TENANT, False)
+        assert before.isdisjoint(w.watch_id for w in _watches().values())
+        asyncio.run(leak_tracker.land_tombstones())
+        assert asyncio.run(leak_tracker.pending(A))
+        leak_tracker._tenant_misses.clear()
+        asyncio.run(leak_tracker.land_tombstones())
+        assert not asyncio.run(leak_tracker.pending(A))
 
 
 def case_f4_clearing_an_own_key_on_the_instance_tenant_answers_with_the_instance_brand():
@@ -578,6 +765,27 @@ def case_f4_clearing_an_own_key_on_the_instance_tenant_answers_with_the_instance
         assert OWNER_A.put("/admin/leaks/key", json={"key": OWN_KEY}).json()["source"] == "own"
         cleared = OWNER_A.put("/admin/leaks/key", json={"key": ""}).json()
         assert cleared == {"key": "set", "masked": None, "brand": ME["brand"], "source": "instance"}, cleared
+
+
+def case_clearing_the_own_key_reports_a_refused_instance_key_consistently():
+    _reset(flags_b=OFF)
+    with _tracker() as t:
+        asyncio.run(leak_tracker.ensure_all())
+        real = t.handler
+
+        def instance_refused(request):
+            if request.url.path == "/v1/me":
+                if request.headers["authorization"] == f"Bearer {INSTANCE_KEY}":
+                    return httpx.Response(401)
+                return httpx.Response(200, json={**ME, "tenant_id": INSTANCE_TENANT})
+            return real(request)
+
+        t.handler = instance_refused
+        assert OWNER_A.put("/admin/leaks/key", json={"key": OWN_KEY}).json()["source"] == "own"
+        cleared = OWNER_A.put("/admin/leaks/key", json={"key": ""})
+        assert cleared.json() == {"key": "invalid", "masked": None, "brand": None, "source": "instance"}
+        assert OWNER_A.get("/admin/leaks/setup").json()["key"] == "invalid"
+        assert INSTANCE_KEY not in cleared.text
 
 
 def case_f5_save_needs_an_actor_and_gates_need_the_instance_bit():
@@ -608,23 +816,27 @@ def case_f6_the_router_no_longer_owns_the_background_job():
     assert (Path(__file__).resolve().parents[1] / "server.py").read_text().count("leak_tracker.sync_all") == 1
 
 
+def case_stale_save_refuses_without_resolving_the_replacement_key():
+    _reset(flags_b=OFF)
+    asyncio.run(leak_tracker.bind_tenant(A, INSTANCE_TENANT, via_instance=True))
+    ident = leak_tracker.auto_identity({"username": "MiaVale", "display_name": "Mia Vale"})
+    for fallback, expected in ((INSTANCE_KEY, "unbound"), (None, "not_found")):
+        with _tracker(LEAK_TRACKER_KEY=fallback) as t:
+            try:
+                asyncio.run(leak_tracker.save_watch(A, OWN_KEY, CREATOR, ident, verified=False,
+                                                    consent_by="user:x:y"))
+            except leak_tracker.Refused as exc:
+                assert exc.kind == expected
+            else:
+                raise AssertionError("stale credential was accepted")
+            assert not t.calls and not _watches()
+
+
 def case_f7_owners_of_many_matches_owners_of():
     many = asyncio.run(tenant_keys.owners_of_many([CREATOR, SECOND, "nobody"]))
     assert many == {CREATOR: [A], SECOND: [A]}, many
     assert asyncio.run(tenant_keys.owners_of(CREATOR)) == [A]
     assert asyncio.run(tenant_keys.owners_of_many([])) == {}
-
-
-def case_f8_tombstone_key_choice():
-    table = [
-        ("tn_own", "tn_own", ("own_key", A)),
-        ("tn_inst", "tn_own", ("inst_key", None)),
-        ("tn_gone", "tn_own", ("", None)),
-    ]
-    for stone, bound, want in table:
-        got = leak_tracker._stone_key(stone, bound, "own_key", A, "inst_key", "tn_inst")
-        assert got == want, (stone, got)
-    assert leak_tracker._stone_key("tn_inst", "tn_own", "own_key", A, "", None) == ("", None)
 
 
 def case_f8_a_delete_during_the_pass_is_honoured_inside_the_lock():
@@ -676,12 +888,99 @@ def case_f8_a_delete_landing_during_a_manual_save_keeps_its_opt_out():
             r = OWNER_A.put(f"/admin/leaks/watches/{CREATOR}", json={"username": "miavale", "verified": True})
         finally:
             leak_tracker.push = real
-        assert r.status_code == 200, r.text
+        assert r.status_code == 409, r.text
 
         async def _opted():
             async with get_session() as s:
                 return set((await s.scalars(select(LeakWatchOptOut.account_id))).all())
         assert asyncio.run(_opted()) == {CREATOR} and CREATOR not in _watches()
+
+
+def case_stale_auto_enrolment_cannot_undo_a_delete_of_an_untracked_creator():
+    _reset(flags_b=OFF)
+    with _tracker() as t:
+        assert OWNER_A.delete(f"/admin/leaks/watches/{CREATOR}").status_code == 200
+        ident = leak_tracker.auto_identity({"username": "MiaVale", "display_name": "Mia Vale"})
+        try:
+            asyncio.run(leak_tracker.save_watch(A, INSTANCE_KEY, CREATOR, ident, verified=True,
+                                                consent_by=leak_tracker.AUTO_CONSENT))
+        except leak_tracker.Refused as e:
+            assert e.kind == "exists"
+        else:
+            raise AssertionError("stale enrolment was accepted")
+        assert not _watches()
+        assert not any(c.method == "PUT" for c in t.calls)
+
+
+def case_failed_opt_out_rolls_back_the_watch_delete_and_tombstone():
+    for gone in (False, True):
+        _assert_rollback_on_opt_out_failure(gone)
+
+
+def _assert_rollback_on_opt_out_failure(gone):
+    _reset(flags_b=OFF)
+    with _tracker():
+        asyncio.run(leak_tracker.ensure_all())
+
+        async def fail_opt_out():
+            async with get_session() as s:
+                await s.execute(text("CREATE TRIGGER reject_opt_out BEFORE INSERT ON leak_watch_opt_out "
+                                     "BEGIN SELECT RAISE(ABORT, 'opt-out rejected'); END"))
+
+        async def allow_opt_out():
+            async with get_session() as s:
+                await s.execute(text("DROP TRIGGER reject_opt_out"))
+
+        asyncio.run(fail_opt_out())
+        try:
+            try:
+                if gone:
+                    asyncio.run(leak_tracker.forget_watch(A, _watches()[CREATOR].watch_id))
+                else:
+                    OWNER_A.delete(f"/admin/leaks/watches/{CREATOR}")
+            except IntegrityError as exc:
+                assert "opt-out rejected" in str(exc)
+            else:
+                raise AssertionError("expected the opt-out write to fail")
+        finally:
+            asyncio.run(allow_opt_out())
+        assert CREATOR in _watches()
+        assert not asyncio.run(leak_tracker.pending(A))
+
+
+def case_switching_off_mid_pass_stops_new_enrolment():
+    _reset(flags_b=OFF)
+    with _tracker() as t:
+        real = account_page.of_me
+
+        async def turn_off_after_first_put(account_id):
+            if t.puts():
+                await asyncio.to_thread(fx.store_blob, A, "flags", OFF)
+            return await real(account_id)
+
+        account_page.of_me = turn_off_after_first_put
+        try:
+            asyncio.run(leak_tracker.ensure_all())
+        finally:
+            account_page.of_me = real
+        assert len(t.puts()) == len(_watches()) == 1
+
+
+def case_concurrent_own_keys_cannot_split_the_key_from_the_binding():
+    _reset(flags_b=OFF)
+    with _tracker():
+        asyncio.run(leak_tracker.ensure_all())
+
+        async def claim_both():
+            return await asyncio.gather(leak_tracker.claim_tenant(A, "tenant-one", OWN_KEY),
+                                        leak_tracker.claim_tenant(A, "tenant-two", "ltk_" + "b" * 40))
+
+        results = asyncio.run(claim_both())
+        assert sorted(results) == ["bound", "other_tenant"]
+        tenant, key = ("tenant-one", OWN_KEY) if results[0] == "bound" else ("tenant-two", "ltk_" + "b" * 40)
+        assert _binding() == tenant
+        assert asyncio.run(leak_tracker.agency_key(A)) == (key, False)
+
 
 if __name__ == "__main__":
     _harness.run()

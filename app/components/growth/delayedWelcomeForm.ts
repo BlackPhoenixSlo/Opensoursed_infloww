@@ -1,5 +1,6 @@
 import { unsaved, withSent, type Saved, type SentState } from "@/components/automations/sentDraft";
 import type { AutomationRule, RuleDraft, RulePatch } from "@/hooks/useAutomations";
+import { PLATFORM_NAME, can, isPlatform, type AccountPlatform, type Platform } from "@/lib/platform";
 
 import { badDelay, cleanFollowUps, type FollowUpDraft } from "./lifecycleForm";
 import { collectExtras, extrasDraft, extrasOfPayload, type ExtrasDraft } from "./SmartMessageFields";
@@ -94,21 +95,47 @@ export function welcomeReducer(s: WelcomeState, a: WelcomeAction): WelcomeState 
 
 const collect = (s: WelcomeDraft) => collectExtras(s.extras, { delay: true });
 
-export function welcomeIssues(s: WelcomeDraft) {
-  const collected = collect(s);
-  return { problem: typeof collected === "string" ? collected : null, invalid: s.followUps.some(badDelay) };
+export const platformPossessive = (platform: Platform): string => {
+  const name = PLATFORM_NAME[platform];
+  return name.endsWith("s") ? `${name}'` : `${name}'s`;
+};
+
+export function nativeWelcomeRefusal(platform: Platform): string | null {
+  if (can(platform, "native_welcome")) return null;
+  return `${platformPossessive(platform)} own welcome message can't be checked — turn it off in ${PLATFORM_NAME[platform]}, or both will send.`;
 }
 
-export function canSubmit(s: WelcomeDraft): boolean {
-  const i = welcomeIssues(s);
-  return !i.problem && !i.invalid;
+export const UNKNOWN_WELCOME_REFUSAL = "This Creator's platform isn't recognised, so its own welcome message can't be checked.";
+
+export function welcomePlatformCopy(platform: AccountPlatform): { refusal: string | null; afterLabel: string } {
+  const owner = isPlatform(platform) ? platformPossessive(platform) : "The platform's";
+  return {
+    refusal: isPlatform(platform) ? nativeWelcomeRefusal(platform) : UNKNOWN_WELCOME_REFUSAL,
+    afterLabel: `${owner} welcome message is message 1: while it is on, send only the follow-ups`,
+  };
+}
+
+export const afterOfDisabled = (s: WelcomeDraft, refusal: string | null): boolean => !!refusal && !s.afterOf;
+
+export function welcomeIssues(s: WelcomeDraft, refusal: string | null) {
+  const collected = collect(s);
+  return {
+    problem: typeof collected === "string" ? collected : null,
+    invalid: s.followUps.some(badDelay),
+    refused: !!refusal && s.afterOf,
+  };
+}
+
+export function canSubmit(s: WelcomeDraft, refusal: string | null): boolean {
+  const i = welcomeIssues(s, refusal);
+  return !i.problem && !i.invalid && !i.refused;
 }
 
 export function buildSave(
-  s: WelcomeDraft, rule: AutomationRule | null, accountId: string,
+  s: WelcomeDraft, rule: AutomationRule | null, accountId: string, refusal: string | null,
 ): { id: number; patch: RulePatch } | { create: RuleDraft } | null {
   const collected = collect(s);
-  if (!canSubmit(s) || typeof collected === "string") return null;
+  if (!canSubmit(s, refusal) || typeof collected === "string") return null;
   const stored = rule?.payload ?? {};
   const every_seconds = Math.max(60, Math.round(s.minutes * 60));
   const variants = s.variants.map((v) => v.trim()).filter(Boolean);

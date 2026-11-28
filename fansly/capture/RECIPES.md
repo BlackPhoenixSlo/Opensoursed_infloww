@@ -1087,6 +1087,7 @@ Paging: `before` = last message id. Cancel emitted no socket frame; the fan got
 nothing and the queue read `[]` after. `scheduledFor` is **ms** here,
 `createdAt` in stats is **s**. Edit of a queued broadcast: no client call found
 (I: cancel + re-create).
+Provenance: W (one text-only stats row; one pending + one cancelled queue row); no single-row queue GET and no buyer list seen.
 
 ### Subscription promotion (§3.12) — M
 

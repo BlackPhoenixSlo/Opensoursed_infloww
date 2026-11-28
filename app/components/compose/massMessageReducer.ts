@@ -5,7 +5,7 @@ import { isOfHtml, OF_TEXT_MAX, ofPlainText, TEXT_TOO_LONG } from "@/lib/ofRichT
 import { plainLength } from "@/lib/ofRichTextEditor";
 import { PLAIN_MODE, type RichMode } from "@/lib/ofRichMode";
 import { localDatetimeToIso } from "@/lib/scheduleHistory";
-import { DEFAULT_PLATFORM, type Platform } from "@/lib/platform";
+import { DEFAULT_PLATFORM, type AccountPlatform, type Platform } from "@/lib/platform";
 import { priceNote } from "@/lib/sendGuards";
 import type { PickedGif } from "@/components/chat/GifPicker";
 import type { TaggedCreatorChoice, VaultMedia } from "@/lib/relay";
@@ -16,7 +16,7 @@ import {
 
 import { fanOutLocked, fanOutReducer, initFanOut, noTargetsReason, type FanOutAction, type FanOutState } from "./fanOut";
 
-export type MassLaunch = Platform | "unknown" | null;
+export type MassLaunch = AccountPlatform | null;
 
 export interface MassForm extends AudienceState, FanOutState {
   platform: Platform;

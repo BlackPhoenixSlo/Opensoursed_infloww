@@ -58,9 +58,9 @@ def case_cancel_route_reaches_the_fansly_post_lane_cancel():
           patch.object(accounts, "get_platform", return_value="fansly"),
           patch.object(mass_broadcast_cache, "mark_canceled", new_callable=AsyncMock) as mark):
         resp = _with(c, lambda: asyncio.run(mass_queue_api.of_cancel_scheduled(None, int(POST))))
-        mark.assert_awaited_once_with(aid, int(POST))
+        mark.assert_not_awaited()
     assert resp == {"success": True}, resp
-    assert c.calls == [("POST", f"/post/scheduled/{POST}/cancel", None)], c.calls
+    assert c.calls == [("GET", "/post/scheduled", None), ("POST", f"/post/scheduled/{POST}/cancel", None)], c.calls
 
 
 def case_schedules_route_answers_the_shim_queue_items():

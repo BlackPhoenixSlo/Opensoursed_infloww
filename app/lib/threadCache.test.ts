@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { appendMsg, dropMsg, failMsg, insertByCreatedAt, insertMsg, reconcileMsg, trimThread } from "@/lib/threadCache";
+import {
+  appendMsg, dropMsg, dropTombstoned, evictMessage, failMsg, insertByCreatedAt, insertMsg, reconcileMsg, tombstoneMessage, trimThread,
+} from "@/lib/threadCache";
 import type { OFMessage } from "@/lib/relay";
 
 const msg = (id: number, extra: Partial<OFMessage> = {}): OFMessage =>
@@ -123,5 +125,50 @@ describe("trimThread", () => {
   it("snowflake string ids count as real", () => {
     const list = [{ ...msg(1), id: "900000000000000001" }, { ...msg(2), id: "900000000000000002" }] as unknown as OFMessage[];
     expect(trimThread(list, 1).map((m) => String(m.id))).toEqual(["900000000000000002"]);
+  });
+});
+
+describe("evictMessage", () => {
+  const snow = (id: string) => ({ ...msg(1), id }) as unknown as OFMessage;
+  it.each([
+    ["[A,B] minus B is [A]", [msg(1), msg(2)], 2, [1]],
+    ["[A,B] minus A is [B]", [msg(1), msg(2)], 1, [2]],
+    ["numeric row, string id", [msg(1), msg(2)], "2", [1]],
+    ["string row, numeric id", [{ ...msg(1), id: "1" } as unknown as OFMessage, msg(2)], 1, [2]],
+    ["snowflake string id", [snow("900000000000000001"), snow("900000000000000002")], "900000000000000002", ["900000000000000001"]],
+  ] as const)("%s", (_n, list, id, want) => {
+    expect(idsOf(evictMessage([...list], id))).toEqual(want);
+  });
+
+  it("a missing id leaves the list as the same reference", () => {
+    const list = [msg(1), msg(2)];
+    expect(evictMessage(list, 3)).toBe(list);
+  });
+
+  it("another Thread's list is untouched by an id it does not hold", () => {
+    const a = [msg(1), msg(2)];
+    const b = [msg(3), msg(4)];
+    evictMessage(a, 2);
+    expect(evictMessage(b, 2)).toBe(b);
+    expect(idsOf(b)).toEqual([3, 4]);
+  });
+});
+
+describe("message tombstones", () => {
+  it("drop a tombstoned id for that account only, by string id", () => {
+    tombstoneMessage("tomb-a", "900000000000000007");
+    const list = [{ ...msg(1), id: "900000000000000007" }, msg(2)] as unknown as OFMessage[];
+    expect(idsOf(dropTombstoned("tomb-a", list))).toEqual([2]);
+    expect(dropTombstoned("tomb-b", list)).toBe(list);
+  });
+
+  it("an account with no tombstones gets the same reference back", () => {
+    const list = [msg(1)];
+    expect(dropTombstoned("tomb-none", list)).toBe(list);
+  });
+
+  it("hold at most 500 ids per account: the oldest falls out first", () => {
+    for (let i = 1; i <= 501; i++) tombstoneMessage("tomb-cap", i);
+    expect(idsOf(dropTombstoned("tomb-cap", [msg(1), msg(2), msg(501)]))).toEqual([1]);
   });
 });

@@ -188,16 +188,16 @@ def case_refusal_same_on_class_and_instance():
         assert refusal(FanslyShimClient, name) == refusal(_shim, name) == reason, name
 
 
-def _recording_shim(echo):
+def _recording_shim(reply, method="POST", path="/lists/commands"):
     shim = FanslyShimClient(FanslySession({"accountId": "1", "token": "t", "check_key": "k",
                                            "device_id": "d", "user_agent": "UA"}))
     calls: list = []
 
-    def record(method, path, *, json_body=None, **_kw):
-        if (method, path) != ("POST", "/lists/commands"):
-            raise AssertionError(f"unrecorded request {method} {path}")
-        calls.append(json_body)
-        return echo
+    def record(m, p, *, json_body=None, params=None, **_kw):
+        if (m, p) != (method, path):
+            raise AssertionError(f"unrecorded request {m} {p}")
+        calls.append(json_body if json_body is not None else params)
+        return reply
 
     shim._request = record
     return shim, calls
@@ -375,13 +375,13 @@ _OWNER_ROUTES = (
     ("DELETE", "/api/of/v2/lists/7", {}, None, "delete list", ("delete_list", "7")),
     ("PUT", f"/api/of/v2/subscriptions/{FAN}/discount", {}, {"discount": 10, "period": 1},
      "subscription discount", ("set_subscription_discount", FAN, 10, 1)),
-    ("GET", "/api/of/v2/users/me/stats/messages/group", _GROUP, None, "mass message history",
-     ("engagement_messages", "group")),
 )
+_GROUP_FEED = ("GET", "/api/of/v2/users/me/stats/messages/group", _GROUP, None, "mass message history",
+               ("engagement_messages", "group"))
 _QUEUE = ("GET", "/api/of/v2/messages/queue", {}, None, "scheduled messages", ("scheduled_messages",))
 
 
-def case_fansly_list_discount_and_group_feed_answer_501():
+def case_fansly_list_and_discount_answer_501():
     _on("fansly")
     busted: list[str] = []
     with (patch.object(server, "_invalidate_chat_folders", side_effect=lambda *a, **k: busted.append("folders")),
@@ -392,15 +392,18 @@ def case_fansly_list_discount_and_group_feed_answer_501():
     assert busted == [], f"a refused route still dropped a cache: {busted}"
 
 
-def case_fansly_scheduled_messages_answers_501():
+def case_fansly_scheduled_messages_reads_the_broadcast_queue():
     _on("fansly")
-    r = _call("GET", _QUEUE[1], _shim)
-    assert r.status_code == 501 and r.json()["detail"] == "scheduled messages: not on this platform", (r.status_code, r.text)
+    shim, calls = _recording_shim({"scheduledBroadcastMessages": [], "groups": []}, "GET",
+                                  "/message/broadcast/scheduled")
+    r = _call("GET", _QUEUE[1], shim)
+    assert r.status_code == 200 and r.json() == {"list": [], "hasMore": False}, (r.status_code, r.text)
+    assert calls == [None], calls
 
 
 def case_of_list_discount_queue_and_group_feed_still_reach_the_client():
     _on("onlyfans")
-    for method, path, params, body, _, want in (*_OWNER_ROUTES, _QUEUE):
+    for method, path, params, body, _, want in (*_OWNER_ROUTES, _GROUP_FEED, _QUEUE):
         fake = _ChatOF()
         r = _call(method, path, fake, params=params, json=body)
         assert r.status_code == 200, (path, r.status_code, r.text)
@@ -413,11 +416,12 @@ def _admin_mass(client, aid: str = _AID):
         return http.get("/admin/mass-messages", params=q), http.post("/admin/mass-messages/refresh", params=q)
 
 
-def case_fansly_admin_mass_messages_and_refresh_answer_501_on_an_empty_cache():
+def case_fansly_admin_mass_messages_and_refresh_read_the_stats_feed_on_an_empty_cache():
     _on("fansly")
-    for r in _admin_mass(_shim):
-        assert r.status_code == 501 and r.json()["detail"] == "mass message history: not on this platform", (
-            r.request.url, r.status_code, r.text)
+    shim, calls = _recording_shim({"messages": []}, "GET", "/message/broadcast/stats")
+    for r in _admin_mass(shim):
+        assert r.status_code == 200 and r.json()["items"] == [], (r.request.url, r.status_code, r.text)
+    assert calls == [{"before": "0", "limit": "24"}] * 2, calls
 
 
 def case_of_admin_mass_messages_and_refresh_still_reach_the_client():
@@ -847,14 +851,15 @@ def case_account_gate_does_not_load_relay_server():
 
     _on("fansly")
     with patch.object(relay_host, "live_server", side_effect=AssertionError("server loaded")):
-        assert _status(lambda: refuse_if_platform_lacks(_AID, "mass_message_history", "mass history")) == 501
+        assert _status(lambda: refuse_if_platform_lacks(_AID, "unsend_mass_message", "mass unsend")) == 501
 
 
 def case_client_and_side_effect_stubs_are_scoped():
     original = server._get_client, server._load_client, server.send_message
     _on("fansly")
-    _call("GET", _QUEUE[1], _shim)
-    _admin_mass(_shim)
+    _call("GET", _QUEUE[1], _recording_shim({"scheduledBroadcastMessages": []}, "GET",
+                                            "/message/broadcast/scheduled")[0])
+    _admin_mass(_recording_shim({"messages": []}, "GET", "/message/broadcast/stats")[0])
     with _SideEffects().installed():
         assert server.send_message is not original[2]
     assert (server._get_client, server._load_client, server.send_message) == original

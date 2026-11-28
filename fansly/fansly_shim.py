@@ -127,6 +127,7 @@ _UNLOCK_NOTIF_TYPES = {2007, 2008, 32007}
 _BANKING_SET = {2007: "accountMediaPrice"}
 _UNBANKED_WATCHED = {7001, 15006, 15016, 45012} | (_UNLOCK_NOTIF_TYPES - _BANKING_SET.keys())
 _PURCHASE_TTL_S = 60
+_DELETED_PAGE_WALK = 3
 _PRICE_METADATA_KEYS = ("accountMediaPrice", "price", "amount")
 
 
@@ -552,6 +553,43 @@ def of_chats_page(groups_response: dict, *, account_id: str, limit: int) -> dict
     return {"list": rows, "hasMore": len(data) >= limit}
 
 
+def of_broadcast_row(msg: dict) -> dict:
+    text = str(msg.get("content") or "")
+    return {"id": str(msg["id"]), "text": text, "rawText": text, "date": _iso(msg.get("createdAt")),
+            "sentCount": _exact_int(msg["stats"]["delivered"]), "viewedCount": _exact_int(msg["stats"]["read"]),
+            "isFree": True, "isTip": False, "isCanceled": False, "canUnsend": False, "unsendSeconds": 0,
+            "mediaCount": 0, "media": [], "previews": []}
+
+
+def of_scheduled_broadcast_row(row: dict) -> dict | None:
+    if (_exact_int(row.get("id")) is None or type(row.get("scheduledFor")) not in (int, float)
+            or not isinstance(row.get("messageTemplate"), str)):
+        return None
+    try:
+        template = _json.loads(row["messageTemplate"])
+    except ValueError:
+        return None
+    when = _iso(row["scheduledFor"] / 1000.0)
+    if not isinstance(template, dict) or when is None:
+        return None
+    return {"id": str(row["id"]), "text": str(template.get("content") or ""), "scheduledDate": when}
+
+
+def _broadcast_page(page: Any) -> list[dict]:
+    rows = page.get("messages") if isinstance(page, dict) else None
+    if not isinstance(rows, list) or not all(
+            isinstance(r, dict) and _exact_int(r.get("id")) is not None
+            and type(r.get("createdAt")) in (int, float) and isinstance(r.get("stats"), dict)
+            and _exact_int(r["stats"].get("delivered")) is not None
+            and _exact_int(r["stats"].get("read")) is not None for r in rows):
+        raise FanslyAPIError("GET /message/broadcast/stats: malformed page")
+    return rows
+
+
+def _of_epoch(when: str) -> float:
+    return datetime.strptime(when, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+
+
 def _media_indexes(payload: dict) -> tuple[dict, dict]:
     return (
         {str(m.get("id")): m for m in (payload.get("accountMedia") or [])},
@@ -702,7 +740,8 @@ def of_posts_page(timeline: dict, *, limit: int) -> dict:
 
 def of_messages_page(message_response: dict, *, account_id: str, limit: int,
                      purchased_ids: AbstractSet[str] | None = None) -> dict:
-    msgs = message_response.get("messages") or []
+    raw = message_response.get("messages") or []
+    msgs = [m for m in raw if not m.get("deletedAt")]
     _klipy_prewarm(msgs)
     am_by_id, bundle_by_id = _media_indexes(message_response)
 
@@ -715,7 +754,7 @@ def of_messages_page(message_response: dict, *, account_id: str, limit: int,
                             previews=_preview_grant_ids(m, am_by_id, bundle_by_id),
                             purchased_ids=purchased_ids)
                  for m in msgs],
-        "hasMore": len(msgs) >= limit,
+        "hasMore": len(raw) >= limit,
     }
 
 
@@ -837,12 +876,17 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         params: dict[str, Any] = {"groupId": str(group_id), "limit": str(limit)}
         if before_id is not None:
             params["before"] = str(before_id)
-        resp = self._request("GET", "/message", params=params)
         # Scoped to this thread's fan so one fan's purchase never unlocks another's bubble
         fan_id = self._fan_id_for_group(group_id)
         purchased = self._purchases_by_fan().get(str(fan_id or ""), frozenset())
-        return of_messages_page(resp, account_id=self.session.account_id, limit=limit,
-                                purchased_ids=purchased)
+        for _ in range(1 + _DELETED_PAGE_WALK):
+            resp = self._request("GET", "/message", params=params)
+            page = of_messages_page(resp, account_id=self.session.account_id, limit=limit,
+                                    purchased_ids=purchased)
+            if page["list"] or not page["hasMore"] or not resp.get("messages"):
+                break
+            params = {**params, "before": str(min(int(m["id"]) for m in resp["messages"]))}
+        return page
 
     def chat_folders(self, *, limit: int = 10, offset: int = 0,
                      filter: str = "can_pin_chat") -> dict:
@@ -1398,6 +1442,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                 buckets[key] += t["total"]
         return buckets
 
+    @platform_blocked("bundle-only, never sent")
     def notifications_read(self, **_ignored: Any) -> dict:
         # Body is bundle-derived, not live-captured: re-read the unread totals after the ack so an ignored ack leaves the badge up
         rows = [r for r in self._notification_rows() if isinstance(r, dict)]
@@ -1534,6 +1579,76 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                         "entity": {"id": pid, "text": str(template.get("content") or "")}})
         out.sort(key=lambda i: i["publishDateTime"] or "")
         return {"list": out, "hasMore": False}
+
+    _BROADCAST_PAGE = 24
+    _BROADCAST_PAGES = 20
+
+    def engagement_messages(self, type: str, *, start_date: str, end_date: str,
+                            limit: int = 50, offset: int = 0, query: str | None = None) -> dict:
+        if type != "group":
+            raise FanslyBlocked(f"engagement_messages: the {type!r} feed is not captured")
+        start, end, needle = _of_epoch(start_date), _of_epoch(end_date), (query or "").casefold()
+        rows: dict[str, dict] = {}
+        skips = {"type": 0, "attachments": 0, "window": 0}
+        cursor, used, incomplete = "0", set(), False
+        while True:
+            used.add(cursor)
+            page = _broadcast_page(self._request("GET", "/message/broadcast/stats",
+                                                 params={"before": cursor, "limit": str(self._BROADCAST_PAGE)}))
+            if not page:
+                break
+            older = False
+            for msg in page:
+                if msg["createdAt"] < start:
+                    skips["window"] += 1
+                    older = True
+                    break
+                if msg["createdAt"] > end:
+                    skips["window"] += 1
+                    continue
+                if msg.get("type") != 3:
+                    skips["type"] += 1
+                    continue
+                if msg.get("attachments") != []:
+                    skips["attachments"] += 1
+                    continue
+                row = of_broadcast_row(msg)
+                if needle in row["text"].casefold():
+                    rows.setdefault(row["id"], row)
+            cursor = str(page[-1]["id"])
+            if older or len(rows) > offset + limit:
+                break
+            if cursor in used or len(used) >= self._BROADCAST_PAGES:
+                incomplete = True
+                break
+        log.info("fansly: broadcast stats walk, %d pages, skipped type=%d attachments=%d window=%d%s",
+                 len(used), skips["type"], skips["attachments"], skips["window"], " (incomplete)" if incomplete else "")
+        kept = list(rows.values())
+        return {"items": kept[offset:offset + limit], "hasMore": incomplete or len(kept) > offset + limit,
+                "incomplete": incomplete}
+
+    def mass_message_history(self, *, start_date: str, end_date: str, limit: int = 50, offset: int = 0) -> dict:
+        return self.engagement_messages("group", start_date=start_date, end_date=end_date, limit=limit, offset=offset)
+
+    def scheduled_messages(self, *, limit: int = 10, offset: int = 0) -> dict:
+        resp = self._request("GET", "/message/broadcast/scheduled")
+        rows = resp.get("scheduledBroadcastMessages") if isinstance(resp, dict) else None
+        if not isinstance(rows, list):
+            raise FanslyAPIError("GET /message/broadcast/scheduled: malformed answer")
+        kept, skips = [], {"status": 0, "row": 0}
+        for row in rows:
+            if not isinstance(row, dict) or type(row.get("status")) is not int or row["status"] != 1:
+                skips["status" if isinstance(row, dict) else "row"] += 1
+                continue
+            out = of_scheduled_broadcast_row(row)
+            if out is None:
+                skips["row"] += 1
+            else:
+                kept.append(out)
+        log.info("fansly: scheduled broadcasts, %d pending, skipped status=%d row=%d",
+                 len(kept), skips["status"], skips["row"])
+        kept.sort(key=lambda r: r["scheduledDate"])
+        return {"list": kept[offset:offset + limit], "hasMore": len(kept) > offset + limit}
 
     # Scan runs to the thread's end: reaching a read message proves nothing about older ones. A partial scan acks nothing; unread older than the newest 200 messages is not seen
     _ACK_PAGE = 50
@@ -1809,7 +1924,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         return {"success": True}
 
     def cancel_scheduled(self, post_id: str | int, **_ignored: Any) -> dict:
-        # Alias: the relay's message-queue cancel reaches this with a post id; there is no scheduled-message queue
+        # Alias: the relay's message-queue cancel reaches this with a post id; scheduled broadcasts have no captured cancel, and the DELETE route refuses them first
         self._request("POST", f"/post/scheduled/{post_id}/cancel")
         return {"success": True}
 
@@ -2091,39 +2206,42 @@ class FanslyShimClient(VaultMixin, FanslyClient):
     def _group_for_send(self, chat_id: str | int) -> str:
         # A send to a fan with no DM thread mints a group (POST /group): a fan id as groupId 500s. Reads must not mint
         chat_id = str(chat_id)
-        resolved = self._as_group_id(chat_id)
-        if resolved != chat_id or chat_id in self._known_group_ids:
-            return resolved
+        found = self._group_or_none(chat_id, scan=False)
+        if found:
+            return found
         # Re-scan the WHOLE listing before minting: find_group_with only covers the 100 newest, an older thread would get a duplicate
         existing = self.find_group_with(chat_id, scan_limit=10_000)
         if existing:
-            self._known_group_ids.add(existing)
-            self._fan_to_group[chat_id] = existing
-            return existing
+            return self._remember_group(chat_id, existing)
         created = self.create_group(chat_id)
         if not created:
             raise FanslyAPIError(
                 f"Fansly accepted POST /group for fan {chat_id} but returned "
                 f"no group id, so there is no thread to send into."
             )
-        self._known_group_ids.add(created)
-        self._fan_to_group[chat_id] = created
         log.info("fansly: minted DM group %s for fan %s (first message)",
                  created, chat_id)
-        return created
+        return self._remember_group(chat_id, created)
+
+    def _remember_group(self, fan_id: str, group_id: str) -> str:
+        self._known_group_ids.add(group_id)
+        self._fan_to_group[fan_id] = group_id
+        return group_id
 
     def _as_group_id(self, chat_id: str | int) -> str:
+        return self._group_or_none(chat_id) or str(chat_id)
+
+    def _group_or_none(self, chat_id: str | int, *, scan: bool = True) -> str | None:
         chat_id = str(chat_id)
         if chat_id in self._known_group_ids:
             return chat_id
         mapped = self._fan_to_group.get(chat_id)
         if mapped:
             return mapped
+        if not scan:
+            return None
         resolved = self.find_group_with(chat_id)
-        if resolved:
-            self._known_group_ids.add(resolved)
-            return resolved
-        return chat_id
+        return self._remember_group(chat_id, resolved) if resolved else None
 
 
 _BLOCKED, _UNSUPPORTED = "blocked", "unsupported"
@@ -2140,7 +2258,6 @@ _STORIES = (_BLOCKED, "Fansly story read or setting not captured")
 _STREAMS = (_BLOCKED, "Fansly livestreams not captured")
 _SUBS = (_BLOCKED, "Fansly subscription tiers and bundles not captured")
 _PAYOUTS = (_BLOCKED, "Fansly payouts not captured")
-_QUEUE = (_BLOCKED, "Fansly scheduled-message queue not captured")
 _FANS = (_BLOCKED, "Fansly fan roster, media or search read not captured")
 _NO_PIN = (_UNSUPPORTED, "Fansly has no message pinning")
 _NO_STORY_WRITE = (_UNSUPPORTED, "Fansly stories cannot be created from the web API")
@@ -2149,9 +2266,8 @@ _OF_UPLOAD = (_UNSUPPORTED, "OnlyFans upload-claim pipeline; Fansly uploads thro
 UNBUILT: dict[str, tuple[str, str]] = {
     "unblock_user": (_BLOCKED, "unblock not captured"),
     "search_users": (_BLOCKED, "username search not captured"),
-    "engagement_messages": (_BLOCKED, "mass-message stats feed not captured"),
-    "mass_message_history": (_BLOCKED, "mass-message history not captured"),
     "schedule_mass_message": (_BLOCKED, "scheduled broadcast not captured"),
+    "unsend_mass_message": (_BLOCKED, "delivered-broadcast delete not captured"),
     "restrict_user": (_UNSUPPORTED, "Fansly has no restrict"),
     "unrestrict_user": (_UNSUPPORTED, "Fansly has no restrict"),
     "search_chat": (_UNSUPPORTED, "Fansly has no in-thread message search"),
@@ -2161,9 +2277,12 @@ UNBUILT: dict[str, tuple[str, str]] = {
     "transactions": (_BLOCKED, "Fansly per-sale feed unproven; the earnings capture holds aggregates only"),
     "payout_balances": (_BLOCKED, "Fansly wallet balance unit and shape unproven; no non-zero wallet seen"),
     "earnings_chart": (_BLOCKED, "Fansly earnings aggregates captured; category map and paging unproven; no Fansly caller"),
+    "queued_message": (_BLOCKED, "no single-row GET; its only caller is the queued-message edit, graded I"),
+    "edit_queued_message": (_BLOCKED, "Fansly scheduled-broadcast edit not captured"),
+    "mass_message_buyers": (_BLOCKED, "no buyers in broadcast stats; a priced broadcast needs a Proof purchase"),
     **dict.fromkeys(("bookmarks_all", "campaign_claimers", "campaigns_chart", "campaigns_stats", "chargebacks",
-                     "chargebacks_chart", "chargebacks_ratio", "fans_activity", "mass_message_buyers",
-                     "messages_chart", "my_profile_stats", "my_start_date", "my_stats_overview", "my_stats_top_posts",
+                     "chargebacks_chart", "chargebacks_ratio", "fans_activity", "messages_chart",
+                     "my_profile_stats", "my_start_date", "my_stats_overview", "my_stats_top_posts",
                      "notification_settings", "offer_claims", "payout_invoice", "payouts_chart", "promotions_chart",
                      "promotions_stats", "qr_views", "referral_payouts", "referrals", "referrals_balance",
                      "referrals_chart", "sessions", "social_buttons", "social_media_providers", "stats_top",
@@ -2195,7 +2314,6 @@ UNBUILT: dict[str, tuple[str, str]] = {
     **dict.fromkeys(("create_bundle", "delete_bundle", "edit_bundle", "subscription_bundles", "update_subscription"), _SUBS),
     **dict.fromkeys(("earning_stats", "payout_check_receive", "payout_requests", "request_payout",
                      "update_withdrawal_period"), _PAYOUTS),
-    **dict.fromkeys(("edit_queued_message", "queued_message", "scheduled_messages"), _QUEUE),
     **dict.fromkeys(("performers_search", "user_photos", "user_videos", "following"), _FANS),
     **dict.fromkeys(("unpin_all_messages",), _NO_PIN),
     **dict.fromkeys(("create_story", "post_story"), _NO_STORY_WRITE),

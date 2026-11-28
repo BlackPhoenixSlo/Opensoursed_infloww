@@ -42,6 +42,7 @@ class Platform:
     list_page: int | None = None
     confirms_empty_active_roster: bool = False
     retry_unconfirmed_list_adds: bool = False
+    mass_walk_flags_need_walk: bool = False
 
     @property
     def list_member_limit(self) -> int | None:
@@ -72,7 +73,7 @@ ONLYFANS = Platform("onlyfans", "OF", "latest.json", None, frozenset(), login="r
 FANSLY = Platform("fansly", "Fansly", fansly_backend.SESSION_FILENAME, fansly_backend,
                   frozenset(Lack), login="remote_login_fansly", free_follow=True, bind_login_proxy=False,
                   list_page=fansly_backend.Shim.LIST_PAGE, confirms_empty_active_roster=True,
-                  retry_unconfirmed_list_adds=True)
+                  retry_unconfirmed_list_adds=True, mass_walk_flags_need_walk=True)
 
 ALL: tuple[Platform, ...] = (ONLYFANS, FANSLY)
 KEYS: tuple[str, ...] = tuple(p.key for p in ALL)

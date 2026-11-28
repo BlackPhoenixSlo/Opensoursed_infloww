@@ -6,7 +6,7 @@ import {
   type LinkedStep, type WizardAction, type WizardState, type WizardStep,
 } from "@/components/setup/addCreatorWizard";
 import type { AccountDetails } from "@/components/setup/creatorFlow";
-import { PLATFORMS, type Platform } from "@/lib/platform";
+import { PLATFORMS, platformRow, type Platform } from "@/lib/platform";
 
 const ACCOUNT: AccountDetails = { nickname: "Bella", tag: "", employeeIds: [], notes: "" };
 const BELLA = { name: "Bella", gender: "Female" as const };
@@ -52,6 +52,15 @@ describe("initialWizard", () => {
     [["onlyfans", "fansly"], PLATFORMS[0].key],
   ])("Link another with %j linked defaults to the first unlinked table key, %s", (linked, plat) => {
     expect(initialWizard({ linkAnother: { creator: BELLA, linked } }).platform).toBe(plat);
+  });
+  it.each<[Platform, "browser" | "extension"]>([
+    ["onlyfans", "browser"],
+    ["fansly", "extension"],
+  ])("%s defaults to its row's loginDefault, %s, on entry and on pick", (key, expected) => {
+    expect(platformRow(key)?.loginDefault).toBe(expected);
+    expect(initialWizard({ recovery: key }).method).toBe(expected);
+    const other = PLATFORMS.find((r) => r.key !== key)!.key;
+    expect(run(on({ kind: "platform" }, { platform: other, method: "browser" }), platform(key)).method).toBe(expected);
   });
   it("a draft's details (with its id) are the Creator, and its id the draftId", () => {
     const draft = { ...BELLA, id: "d1", created_at: "t" };

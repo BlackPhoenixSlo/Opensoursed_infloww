@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 
 vi.mock("@/contexts/UserContext", async (orig) => {
   const value = () => ({ user: { user_id: "owner-1", username: "owner" }, loading: false });
@@ -12,6 +13,7 @@ vi.mock("@/contexts/ChatterContext", async (orig) => {
 
 import PerModelKpiGrid, { ofReadState } from "@/components/stats/PerModelKpiGrid";
 import type { AccountMeta } from "@/lib/relay";
+import { forgetScreenBundles, resetScreenBundles } from "@/lib/screenBundle";
 import { jsonRes, renderWithProviders } from "@/test-utils";
 
 const kinds = (tip: number) => ({ ppv: 0, post: 0, tip, subscription: 0, rebill: 0, custom: 0 });
@@ -49,6 +51,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  resetScreenBundles();
 });
 
 const ofReads = () => fetchMock.mock.calls
@@ -105,6 +108,58 @@ describe("PerModelKpiGrid on a Creator with no live OnlyFans session", () => {
     answer();
     await screen.findByText("Live One");
     expect(new Set(ofReads().map(([, id]) => id))).toEqual(new Set(["live"]));
+  });
+});
+
+describe("PerModelKpiGrid on a Fansly Creator, which lacks the subscribers chart", () => {
+  const FROM = "2026-10-26T07:00:00.000Z";
+  const TO = "2026-11-02T07:59:59.999Z";
+  const MIXED: AccountMeta[] = [
+    { id: "live", has_session: true, is_active: true, proxy_down: false },
+    { id: "flfree", platform: "fansly", has_session: true, is_active: true, proxy_down: false },
+    { id: "flpaid", platform: "fansly", has_session: true, is_active: true, proxy_down: false },
+  ];
+  const profiles: Record<string, object> = {
+    live: { id: "live", name: "Live One", subscribePrice: 0 },
+    flfree: { id: "flfree", name: "Fansly Free", subscribePrice: 0 },
+    flpaid: { id: "flpaid", name: "Fansly Paid", subscribePrice: 9.99 },
+  };
+  const kpi = (id: string, label: string) =>
+    within(card(id)).getByText(label).closest("div")!.querySelector("dd")!.textContent;
+
+  beforeEach(() => {
+    forgetScreenBundles();
+    accounts = async () => jsonRes({ accounts: MIXED, active_account_id: null });
+    const base = fetchMock.getMockImplementation() as (url: string, init?: RequestInit) => Promise<Response>;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const u = new URL(String(url), "http://localhost");
+      const id = new Headers(init?.headers).get("X-Account-Id") ?? "";
+      if (u.pathname === "/admin/screens/dashboard") {
+        return jsonRes({ answers: ["live", "flfree", "flpaid"].map((a) => ({ accountId: a, read: "newFans", body: { subscribers: 9 } })) });
+      }
+      if (u.pathname === "/admin/stats/per-model") {
+        return jsonRes({ per_model: [row("live", 1200), row("flfree", 3400), { ...row("flpaid", 3400), new_subs_count: 4 }] });
+      }
+      if (u.pathname === "/api/of/v2/users/me") return jsonRes(profiles[id]);
+      return base(url, init);
+    });
+  });
+
+  it("settles the free card's New fans and LTV to — over a stale cached 0 and a warm bundle value, with no chart read; the paid card keeps New subs and LTV", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    client.setQueryData(["of-new-fans", "flfree", FROM, TO], 0);
+    client.setQueryData(["of-new-fans", "flpaid", FROM, TO], 0);
+    renderWithProviders(<PerModelKpiGrid from={FROM} to={TO} />, client);
+    await screen.findByText("Fansly Free");
+    await screen.findByText("Fansly Paid");
+    await waitFor(() => expect(kpi("live", "New fans (30d)")).toBe("9"));
+    await waitFor(() => expect(within(card("flfree")).getByText("free")).toBeInTheDocument());
+
+    expect(kpi("flfree", "New fans (30d)")).toBe("—");
+    expect(kpi("flfree", "LTV")).toBe("—");
+    expect(kpi("flpaid", "New subs")).toBe("4");
+    expect(kpi("flpaid", "LTV")).toBe("$8.50");
+    expect(ofReads().filter(([path, id]) => path === "/api/of/v2/subscriptions/subscribers/chart" && id !== "live")).toEqual([]);
   });
 });
 

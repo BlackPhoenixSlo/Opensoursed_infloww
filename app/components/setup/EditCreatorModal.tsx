@@ -4,7 +4,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { AccountChip, fanslyProfile, type SectionKey } from "@/components/setup/AddCreatorModal";
+import { AccountChip, LINKERS, profileLine, type SectionKey } from "@/components/setup/AddCreatorModal";
 import { FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import {
   CreatorsDetailsForm, EditCreatorForm, FlowButton, FlowModal, HB_DIM, STEP_TITLE, SelectProxyUI, T, applyProxy, assignedIds,
@@ -13,7 +13,7 @@ import {
 } from "@/components/setup/creatorFlow";
 import { pickAvatarUrl, useAccountAvatar } from "@/hooks/useAccountAvatar";
 import { useCreatorProfiles, type CreatorDetails, type DraftCreator } from "@/lib/creatorProfiles";
-import { PLATFORM_NAME, accountPlatform } from "@/lib/platform";
+import { PLATFORM_NAME, accountPlatform, hasSession, platformRow } from "@/lib/platform";
 import { type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
@@ -31,7 +31,12 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
   const save = useSaveAccountDetails(profiles);
   const profile = profiles.profiles[account.id] ?? {};
   const platform = accountPlatform(account);
-  const of = platform === "onlyfans";
+  const row = platformRow(platform);
+  const relink = row && (() => {
+    onClose();
+    if (LINKERS[row.relink].pinsAccount) onLink?.(row.relink, account.id);
+    else onLink?.(row.relink);
+  });
   const [creator, setCreator] = useState<CreatorDetails>({
     name: profile.name ?? account.nickname ?? account.name ?? "", gender: profile.gender ?? "", avatar: profile.avatar,
   });
@@ -81,17 +86,17 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
           <div className={BOX}>
             <AccountChip
               accountId={account.id} name={me?.name ?? account.name ?? account.nickname} username={me?.username} avatar={pickAvatarUrl(me)}
-              sub={!of && me?.username ? fanslyProfile(me.username) : undefined}
+              sub={profileLine(row, me?.username)}
             />
             {connected ? (
               <FlowButton disabled title={NOT_WIRED}>{T.unlink}</FlowButton>
-            ) : (
-              <FlowButton onClick={() => { onClose(); if (of) onLink?.("browserbase"); else onLink?.("fansly", account.id); }}>{T.linkAccount}</FlowButton>
+            ) : relink && (
+              <FlowButton onClick={relink}>{T.linkAccount}</FlowButton>
             )}
           </div>
-          {!of && conn === "Disconnected" && <p className="mt-1 text-sm text-err">{FANSLY_T.rebind}</p>}
+          {row && hasSession(row) && conn === "Disconnected" && <p className="mt-1 text-sm text-err">{FANSLY_T.rebind}</p>}
         </div>
-        {of && (
+        {row?.bindsProxy && (
           <div>
             <span className="mb-1 block text-sm font-medium">{T.proxyConnection}</span>
             <div className={BOX}>
@@ -103,7 +108,7 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
                 <span className={cn("block truncate text-xs", HB_DIM)}>{proxyText(bound, proxiesQ.data)}</span>
               </span>
               <span className="flex shrink-0 gap-2">
-                {!connected && <FlowButton onClick={() => { onClose(); onLink?.("browserbase"); }}>{T.linkAccount}</FlowButton>}
+                {!connected && relink && <FlowButton onClick={relink}>{T.linkAccount}</FlowButton>}
                 <FlowButton disabled={!proxiesQ.isSuccess} onClick={() => setChanging(true)}>{T.change}</FlowButton>
                 <FlowButton disabled title={NOT_WIRED}>{T.del}</FlowButton>
               </span>

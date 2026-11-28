@@ -287,6 +287,8 @@ def _thread_id(db: sqlite3.Connection, instance: str, user_key: str) -> int | No
 
 def _add_message(db: sqlite3.Connection, thread_id: int, sender: str, text: str,
                  photos: Sequence[Photo] = ()) -> None:
+    if photos:
+        _require_photo_space()
     at = _now()
     mid = db.execute("INSERT INTO messages (thread_id, sender, text, at) VALUES (?, ?, ?, ?)",
                      (thread_id, sender, text, at)).lastrowid
@@ -318,9 +320,14 @@ async def _form_message(request: Request, who_fields: Sequence[str] = ()) -> tup
     return who, text, raw
 
 
-async def _photos(raw: Sequence[bytes]) -> list[Photo]:
-    if raw and await run_in_threadpool(_db_full):
+def _require_photo_space() -> None:
+    if _db_full():
         raise HTTPException(status_code=507, detail="Photo storage is full — send text for now.")
+
+
+async def _photos(raw: Sequence[bytes]) -> list[Photo]:
+    if raw:
+        await run_in_threadpool(_require_photo_space)
     return [await reencode(r) for r in raw]
 
 
@@ -437,19 +444,25 @@ def _ingest(who: dict[str, str], text: str, photos: Sequence[Photo] = ()) -> dic
 WHO_FIELDS = ("instance", "user_key", "agency_id", "agency_name", "name", "role")
 
 
+def _require_identity(who: dict[str, str]) -> None:
+    if not who["instance"].strip() or not who["user_key"].strip():
+        raise HTTPException(status_code=400, detail="instance and user_key required")
+
+
 @router.post(f"{API}/instance/messages")
 def instance_ingest(request: Request, body: Ingest = Body(...)) -> dict[str, Any]:
     _instance(request)
     text = _require_text(body.text)
-    return _ingest(body.model_dump(include=set(WHO_FIELDS)), text)
+    who = body.model_dump(include=set(WHO_FIELDS))
+    _require_identity(who)
+    return _ingest(who, text)
 
 
 @router.post(f"{API}/instance/messages/upload")
 async def instance_ingest_upload(request: Request) -> dict[str, Any]:
     _instance(request)
     who, text, raw = await _form_message(request, WHO_FIELDS)
-    if not who["instance"].strip() or not who["user_key"].strip():
-        raise HTTPException(status_code=400, detail="instance and user_key required")
+    _require_identity(who)
     await run_in_threadpool(_check_send_limit, who)
     return await run_in_threadpool(_ingest, who, text, await _photos(raw))
 

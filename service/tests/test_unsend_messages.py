@@ -34,6 +34,9 @@ class FakeClient:
         self.cancel_calls.append(int(queue_id))
         return {"success": True}
 
+    def unsend_mass_message(self, queue_id):
+        return self.cancel_scheduled(queue_id)
+
     def mass_message_history(self, **kw):
         self.history_calls += 1
         return {"items": [], "hasMore": False}

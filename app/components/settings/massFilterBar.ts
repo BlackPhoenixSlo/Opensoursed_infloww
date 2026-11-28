@@ -1,5 +1,5 @@
 import { dayOf } from "@/components/growth/automatedRows";
-import type { MassMessageRow } from "@/hooks/useMassMessages";
+import type { CreatorMassPage, MassMessageRow } from "@/hooks/useMassMessages";
 import { ofPlainText } from "@/lib/ofRichText";
 
 export interface MassFilters {
@@ -115,4 +115,10 @@ export function narrowedBy(f: MassFilters, modelNames: readonly string[] = []): 
 export function mayHideOlder(f: MassFilters, rowsPerCreator: readonly number[], limit: number): boolean {
   const filtered = !!(f.q.trim() || f.from || f.to);
   return filtered && rowsPerCreator.some((n) => n >= limit);
+}
+
+export function moreNotLoaded(
+  perCreator: readonly Pick<CreatorMassPage, "accountId" | "hasMore" | "incomplete">[],
+): string[] {
+  return perCreator.filter((c) => c.hasMore || c.incomplete).map((c) => c.accountId);
 }

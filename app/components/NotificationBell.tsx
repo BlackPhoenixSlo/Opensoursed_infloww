@@ -15,6 +15,7 @@ import { gateOptions, onScreenGate } from "@/lib/ofReadGate";
 import { MoneyRailRestoreButton } from "@/components/MoneyRail";
 import { relay } from "@/lib/relay";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
+import { accountCan } from "@/lib/platform";
 import { proxyImage } from "@/lib/mediaUrl";
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/ui/infloww";
@@ -39,7 +40,9 @@ import {
   type NotifTypeKey,
 } from "@/lib/notifSettings";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { type BellPane, initialBellState, notificationBellReducer, ofListOnScreen, OPEN_AGENCY_EVENT } from "./notificationBellReducer";
+import {
+  type BellPane, initialBellState, markAllControl, notificationBellReducer, ofListOnScreen, OPEN_AGENCY_EVENT,
+} from "./notificationBellReducer";
 import { NOTIF_PAGE_SIZE, fmtTime, notifPath, parseList, renderText } from "@/lib/notifText";
 
 export type Filter = {
@@ -301,10 +304,12 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   const allModelsCount = useCachedOfNotifSum(allModels ? liveIds : NO_IDS);
   const proCount = allModels ? allModelsCount : scopedCount;
   const { marking, markAll, status: markStatus } = useMarkAllOfNotifsRead();
+  const { ids: markIds, shown: markShown } = useMemo(
+    () => markAllControl(liveIds, activeAccounts), [liveIds, activeAccounts]);
 
   // a Dead-session Creator is not read
   const markAccountId = accountId && !activeAccounts.some((a) => a.id === accountId && a.session_dead_at)
-    ? accountId : null;
+    && accountCan(activeAccounts, accountId, "notifications_read") ? accountId : null;
   const markOfNotifsRead = useMarkOfNotifsRead();
   const listShown = ofListOnScreen(bell) && !feed.loading && !feed.error && feed.reads.some((r) => r.count !== undefined);
   useEffect(() => {
@@ -475,12 +480,12 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                     </button>
                   ))}
                 </div>
-                {allModels && (
+                {allModels && markShown && (
                   <button
                     type="button"
-                    disabled={marking || liveIds.length === 0}
+                    disabled={marking || markIds.length === 0}
                     aria-busy={marking}
-                    onClick={() => void markAll(liveIds)}
+                    onClick={() => void markAll(markIds)}
                     className="shrink-0 px-2 py-0.5 text-[11px] font-semibold text-accent hover:underline disabled:opacity-50 disabled:no-underline"
                   >
                     {marking ? "Marking…" : "Mark all read"}

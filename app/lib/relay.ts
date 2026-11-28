@@ -175,9 +175,13 @@ export function isDeepRefused(error: unknown): boolean {
   return error instanceof RelayError && error.status === 428;
 }
 
+export function isUnknownDetail(detail: unknown): boolean {
+  return (detail as { error?: unknown } | null)?.error === "unknown_account";
+}
+
 export function isUnknownAccount(error: unknown): boolean {
   return error instanceof RelayError && error.status === 404 &&
-    (error.body as { detail?: { error?: unknown } } | null)?.detail?.error === "unknown_account";
+    isUnknownDetail((error.body as { detail?: unknown } | null)?.detail);
 }
 
 export function chatListRetry(failures: number, error: unknown): boolean {

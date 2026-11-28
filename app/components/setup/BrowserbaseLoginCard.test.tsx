@@ -12,6 +12,7 @@ vi.mock("@/lib/relay", async (orig) => {
 
 import BrowserbaseLoginCard, { POLL_GIVE_UP_MS, type RemoteLoginStatus } from "@/components/setup/BrowserbaseLoginCard";
 import { relay, RelayError } from "@/lib/relay";
+import { PLATFORMS, platformRow } from "@/lib/platform";
 const relayGet = relay.get as unknown as Mock;
 const relayPost = relay.post as unknown as Mock;
 
@@ -435,5 +436,45 @@ describe("BrowserbaseLoginCard, Fansly", () => {
     const onLinked = startFansly();
     expect(await screen.findByText("Account 900539700124344320 added. Later traffic uses the server IP.")).toBeInTheDocument();
     await waitFor(() => expect(onLinked).toHaveBeenCalledWith("900539700124344320"));
+  });
+});
+
+describe("BrowserbaseLoginCard reads the Platform row", () => {
+  const flip = (key: "onlyfans" | "fansly") => {
+    const row = platformRow(key) as { bindsProxy: boolean };
+    row.bindsProxy = !row.bindsProxy;
+  };
+  const saved = PLATFORMS.map((r) => r.bindsProxy);
+  afterEach(() => {
+    PLATFORMS.forEach((r, i) => { (r as { bindsProxy: boolean }).bindsProxy = saved[i]; });
+  });
+
+  it("an OnlyFans row that binds no proxy says the server IP, before and after the login", async () => {
+    flip("onlyfans");
+    current = job({ state: "done", account_id: "778", proxy: "infloww", proxy_label: "" });
+    render(<BrowserbaseLoginCard />, { wrapper });
+    expect(screen.getByText("OnlyFans traffic after login uses the server IP.")).toBeInTheDocument();
+    cleanup();
+    start();
+    expect(await screen.findByText("Account 778 added. Later traffic uses the server IP.")).toBeInTheDocument();
+  });
+
+  it("a Fansly row that binds a proxy says the proxy is automatic and names it once linked", async () => {
+    flip("fansly");
+    current = job({ state: "done", account_id: "950", proxy: "custom", proxy_label: "isp-1" });
+    render(<BrowserbaseLoginCard platform="fansly" />, { wrapper });
+    expect(screen.getByText(/^Proxy assigned automatically/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Fansly username or email"), { target: { value: "creator_name" } });
+    fireEvent.change(screen.getByLabelText("Fansly password"), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start browser login" }));
+    expect(await screen.findByText("Account 950 added. Proxy isp-1 is attached for all later traffic.")).toBeInTheDocument();
+  });
+
+  it("an unregistered key shows Unknown platform with no login form and starts nothing", () => {
+    render(<BrowserbaseLoginCard platform="unknown" />, { wrapper });
+    expect(screen.getByText("Unknown platform")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(relayPost).not.toHaveBeenCalled();
   });
 });

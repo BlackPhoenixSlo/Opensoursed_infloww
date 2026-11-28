@@ -218,6 +218,20 @@ describe("Manage creators, an expired Fansly session", () => {
     expect(onLink).toHaveBeenLastCalledWith("fansly", "fy-1");
   });
 
+  it("Edit creator on a disconnected OnlyFans account keeps its proxy box and relinks at Browserbase with no id", () => {
+    const onLink = vi.fn();
+    renderWithProviders(
+      <EditAccountModal account={{ id: "of-1", nickname: "Oscar", platform: "onlyfans", has_session: true, is_active: true, proxy_down: false }} conn="Disconnected" onClose={() => {}} onLink={onLink} />,
+    );
+    expect(within(dialog()).getByText("OnlyFans")).toBeInTheDocument();
+    expect(within(dialog()).getByText("Proxy connection")).toBeInTheDocument();
+    expect(within(dialog()).queryByText(FANSLY_T.rebind)).toBeNull();
+    const links = within(dialog()).getAllByRole("button", { name: "Link account" });
+    expect(links).toHaveLength(2);
+    for (const link of links) fireEvent.click(link);
+    expect(onLink.mock.calls).toEqual([["browserbase"], ["browserbase"]]);
+  });
+
   it("an OnlyFans row keeps its own relink and recovery", async () => {
     accounts = [{ id: "of-1", nickname: "Oscar", platform: "onlyfans", has_session: true }];
     health = [{ account_id: "of-1", ok: false, error: "auth failed" }];

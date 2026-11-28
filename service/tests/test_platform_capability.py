@@ -171,22 +171,27 @@ def case_fansly_counts_hold_the_lists_phase_verdicts():
     shim = platforms.FANSLY.backend.Shim
     live = live_checks(shim, surface)
     assert live == {"delete_list", "block_user", "priority_mass", "nudge_online"}, live
-    assert {n: verdict(shim, n) for n in ("list_users_in", "rename_list", "unblock_user")} == {
-        "list_users_in": "built", "rename_list": "built", "unblock_user": "blocked"}
+    assert {n: verdict(shim, n) for n in ("list_users_in", "rename_list", "unblock_user", "unsend_mass_message",
+                                        "engagement_messages", "mass_message_history", "scheduled_messages")} == {
+        "list_users_in": "built", "rename_list": "built", "unblock_user": "blocked", "unsend_mass_message": "blocked",
+        "engagement_messages": "built", "mass_message_history": "built", "scheduled_messages": "built"}
+    assert surface.get("unsend_mass_message") == {"automations/unsend_messages.py"}, surface.get("unsend_mass_message")
     assert {"list_users_in", "rename_list", "block_user", "unblock_user"} <= routes, routes
     assert verdict_counts(shim, surface) == FANSLY_COUNTS, verdict_counts(shim, surface)
 
 
-FANSLY_MONEY_READS = (
+FANSLY_BLOCKED_READS = (
     ("transactions", "Fansly per-sale feed unproven; the earnings capture holds aggregates only"),
     ("payout_requests", "Fansly payouts not captured"),
     ("payout_balances", "Fansly wallet balance unit and shape unproven; no non-zero wallet seen"),
     ("earnings_chart", "Fansly earnings aggregates captured; category map and paging unproven; no Fansly caller"),
+    ("queued_message", "no single-row GET; its only caller is the queued-message edit, graded I"),
+    ("mass_message_buyers", "no buyers in broadcast stats; a priced broadcast needs a Proof purchase"),
 )
-FANSLY_COUNTS = {"blocked": 149, "built": 56, "missing": 8, "unsupported": 25}
+FANSLY_COUNTS = {"blocked": 148, "built": 58, "missing": 8, "unsupported": 25}
 
 
-def case_fansly_money_reads_are_blocked_before_any_request():
+def case_fansly_blocked_reads_refuse_before_any_request():
     shim = platforms.FANSLY.backend.Shim
     sent: list = []
 
@@ -198,7 +203,7 @@ def case_fansly_money_reads_are_blocked_before_any_request():
             sent.append(a)
             return {}
 
-    for name, reason in FANSLY_MONEY_READS:
+    for name, reason in FANSLY_BLOCKED_READS:
         assert classify(shim, name) == ("blocked", reason), (name, classify(shim, name))
         try:
             getattr(_Probe(), name)()

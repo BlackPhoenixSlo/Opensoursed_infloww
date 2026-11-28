@@ -8,9 +8,12 @@ import { VariantsField } from "@/components/compose/VariantsField";
 import { IfHelp, IfInput, IfLearn, IfSwitch, SaveRow, saveVerdict } from "@/components/ui/infloww";
 import { EditorFooter } from "@/components/ui/ifModal";
 import { useAutomationRules, useSaveRule, type AutomationRule } from "@/hooks/useAutomations";
+import { useAccountPlatform } from "@/hooks/useCan";
+import { PLATFORM_NAME, useFallbackPlatform } from "@/lib/platform";
 
 import {
-  buildSave, initWelcomeState, mergeTarget, welcomeIssues, welcomeReducer, type WelcomeDraft, type WelcomeEdit,
+  afterOfDisabled, buildSave, initWelcomeState, mergeTarget, welcomeIssues, welcomePlatformCopy,
+  welcomeReducer, type WelcomeDraft, type WelcomeEdit,
 } from "./delayedWelcomeForm";
 import { MAX_VARIANTS, TEXT_MAX } from "./lifecycleForm";
 import { FollowUpsField } from "./LifecycleMessageEditor";
@@ -32,6 +35,10 @@ function Form({ accountId, live, onTouched }: {
   onTouched: () => void;
 }) {
   const save = useSaveRule(accountId);
+  const fallback = useFallbackPlatform();
+  const platform = useAccountPlatform(accountId) ?? fallback;
+  const name = PLATFORM_NAME[platform];
+  const { refusal, afterLabel } = welcomePlatformCopy(platform);
   const [state, rawDispatch] = useReducer(welcomeReducer, live, initWelcomeState);
   if (live !== state.live && !save.isPending) rawDispatch({ type: "live", rule: live });
   // A save PATCHes the payload merged: a PATCH replaces it whole, so the rule's other knobs would be lost.
@@ -44,10 +51,10 @@ function Form({ accountId, live, onTouched }: {
   };
   const edit = (patch: Partial<Omit<WelcomeDraft, "extras">>) => dispatch({ type: "patch", patch });
   const { enabled, minutes, afterOf, extras } = draft;
-  const { problem, invalid } = welcomeIssues(draft);
+  const { problem, invalid, refused } = welcomeIssues(draft, refusal);
 
   function submit() {
-    const req = accountId ? buildSave(draft, rule, accountId) : null;
+    const req = accountId ? buildSave(draft, rule, accountId, refusal) : null;
     if (!req) return;
     rawDispatch({ type: "saved" });
     save.mutate(req, {
@@ -106,18 +113,19 @@ function Form({ accountId, live, onTouched }: {
 
       <FollowUpsField id="dw-fu" steps={draft.followUps} onChange={(followUps) => edit({ followUps })} />
       <div>
-        <IfSwitch label="OnlyFans' welcome message is message 1: while it is on, send only the follow-ups"
-          checked={afterOf} onChange={(on) => edit({ afterOf: on })} />
-        {afterOf && (
+        <IfSwitch label={afterLabel}
+          checked={afterOf} disabled={afterOfDisabled(draft, refusal)} onChange={(on) => edit({ afterOf: on })} />
+        {refusal && <p className="text-warn">{refusal}</p>}
+        {afterOf && !refusal && (
           <IfHelp>
-            Checked once per run on OnlyFans; while it is off or empty, the welcome above goes out as usual.
-            {!draft.followUps.some((f) => f.text.trim()) && " With no follow-up, a fan OnlyFans welcomes gets nothing from us."}
+            Checked once per run on {name}; while it is off or empty, the welcome above goes out as usual.
+            {!draft.followUps.some((f) => f.text.trim()) && ` With no follow-up, a fan ${name} welcomes gets nothing from us.`}
           </IfHelp>
         )}
       </div>
 
       <EditorFooter>
-        <SaveRow onSave={submit} disabled={!accountId || !!problem || invalid}
+        <SaveRow onSave={submit} disabled={!accountId || !!problem || invalid || refused}
           save={saveVerdict(save, !unsaved(state))} />
       </EditorFooter>
     </div>

@@ -458,7 +458,7 @@ export default function ScriptsPage() {
   );
 
   return (
-    <div className="flex flex-col min-h-[calc(100dvh-var(--shell-top,3.5rem))] md:h-[calc(var(--vvh)-var(--chrome-top))] md:min-h-0">
+    <div className="flex flex-col min-h-[calc(100dvh-var(--shell-top,3.5rem))]">
       <InflowwPageHeader
         title="Scripts"
         className="h-auto min-h-12 flex-wrap gap-y-2 px-3 py-2 sm:h-12 sm:flex-nowrap sm:px-6 sm:py-0"
@@ -496,7 +496,7 @@ export default function ScriptsPage() {
         className="flex flex-col min-h-0"
       >
         {allModels ? (
-          <div className="min-h-0 flex-1 md:overflow-y-auto"><AllModelsView accounts={accounts} /></div>
+          <AllModelsView accounts={accounts} />
         ) : (
         <>
         <div className="min-h-14 px-3 sm:px-6 py-2 sm:py-0 flex flex-wrap items-center gap-y-2 border-b border-border">

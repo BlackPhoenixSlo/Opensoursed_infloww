@@ -155,9 +155,9 @@ Seams, highest first:
 
    The LLM is stubbed and typing is enabled explicitly, because the harness disables it in test mode. KIND_VERDICTS rows are asserted through Phase 02a's harness.
 
-   Executor mode is explicit per test, because `run_once` returns `no_anchor` for autoreply and `send_followup` in Cell mode before any run opens (`automation_executor.py:119,538-540`, `send_ops.cells()`):
+   Executor mode is explicit per test, because `run_once` returns `no_anchor` for autoreply and `send_followup` in Cell mode before any provider call (`automation_executor.py:627-636`, `send_ops.cells()`). Measured: a claimed job opens a run recorded `skipped`/`no_anchor`, the job ends `done`, and the result carries that run's id; with no job to claim no run opens:
    - positive autoreply and `send_followup` lanes run with `OI_CELL_MAP` unset;
-   - a Cell-mode twin pins `{"status":"skipped","reason":"no_anchor"}` with zero provider calls, on both Platforms;
+   - a Cell-mode twin pins `{"status":"skipped","reason":"no_anchor","run_id":<the persisted run>}`, the run row `skipped`/`no_anchor`, the job `done` and zero provider calls, on both Platforms;
    - welcome's lost response runs in Cell mode: one upstream `/message`, the claim persisted `uncertain` (`send_ops.py:334-341`), and the fresh-Shim retry gives zero `/message` and zero `/group`;
    - welcome triggers: 3003 alone, 15016 alone, and both, each through the real Shim's `notifications`; plus a partial page (trigger past `limit`) and a second tick.
 
@@ -312,7 +312,7 @@ scripts/verify-app/drive.py down
 - ASSUMPTION: the unknown-key sentinel `"unknown"` lives only in the app (not in `PLATFORMS`), so the drift test's table-keys-equal-registry check still holds. Overturned if Phase 02a's ADR-0068 wording requires the app row; then the drift parser skips it.
 - `pnpm typecheck` is not added to `scripts/run-tests.sh` (D6, Cut); the vitest Platform-branch scan carries story 39 instead.
 - ASSUMPTION: ticket 13 item 9 reads `no_anchor` as a no-group outcome. Measured: it fires for every autoreply and `send_followup` in Cell mode, grouped or not, and never outside it (`automation_executor.py:119,538-540`). So the Verdict rows split by mode: Cell mode → declared `no_anchor` lane on both Platforms (the ticket's verdict text, kept); non-Cell → measured on the Stateful fake (expected: the send path mints one group and sends once, as `_group_for_send` does). Neither is `{}`. Which mode prod runs is not observable here (floor 2). Overturned by the test result; only the Verdict row text changes.
-- ASSUMPTION: the Cell-mode `no_anchor` return opens no `AutomationRun`, on both Platforms, before this Phase. 02d pins it and does not change it (rung 4); persisting it is a cross-Platform executor change outside 03/05-09/13. Overturned by the owner wanting it persisted.
+- Measured (was an ASSUMPTION that no `AutomationRun` opens): in Cell mode a claimed autoreply or `send_followup` job opens one `AutomationRun` recorded `skipped`/`no_anchor`, the job ends `done`, and the return carries its `run_id`; only with no job to claim does no run open (`automation_executor.py:627-636`). Same on both Platforms; 02d pins it and does not change it (rung 4).
 - ASSUMPTION: the app tombstone set holds at most 500 ids per account for the tab's life (rung 5); after a reload the Shim drop and the Relay cache drop cover story 3. Overturned by a reload within the 5-minute cache on a tab that never saw the event, on another Relay worker; then the cache drop must be shared.
 - ASSUMPTION: the Shim walks at most 3 extra raw pages past an all-deleted page (rung 5). Overturned by a Thread with a longer unsent run; only the constant falls.
 - ASSUMPTION: the paid card's `m.new_subs_count` on Fansly comes from Relay DB rows, not from `subscribers_chart` or `transactions`, so 07 B leaves it (rung 1 for the read path `PerModelKpiGrid.tsx:186`; its Fansly source is inferred). Overturned if its source is a refused read; then the paid KPI and LTV gate too.

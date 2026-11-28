@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+import llm_client
 import tenant_keys
 from _full_ai_fixtures import QUIET, FakeInfoJev, FakeJev, QuietHeatJev
 from automations import _heat_jev, _info_jev, _router_jev
@@ -25,6 +26,7 @@ PLATFORM_MESSAGE = {"fansly": 900000000000000303, "onlyfans": 8_700_303}
 
 HOST = "kind-verdicts"
 LLM_REPLY = "hey you, tell me more"
+SPANISH_REPLY = "¿estás dormida? cuéntame más"
 LLM_JSON = {"nickname": "Tom/Gym", "short_bio": "likes the gym", "hobbies": "gym"}
 
 
@@ -70,6 +72,9 @@ class OFStandIn:
     def cancel_scheduled(self, queue_id):
         self.calls.append("cancel_scheduled")
         return {"success": True}
+
+    def unsend_mass_message(self, queue_id):
+        return self.cancel_scheduled(queue_id)
 
     def mass_message_history(self, **_kw):
         self.calls.append("mass_message_history")
@@ -209,9 +214,15 @@ class OFStandIn:
         return {"id": 66101, "createdAt": datetime.utcnow().isoformat() + "+00:00"}
 
 
-async def canned_llm(url, headers, body, **_kw):
-    content = json.dumps(LLM_JSON) if body.get("response_format") else LLM_REPLY
-    return {"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}, 1
+def canned_llm(reply: str = LLM_REPLY):
+    async def fire(url, headers, body, **_kw):
+        content = json.dumps(LLM_JSON) if body.get("response_format") else reply
+        return {"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}, 1
+    return fire
+
+
+def llm_says(reply: str):
+    return lambda _aid: patch.object(llm_client, "_fire", canned_llm(reply))
 
 
 async def no_key(_aid):
@@ -421,9 +432,11 @@ SEEDS = {
     ("reply_mass_funnel", "landed"): _seed_landed_funnel_send,
     ("full_ai_chat", "shadow"): _seed_turn,
     ("full_ai_chat", "live"): _seed_live_turn,
-    ("send_followup", "run"): _rows(_fan(lifetime_spend_cents=500), _out(timedelta(hours=30))),
     ("welcome_chatter_for_info", "run"): _rows(_fan(), _out(timedelta(hours=2), automation_kind="send_welcome"),
                                                _in(timedelta(hours=1))),
+    ("welcome_chatter_for_info", "spanish"): _rows(_fan(language="es"),
+                                                   _out(timedelta(hours=2), automation_kind="send_welcome"),
+                                                   _in(timedelta(hours=1))),
     ("unsend_messages", "mass"): _seed_broadcast_cache,
     ("unsend_messages", "chat"): _seed_own_message,
 }
@@ -431,7 +444,17 @@ SEEDS = {
 
 FAKE_STATE: dict = {}
 
-WORLDS = {("full_ai_chat", "shadow"): _jev_answers, ("full_ai_chat", "live"): _jev_answers}
+WORLDS = {("full_ai_chat", "shadow"): _jev_answers, ("full_ai_chat", "live"): _jev_answers,
+          ("welcome_chatter_for_info", "spanish"): llm_says(SPANISH_REPLY)}
+
+
+def fan_groups(fake) -> list[str]:
+    return [gid for gid, row in fake.groups.items() if row["partnerAccountId"] == FAN]
+
+
+def threadless(fake) -> None:
+    for gid in fan_groups(fake):
+        del fake.groups[gid]
 
 
 def fan_ids(start: int, n: int) -> list[int]:

@@ -4,9 +4,10 @@ import asyncio
 import json
 import logging
 import random
+import threading
 import time
 from collections import deque
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 import websockets
 
@@ -27,11 +28,17 @@ SVC_MESSAGE = 5
 
 _DEDUPE_MAX = 512
 
+TYPING_SLOT_S = 5.0
+
 
 class FanslyWebSocket:
 
-    def __init__(self, client: Any):
+    def __init__(self, client: Any, *, clock: Callable[[], float] = time.monotonic):
         self.client = client
+        self._clock = clock
+        self._typing_lock = threading.Lock()
+        self._typing_slots: dict[str, float] = {}
+        self._typing_misses: dict[str, float] = {}
         self._stop = asyncio.Event()
         self._live_ws = None
         # duplicate frames arrive adjacent, so a bounded ring suffices; an unbounded set on a weeks-long pump leaks
@@ -51,20 +58,46 @@ class FanslyWebSocket:
 
     async def send_typing(self, fan_id: int | str) -> bool:
         try:
-            group_id = await asyncio.to_thread(self._resolve_group, fan_id)
-            if not group_id:
-                return False
-            await asyncio.to_thread(self.client.typing, group_id)
-            return True
+            return await asyncio.to_thread(self._send_typing, str(fan_id))
         except Exception:
             log.debug("send_typing failed (fan=%s)", fan_id, exc_info=True)
             return False
 
-    def _resolve_group(self, fan_id: int | str) -> str | None:
-        resolver = getattr(self.client, "_as_group_id", None)
-        if resolver is None:
-            return None
-        return str(resolver(str(fan_id)) or "") or None
+    def _send_typing(self, fan_id: str) -> bool:
+        group_id = self._resolve_group(fan_id)
+        if not group_id:
+            return False
+        with self._typing_lock:
+            now = self._clock()
+            last = self._typing_slots.get(group_id)
+            if last is not None and now - last < TYPING_SLOT_S:
+                return True
+            self._typing_slots[group_id] = now
+        try:
+            self.client.typing(group_id)
+        except Exception:
+            with self._typing_lock:
+                if self._typing_slots.get(group_id) == now:
+                    del self._typing_slots[group_id]
+            raise
+        return True
+
+    def _resolve_group(self, fan_id: str) -> str | None:
+        lookup = self.client._group_or_none
+        cached = lookup(fan_id, scan=False)
+        if cached:
+            return cached
+        with self._typing_lock:
+            now = self._clock()
+            last = self._typing_misses.get(fan_id)
+            self._typing_misses[fan_id] = now
+            if last is not None and now - last < TYPING_SLOT_S:
+                return None
+        found = lookup(fan_id)
+        if found:
+            with self._typing_lock:
+                self._typing_misses.pop(fan_id, None)
+        return found
 
 
     def _dedupe(self, key: tuple) -> bool:
@@ -94,8 +127,29 @@ class FanslyWebSocket:
         event_type = event.get("type")
         if service_id == SVC_MESSAGE and event_type == 1:
             return self._translate_message(event.get("message"))
+        if service_id == SVC_MESSAGE and event_type == 10:
+            return self._translate_delete(event.get("message"))
 
         return None
+
+    def _translate_delete(self, message: Any) -> dict | None:
+        if not isinstance(message, dict):
+            return None
+        message_id = message.get("id")
+        if not message_id:
+            return None
+        sender = str(message.get("senderId") or "")
+        if sender and sender != str(self.client.account_id):
+            fan_id = sender
+        else:
+            fan_id = str(self.client._group_to_fan.get(str(message.get("groupId") or "")) or "")
+        if not fan_id:
+            log.debug("dropping unsend frame %s: no fan", message_id)
+            return None
+        if not self._dedupe((SVC_MESSAGE, 10, str(message_id))):
+            return None
+        log.info("ws-pump unsend frame id=%s", message_id)
+        return {"chat_message_deleted": {"id": str(message_id), "fan_id": fan_id}}
 
     def _translate_message(self, message: Any) -> dict | None:
         if not isinstance(message, dict):

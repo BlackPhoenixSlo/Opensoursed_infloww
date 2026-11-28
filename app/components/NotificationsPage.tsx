@@ -7,6 +7,7 @@ import { CheckCheck, Settings } from "lucide-react";
 
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { useMarkAllOfNotifsRead } from "@/hooks/useOfNotifCount";
+import { markAllControl } from "@/components/notificationBellReducer";
 import { dispatchNotifCleared } from "@/lib/notifSettings";
 import { IfBody, IfButton, IfTabs, InflowwPageHeader } from "@/components/ui/infloww";
 import {
@@ -66,9 +67,10 @@ export default function NotificationsPage() {
   const showAccountTag = targetAccountIds.length > 1;
   const { marking, markAll, status: markStatus } = useMarkAllOfNotifsRead();
   const liveIds = targetAccountIds.filter((aid) => !activeAccounts.some((a) => a.id === aid && a.session_dead_at));
+  const { ids: markIds, shown: markShown } = markAllControl(liveIds, activeAccounts);
   // Arrival badges clear only once every write landed; a failed one leaves them.
   const markAllRead = async () => {
-    if (await markAll(liveIds)) dispatchNotifCleared();
+    if (await markAll(markIds)) dispatchNotifCleared();
   };
 
   return (
@@ -78,11 +80,13 @@ export default function NotificationsPage() {
         onBack={back}
         actions={(
           <>
-            <IfButton disabled={marking || liveIds.length === 0} onClick={() => void markAllRead()}
-              aria-label="Mark all read" className="max-sm:w-8 max-sm:px-0">
-              <CheckCheck aria-hidden className="h-4 w-4 sm:hidden" />
-              <span className="max-sm:hidden">Mark all read</span>
-            </IfButton>
+            {markShown && (
+              <IfButton disabled={marking || markIds.length === 0} onClick={() => void markAllRead()}
+                aria-label="Mark all read" className="max-sm:w-8 max-sm:px-0">
+                <CheckCheck aria-hidden className="h-4 w-4 sm:hidden" />
+                <span className="max-sm:hidden">Mark all read</span>
+              </IfButton>
+            )}
             {markStatus && <span role="status" className="text-xs text-err">{markStatus}</span>}
             <button
               type="button"

@@ -10,6 +10,7 @@ import { cellMode } from "@/lib/cellFlag";
 import { RelayError, relay, type RelayContext } from "@/lib/relay";
 import { REFRESH_KEYS } from "@/lib/screenBundle";
 import { type FanId } from "@/lib/fanId";
+import { can, type AccountPlatform } from "@/lib/platform";
 
 const CACHE = {
   // Short so a chatter's fresh sale shows on next focus.
@@ -617,14 +618,18 @@ export function useOfSubscriberCounts(accountId: string | null | undefined) {
   });
 }
 
+const NO_CHART = { data: null, isPending: false } as const;
+
 export function useOfNewFans(
   accountId: string | null | undefined,
   from: string | null,
   to: string | null,
+  platform: AccountPlatform,
 ) {
-  return useQuery<number | null>({
+  const charted = can(platform, "subscriber_chart");
+  const q = useQuery<number | null>({
     queryKey: [REFRESH_KEYS.newFans, accountId, from, to] as const,
-    enabled: !!accountId,
+    enabled: !!accountId && charted,
     queryFn: async ({ signal }) => {
       try {
         const qs = new URLSearchParams();
@@ -651,6 +656,7 @@ export function useOfNewFans(
     retry: false,
     placeholderData: keepPreviousData,
   });
+  return charted ? q : NO_CHART;
 }
 
 

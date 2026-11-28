@@ -32,7 +32,7 @@ vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => ({ data: und
 vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {}, onStreamState: () => () => {} } }));
 
 import PlatformGate, { LOAD_FAILED_LINE, PlatformSync } from "@/components/shell/PlatformGate";
-import PlatformSwitcher, { platformUnread } from "@/components/shell/PlatformSwitcher";
+import PlatformSwitcher, { CreatorPlatformBadge, platformUnread } from "@/components/shell/PlatformSwitcher";
 import Sidebar from "@/components/shell/Sidebar";
 import { ScopeProvider, useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts, usePlatformAccounts } from "@/hooks/useAccounts";
@@ -147,9 +147,18 @@ describe("PlatformSwitcher", () => {
     expect(Object.keys(platformUnread(undefined, {}))).toEqual(PLATFORMS.map((p) => p.key));
   });
 
-  it("counts an account with an unknown platform (mym) as OnlyFans", () => {
+  it("counts an account with an unregistered platform (mym) on no platform", () => {
     const out = platformUnread([{ id: "x-1", platform: "mym", has_session: true }], { "x-1": { unread: 4, owe_reply: 0 } });
-    expect(out).toEqual({ onlyfans: { count: 4 }, fansly: { count: 0 } });
+    expect(out).toEqual({ onlyfans: { count: 0 }, fansly: { count: 0 } });
+  });
+
+  it.each<[string, string, string | null, string]>([
+    ["an unregistered key: no logo, the name Unknown platform", "mym", null, " Unknown platform"],
+    ["Fansly: the Fansly logo and name", "fansly", "platform-logo-fansly", " Fansly"],
+  ])("CreatorPlatformBadge, %s", (_, platform, logo, name) => {
+    const { container } = render(<CreatorPlatformBadge account={{ platform }} always />);
+    expect(container.querySelector("svg")?.getAttribute("data-testid") ?? null).toBe(logo);
+    expect(container.querySelector(".sr-only")?.textContent).toBe(name);
   });
 
   it("no unread: no chip and no dot", async () => {

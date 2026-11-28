@@ -38,6 +38,9 @@ class FakeClient:
         self.cancel_calls.append(int(queue_id))
         return {"success": True}
 
+    def unsend_mass_message(self, queue_id):
+        return self.cancel_scheduled(queue_id)
+
     def delete_post(self, post_id):
         if post_id in self._fail_on:
             raise RuntimeError(f"OF refused delete_post {post_id}")

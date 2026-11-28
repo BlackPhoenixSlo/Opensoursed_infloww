@@ -41,10 +41,10 @@ _task: asyncio.Task | None = None
 
 # BEGIN IMMEDIATE takes the lock up front so a read inside never hits SQLITE_BUSY_SNAPSHOT on upgrade.
 @contextlib.asynccontextmanager
-async def immediate():
+async def immediate(*, begin: str = "BEGIN IMMEDIATE"):
     async with engine.connect() as conn:
         conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-        await conn.execute(text("BEGIN IMMEDIATE"))
+        await conn.execute(text(begin))
         try:
             yield conn
         except BaseException:
@@ -65,6 +65,13 @@ async def immediate_session():
         finally:
             await s.close()
     s.sync_session.dispatch.after_commit(s.sync_session)
+
+
+@contextlib.asynccontextmanager
+async def snapshot_session():
+    async with immediate(begin="BEGIN") as conn:
+        async with AsyncSession(bind=conn) as session:
+            yield session
 
 
 def running() -> bool:

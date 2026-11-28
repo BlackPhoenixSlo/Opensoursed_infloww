@@ -123,8 +123,31 @@ describe("bulkCounts", () => {
   });
 });
 
+describe("a Fansly broadcast row (string id, canUnsend: false)", () => {
+  const fansly = (id: string): MassMessageRow =>
+    ({ ...row(0), id, canUnsend: false, unsendSeconds: 0, isTip: false, __accountId: "f" });
+  const FANSLY = [fansly("900539700124344321"), fansly("900539700124344322")];
+
+  it("is not actionable", () => {
+    expect(FANSLY.map(isActionable)).toEqual([false, false]);
+  });
+
+  it("is never a bulk target and adds nothing to the counts", () => {
+    for (const action of ["all", "non-image", "with-image", "free-text-old"] as const) {
+      expect(bulkTargets([...ROWS, ...FANSLY], new Set(), action, NOW).map((r) => r.id)).toEqual(
+        bulkTargets(ROWS, new Set(), action, NOW).map((r) => r.id));
+      expect(bulkTargets(FANSLY, new Set(["f"]), action, NOW)).toEqual([]);
+    }
+    expect(bulkCounts([...ROWS, ...FANSLY], new Set(), NOW)).toEqual({ all: 13, "non-image": 5, "with-image": 3, "free-text-old": 4 });
+  });
+
+  it("two adjacent big ids stay two listed rows", () => {
+    expect(ids(visibleMassRows(FANSLY, new Set(["f"]), true))).toEqual(["900539700124344321", "900539700124344322"]);
+  });
+});
+
 describe("visibleMassRows", () => {
-  it.each<[string, string[], boolean, number[]]>([
+  it.each<[string, string[], boolean, MassMessageRow["id"][]]>([
     ["all, unsent hidden", [], true, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 21, 22, 23]],
     ["all, unsent shown", [], false, ids(ROWS)],
     ["chip b, unsent hidden", ["b"], true, [21, 22, 23]],
@@ -140,7 +163,7 @@ describe("unsendByCreator", () => {
   it("runs one delete at a time, each Creator's as a block in first-listed order, and counts failures", async () => {
     let inFlight = 0;
     let peak = 0;
-    const order: number[] = [];
+    const order: MassMessageRow["id"][] = [];
     const failed = await unsendByCreator(
       [row(1, "a"), row(2, "b"), row(3, "a"), row(4, "c"), row(5, "b")],
       async (r) => {

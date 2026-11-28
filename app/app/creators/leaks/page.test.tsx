@@ -34,10 +34,11 @@ vi.mock("@/hooks/useEmployeeKey", async (importOriginal) => ({
   useEmployeeKey: () => null,
 }));
 
+import { leakKeys } from "@/components/leaks/leakKeys";
 import Page from "@/app/creators/leaks/page";
 import { IfConfirmHost } from "@/components/ui/ifConfirm";
 import { relay, RelayError } from "@/lib/relay";
-import { QueryClient } from "@tanstack/react-query";
+import { focusManager, QueryClient } from "@tanstack/react-query";
 import { renderWithProviders } from "@/test-utils";
 import { asAll, CREATOR_LEAKS, CURSOR, drill, golden, LOCAL, MERGED, MIA_SERVICE, NO_LEAKS, ROSTER, row, serve, setup, tracked, untracked } from "./leakPageHarness";
 
@@ -126,23 +127,23 @@ describe("/creators/leaks", () => {
     expect(await screen.findByRole("region", { name: "Connect the removal service" })).toBeTruthy();
   });
 
-  it("the owner pastes a key, the Relay checks it, and the card reads set from the PUT answer alone", async () => {
+  it("the owner pastes a key, the Relay checks it, and the page opens from the PUT answer alone with no key card or brand", async () => {
     serve(setup());
     relayPut.mockResolvedValue({ key: "set", masked: "••••aaaa", brand: "Example Removal" });
     renderWithProviders(<Page />);
     fireEvent.change(await screen.findByLabelText("Tracker key"), { target: { value: `  ${KEY} ` } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(relayPut).toHaveBeenCalledWith("/admin/leaks/key", { key: KEY }, { accountId: null }));
-    const card = await screen.findByRole("region", { name: "Removal service key" });
-    expect(card.textContent).toContain("Connected to Example Removal · ••••aaaa");
+    expect((await screen.findByTestId("of-all-creators-row")).getAttribute("aria-current")).toBe("true");
+    expect(screen.queryByRole("region", { name: "Connect the removal service" })).toBeNull();
     expect(document.body.textContent).not.toContain(KEY);
-    expect(screen.getByTestId("of-all-creators-row").getAttribute("aria-current")).toBe("true");
+    expect(document.body.textContent).not.toContain("••••aaaa");
     expect(setupGets()).toBe(1);
   });
 
   it("a saved key reads set in every scope of the Agency without a refetch", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    relayGet.mockResolvedValue(setup());
+    serve(setup());
     scopeAccount = "acc-b";
     renderWithProviders(<Page />, client);
     expect(await screen.findByLabelText("Tracker key")).toBeTruthy();
@@ -152,12 +153,12 @@ describe("/creators/leaks", () => {
     renderWithProviders(<Page />, client);
     fireEvent.change(await screen.findByLabelText("Tracker key"), { target: { value: KEY } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await screen.findByRole("region", { name: "Removal service key" });
+    await screen.findByTestId("of-all-creators-row");
     cleanup();
     scopeAccount = "acc-b";
     renderWithProviders(<Page />, client);
-    const card = await screen.findByRole("region", { name: "Removal service key" });
-    expect(card.textContent).toContain("Connected to Example Removal · ••••aaaa");
+    await screen.findByTestId("of-all-creators-row");
+    expect(screen.queryByLabelText("Tracker key")).toBeNull();
     expect(setupGets()).toBe(2);
   });
 
@@ -201,34 +202,23 @@ describe("/creators/leaks", () => {
     expect(screen.queryByLabelText("Tracker key")).toBeNull();
   });
 
-  it("the owner can disconnect a set key", async () => {
-    serve(setup({ key: "set", masked: "••••aaaa" }));
-    relayPut.mockResolvedValue({ key: "missing", masked: null, brand: null });
-    renderWithProviders(<Page />);
-    const card = await screen.findByRole("region", { name: "Removal service key" });
-    expect(card.textContent).toContain("Connected to the removal service · ••••aaaa");
-    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
-    await waitFor(() => expect(relayPut).toHaveBeenCalledWith("/admin/leaks/key", { key: "" }, { accountId: null }));
-    expect(await screen.findByRole("region", { name: "Connect the removal service" })).toBeTruthy();
-    expect(setupGets()).toBe(1);
-  });
-
-  it("the instance key reads connected with no mask, offers the owner's own key and no Disconnect", async () => {
-    serve(setup({ key: "set", masked: null, brand: "Example Removal", source: "instance" }));
-    renderWithProviders(<Page />);
-    const card = await screen.findByRole("region", { name: "Removal service key" });
-    expect(card.textContent).toContain("Connected to Example Removal");
-    expect(card.textContent).not.toContain("·");
-    expect(within(card).getByText("Use your own key")).toBeTruthy();
-    expect(within(card).getByLabelText("Tracker key")).toBeTruthy();
-    expect(within(card).queryByRole("button", { name: "Disconnect" })).toBeNull();
+  it.each([
+    ["the instance key", { source: "instance" as const, masked: null }],
+    ["the owner's own key", { source: "own" as const, masked: "••••aaaa" }],
+  ])("%s shows the owner no key card and no brand", async (_label, extra) => {
+    serve(setup({ key: "set", brand: "Example Removal", ...extra }));
+    const { container } = renderWithProviders(<Page />);
+    await waitFor(() => expect(container.querySelector("[data-leak-view]")).toBeTruthy());
+    expect(screen.queryByLabelText("Tracker key")).toBeNull();
+    expect(document.body.textContent).not.toContain("Connected to");
+    expect(document.body.textContent).not.toContain("••••aaaa");
   });
 
   it("a Team Leader with a set key sees no key card", async () => {
     serve(setup({ key: "set", is_owner: false, can_write: false }));
     const { container } = renderWithProviders(<Page />);
     await waitFor(() => expect(container.querySelector("[data-leak-view]")).toBeTruthy());
-    expect(screen.queryByRole("region", { name: "Removal service key" })).toBeNull();
+    expect(screen.queryByLabelText("Tracker key")).toBeNull();
   });
 
   it("the column lists the roster's Creators, untracked ones as Not tracked", async () => {
@@ -1098,6 +1088,19 @@ describe("/creators/leaks Refresh now", () => {
     expect(relayPost).not.toHaveBeenCalled();
   });
 
+  it("uses the rate-limit kind even when the relay copy changes", async () => {
+    serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read() });
+    const next = hoursFromNow(1);
+    relayPost.mockRejectedValue(new RelayError(429, {
+      detail: "Please retry later", kind: "rate_limited", next_refresh_at: next,
+    }, "Please retry later"));
+    renderWithProviders(<Page />);
+    await openDesktop();
+    fireEvent.click(await button("Refresh now"));
+    expect(off(await button(/^Next refresh /))).toBe(true);
+    expect(await screen.findByText("Please retry later")).toBeVisible();
+  });
+
   it("a rate limit shows Try again shortly inline, keeps the button enabled and re-reads nothing", async () => {
     serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED, "/admin/leaks/watches/acc-a": read({ next_refresh_at: null }) });
     relayPost.mockRejectedValue(new RelayError(429, { detail: "Try again shortly", next_refresh_at: null }, "Try again shortly"));
@@ -1183,7 +1186,7 @@ describe("/creators/leaks Refresh now", () => {
     expect(within(pane).queryByRole("button", { name: /Refresh now|Next refresh|Checking…/ })).toBeNull();
   });
 
-  it("a pending read is read again every 30 s and, once done, the roster is read again", async () => {
+  it("a pending read polls and completion invalidates the roster, All Models, strip and Google", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       let done = false;
@@ -1191,8 +1194,11 @@ describe("/creators/leaks Refresh now", () => {
         "/admin/leaks/roster": MERGED,
         "/admin/leaks/watches/acc-a": () => (done ? read() : read({ this_week: { ...WEEK, state: "pending" }, next_refresh_at: null })),
       });
-      renderWithProviders(<Page />);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+      const keys = [leakKeys.all(null), leakKeys.strip(null), leakKeys.google("acc-a", null)];
+      renderWithProviders(<Page />, client);
       await openDesktop();
+      for (const key of keys) client.setQueryData(key, { pages: [], pageParams: [] });
       expect(off(await button("Checking…"))).toBe(true);
       const before = [watchGets(), rosterGets()];
       done = true;
@@ -1200,9 +1206,71 @@ describe("/creators/leaks Refresh now", () => {
       await waitFor(() => expect(watchGets()).toBeGreaterThan(before[0]));
       expect(off(await button("Refresh now"))).toBe(false);
       await waitFor(() => expect(rosterGets()).toBeGreaterThan(before[1]));
+      for (const key of keys) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
       const settled = watchGets();
       await vi.advanceTimersByTimeAsync(90_000);
       expect(watchGets()).toBe(settled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("polls after a refresh acknowledgement even when the first read fails, then stops", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let phase = "idle";
+      serve(setup({ key: "set" }), {
+        "/admin/leaks/roster": MERGED,
+        "/admin/leaks/watches/acc-a": () => {
+          if (phase === "failed") throw new RelayError(503, null);
+          if (phase === "pending") return read({ this_week: { ...WEEK, state: "pending" } });
+          if (phase === "complete") return read({ next_refresh_at: hoursFromNow(24) });
+          return read();
+        },
+      });
+      relayPost.mockImplementation(async () => {
+        phase = "failed";
+        return { queued_at: hoursFromNow(0), next_refresh_at: hoursFromNow(24) };
+      });
+      renderWithProviders(<Page />);
+      await openDesktop();
+      fireEvent.click(await button("Refresh now"));
+      await button("Checking…");
+      focusManager.setFocused(false);
+      const hidden = watchGets();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(watchGets()).toBe(hidden);
+      focusManager.setFocused(true);
+      const before = watchGets();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(watchGets()).toBeGreaterThan(before);
+      phase = "pending";
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(off(await button("Check refresh status"))).toBe(false);
+      const settled = watchGets();
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(watchGets()).toBe(settled);
+      phase = "complete";
+      fireEvent.click(await button("Check refresh status"));
+      expect(off(await button(/^Next refresh /))).toBe(true);
+      expect(watchGets()).toBeGreaterThan(settled);
+      expect(relayPost).toHaveBeenCalledTimes(1);
+    } finally {
+      focusManager.setFocused(undefined);
+      vi.useRealTimers();
+    }
+  });
+
+  it("enables refresh on an idle tab when the cooldown expires", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      serve(setup({ key: "set" }), { "/admin/leaks/roster": MERGED,
+        "/admin/leaks/watches/acc-a": read({ next_refresh_at: new Date(Date.now() + 5_000).toISOString() }) });
+      renderWithProviders(<Page />);
+      await openDesktop();
+      expect(off(await button(/^Next refresh /))).toBe(true);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(off(await button("Refresh now"))).toBe(false);
     } finally {
       vi.useRealTimers();
     }

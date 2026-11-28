@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { MassMessageRow } from "@/hooks/useMassMessages";
 
 import {
-  daysToCover, filterMassRows, initialMassFilter, massCsvRows, massFilterReducer, mayHideOlder, narrowedBy, NO_MASS_FILTERS,
+  daysToCover, filterMassRows, initialMassFilter, massCsvRows, massFilterReducer, mayHideOlder, moreNotLoaded, narrowedBy,
+  NO_MASS_FILTERS,
   type MassFilterAction, type MassFilterState,
 } from "./massFilterBar";
 
@@ -55,6 +56,20 @@ describe("mayHideOlder", () => {
     ["blank search is no filter", { q: "  " }, [100], false],
   ])("%s", (_name, f, counts, want) => {
     expect(mayHideOlder({ ...NO_MASS_FILTERS, ...f }, counts, 100)).toBe(want);
+  });
+});
+
+describe("moreNotLoaded", () => {
+  it.each<[string, { accountId: string; hasMore?: boolean; incomplete?: boolean }[], string[]]>([
+    ["no Creators", [], []],
+    ["whole reads name nobody", [{ accountId: "a", hasMore: false, incomplete: false }, { accountId: "b" }], []],
+    ["an incomplete read is named", [{ accountId: "a", incomplete: true, hasMore: true }, { accountId: "b", hasMore: false }], ["a"]],
+    ["hasMore alone is named", [{ accountId: "a", hasMore: true }], ["a"]],
+    ["incomplete alone is named", [{ accountId: "a", incomplete: true }], ["a"]],
+    ["flags unknown name nobody", [{ accountId: "a" }], []],
+    ["every cut-off Creator, in order", [{ accountId: "b", hasMore: true }, { accountId: "c" }, { accountId: "a", incomplete: true }], ["b", "a"]],
+  ])("%s", (_name, perCreator, want) => {
+    expect(moreNotLoaded(perCreator)).toEqual(want);
   });
 });
 

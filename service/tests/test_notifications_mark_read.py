@@ -5,10 +5,25 @@ import _harness
 
 _harness.bootstrap()
 
+import asyncio  # noqa: E402
+import tempfile  # noqa: E402
+import uuid  # noqa: E402
+from pathlib import Path  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+import accounts as account_registry  # noqa: E402
+
+_TMP = tempfile.TemporaryDirectory(prefix="notifications_mark_read_")
+account_registry.SESSIONS_DIR = Path(_TMP.name)
+account_registry.ACCOUNTS_DIR = Path(_TMP.name) / "accounts"
+account_registry.ACTIVE_FILE = Path(_TMP.name) / "active.json"
+account_registry.MIGRATED_MARKER = Path(_TMP.name) / ".migrated"
+
 import of_client  # noqa: E402
 import relay_cache  # noqa: E402
 import server  # noqa: E402
-from fansly_client import FanslyAPIError  # noqa: E402
+from db.engine import get_session  # noqa: E402
+from db.models import Account, User, UserAccount  # noqa: E402
 from fansly_shim import FanslyShimClient  # noqa: E402
 from of_client import OFAPIError  # noqa: E402
 
@@ -33,6 +48,7 @@ class _FakeOF:
 
 
 _fake = _FakeOF()
+_real_resolve = server._resolve_account_id
 server._resolve_account_id = lambda _req=None: _AID  # type: ignore[assignment]
 server._load_client = lambda _aid: _fake             # type: ignore[assignment]
 
@@ -96,7 +112,7 @@ _ROWS = [
 _ZEROS = {"subscribes": 0, "tips": 0, "comments": 0, "mentions": 0, "hearts": 0, "gifts": 0, "all": 0}
 
 
-def _shim(rows: list[dict], fail: bool = False, ignored: bool = False) -> tuple[FanslyShimClient, list[tuple]]:
+def _shim(rows: list[dict], ignored: bool = False) -> tuple[FanslyShimClient, list[tuple]]:
     sent: list[tuple] = []
     shim = FanslyShimClient.__new__(FanslyShimClient)
     rows = [dict(r) for r in rows]
@@ -108,8 +124,6 @@ def _shim(rows: list[dict], fail: bool = False, ignored: bool = False) -> tuple[
         if method == "GET" and path == "/notifications/unack":
             unread = [r["type"] for r in rows if not r["acknowledgedAt"]]
             return [{"type": t, "total": unread.count(t)} for t in sorted(set(unread))]
-        if fail:
-            raise FanslyAPIError("400 for https://apiv3.fansly.com/api/v1/notifications/ack")
         if not ignored:
             for r in rows:
                 r["acknowledgedAt"] = r["acknowledgedAt"] or 1790000400
@@ -118,9 +132,13 @@ def _shim(rows: list[dict], fail: bool = False, ignored: bool = False) -> tuple[
     return shim, sent
 
 
+def _ack(shim: FanslyShimClient) -> dict:
+    return FanslyShimClient.notifications_read.__wrapped__(shim)
+
+
 def case_fansly_shim_sends_bundle_ack():
     shim, sent = _shim(_ROWS)
-    got = shim.notifications_read()
+    got = _ack(shim)
     assert ("POST", "/notifications/ack", {"beforeAnd": "9300", "type": ""}) in sent, sent
     assert [s[0] for s in sent].count("POST") == 1, sent
     assert got == {"counters": _ZEROS}, got
@@ -128,7 +146,7 @@ def case_fansly_shim_sends_bundle_ack():
 
 def case_fansly_ack_ignored_keeps_the_count():
     shim, sent = _shim(_ROWS, ignored=True)
-    got = shim.notifications_read()
+    got = _ack(shim)
     assert got["counters"]["all"] == 2, got
     assert sent[-1][:2] == ("GET", "/notifications/unack"), sent
 
@@ -136,52 +154,49 @@ def case_fansly_ack_ignored_keeps_the_count():
 def case_fansly_shim_nothing_unread_sends_nothing():
     for rows in ([], [dict(r, acknowledgedAt=1790000400) for r in _ROWS]):
         shim, sent = _shim(rows)
-        assert shim.notifications_read() == {"counters": _ZEROS}
+        assert _ack(shim) == {"counters": _ZEROS}
         assert [s for s in sent if s[0] == "POST"] == [], sent
 
 
-async def case_fansly_route_marks_read_busts_cache():
-    _reset()
-    await _seed_cache()
+FANSLY_AID = "8802011"
+OF_AID = "8802012"
+http = _harness.make_client()
+
+
+async def _seed_accounts() -> None:
+    async with get_session() as s:
+        boss = User(id=uuid.uuid4().hex, username="mark_read_boss", password="pw")
+        s.add_all([boss, Account(id=FANSLY_AID, nickname=FANSLY_AID), Account(id=OF_AID, nickname=OF_AID)])
+        await s.flush()
+        s.add_all([UserAccount(user_id=boss.id, account_id=FANSLY_AID),
+                   UserAccount(user_id=boss.id, account_id=OF_AID)])
+
+asyncio.run(_seed_accounts())
+account_registry.save_meta(FANSLY_AID, {"id": FANSLY_AID, "nickname": FANSLY_AID, "platform": "fansly"})
+account_registry.save_meta(OF_AID, {"id": OF_AID, "nickname": OF_AID, "platform": "onlyfans"})
+assert http.post("/auth/login", json={"username": "mark_read_boss", "password": "pw"}).status_code == 200
+
+
+def _post_read(aid: str, client):
+    with (patch.object(server, "_resolve_account_id", _real_resolve),
+          patch.object(server, "_load_client", lambda _aid: client)):
+        return http.post("/api/of/v2/users/notifications/read", headers={"X-Account-Id": aid})
+
+
+def case_fansly_route_answers_501_before_any_shim_request():
     shim, sent = _shim(_ROWS)
-    server._load_client = lambda _aid: shim  # type: ignore[assignment]
-    try:
-        got = await server.of_notifications_mark_read()
-    finally:
-        server._load_client = lambda _aid: _fake  # type: ignore[assignment]
-    assert got == {"counters": _ZEROS}, got
-    assert ("POST", "/notifications/ack", {"beforeAnd": "9300", "type": ""}) in sent, sent
-    assert relay_cache.peek("notifications_count", _AID, ()) is None, "count still cached after mark-read"
-    assert relay_cache.peek("notifications", _AID, (20, 0, "")) is None, "feed still cached after mark-read"
+    r = _post_read(FANSLY_AID, shim)
+    assert r.status_code == 501, (r.status_code, r.text)
+    assert r.json() == {"detail": "mark notifications read: not on this platform"}, r.json()
+    assert sent == [], sent
 
 
-async def case_fansly_ack_error_keeps_cache():
+def case_onlyfans_route_still_marks_read():
     _reset()
-    await _seed_cache()
-    shim, _sent = _shim(_ROWS, fail=True)
-    server._load_client = lambda _aid: shim  # type: ignore[assignment]
-    try:
-        await server.of_notifications_mark_read()
-    except FanslyAPIError:
-        pass
-    else:
-        raise AssertionError("a rejected Fansly ack answered 2xx")
-    finally:
-        server._load_client = lambda _aid: _fake  # type: ignore[assignment]
-    assert relay_cache.peek("notifications_count", _AID, ()) == {"all": 7, "tip": 2}, "failed write dropped the badge"
-
-
-async def case_client_without_read_flip_answers_501():
-    _reset()
-    server._load_client = lambda _aid: object()  # type: ignore[assignment]
-    try:
-        await server.of_notifications_mark_read()
-    except server.HTTPException as e:
-        assert e.status_code == 501, e.status_code
-    else:
-        raise AssertionError("a client without notifications_read answered 2xx")
-    finally:
-        server._load_client = lambda _aid: _fake  # type: ignore[assignment]
+    r = _post_read(OF_AID, _fake)
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.json() == {"counters": _COUNTERS}, r.json()
+    assert _fake.reads == [None], _fake.reads
 
 
 def case_routes_registered():

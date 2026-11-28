@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useMarkNotifsReadOnce } from "@/hooks/useOfNotifCount";
 import { EmptyState, IfBody, IfTabs, type IfOption } from "@/components/ui/infloww";
+import { can } from "@/lib/platform";
 import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
@@ -49,7 +50,7 @@ export function FanslyNotifications({ accountId }: { accountId: string }) {
     queryFn: () => relay.get(`/api/of/v2/users/notifications?limit=50${tab === "all" ? "" : `&type=${tab}`}`, { accountId }),
     staleTime: 30_000,
   });
-  useMarkNotifsReadOnce(accountId, tab === "all" && feedQ.isSuccess, countKey);
+  useMarkNotifsReadOnce(accountId, can("fansly", "notifications_read") && tab === "all" && feedQ.isSuccess, countKey);
   const tabs: IfOption<Tab>[] = TABS.map((t) => {
     const key = COUNT_KEY[t.value];
     const n = key ? countQ.data?.[key] ?? 0 : 0;

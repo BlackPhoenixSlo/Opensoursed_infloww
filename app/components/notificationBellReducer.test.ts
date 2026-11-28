@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  BADGE_MAX, cachedCountSum, initialBellState, initialMarkAll, markAllReducer, markAllTargets, markAllStatus,
-  notificationBellReducer, ofListOnScreen, type BellAction, type BellState, type MarkAllAction, type MarkAllState,
+  BADGE_MAX, cachedCountSum, initialBellState, initialMarkAll, markAllControl, markAllReducer,
+  markAllTargets, markAllStatus, notificationBellReducer, ofListOnScreen, type BellAction, type BellState, type MarkAllAction, type MarkAllState,
 } from "./notificationBellReducer";
 
 const run = (actions: BellAction[], from: BellState = initialBellState): BellState =>
@@ -144,5 +144,21 @@ describe("markAllReducer (W30-mu #32)", () => {
       { marking: false, status: null }],
   ])("%s", (_n, actions, want) => {
     expect(actions.reduce(markAllReducer, initialMarkAll)).toEqual(want);
+  });
+});
+
+describe("notifications_read Capability", () => {
+  const OF = { id: "of", platform: "onlyfans" };
+  const FA = { id: "fa", platform: "fansly" };
+  const FB = { id: "fb", platform: "fansly" };
+  const LEGACY = { id: "legacy" };
+
+  it.each<[string, string[], { ids: string[]; shown: boolean }]>([
+    ["OnlyFans only: every id, shown", ["of", "legacy"], { ids: ["of", "legacy"], shown: true }],
+    ["mixed: only the OnlyFans ids, shown", ["of", "fa", "legacy"], { ids: ["of", "legacy"], shown: true }],
+    ["Fansly only: none, hidden", ["fa", "fb"], { ids: [], shown: false }],
+    ["empty scope: none, shown (disabled as today)", [], { ids: [], shown: true }],
+  ])("markAllControl: %s", (_n, liveIds, want) => {
+    expect(markAllControl(liveIds, [OF, FA, FB, LEGACY])).toEqual(want);
   });
 });

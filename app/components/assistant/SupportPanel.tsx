@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { imageFiles, toJpeg } from "./supportPhoto";
 import {
   buildPayload, canSend, droppedPhotos, errorText, initialSupportState, MAX_SUPPORT_PHOTOS, messagesOf, photoRoom,
-  SUPPORT_THREAD_POLL_MS, supportReducer, type PendingPhoto, type SupportEntryAction, type SupportState,
+  SUPPORT_FALLBACK_ERROR, SUPPORT_THREAD_POLL_MS, supportReducer, supportStatusOf, type PendingPhoto, type SupportEntryAction, type SupportState,
 } from "./supportReducer";
 
 export const SUPPORT_EMPTY = "Tell us what's missing or annoying — the team reads every message.";
@@ -49,6 +49,7 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, dr
   const fileRef = useRef<HTMLInputElement | null>(null);
   const live = useRef(true);
   const loadedOnce = useRef(false);
+  const fetching = useRef(false);
   const stick = useRef(true);
   const seenSupport = useRef(0);
   const shownPhotos = useRef<PendingPhoto[]>([]);
@@ -67,49 +68,40 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, dr
     shownPhotos.current = s.photos;
   }, [s.photos]);
 
-  const load = useCallback(() => {
-    dispatch({ type: "load_started" });
-    void Promise.resolve()
-      .then(() => relay.get<unknown>("/admin/support/thread"))
-      .then((body) => {
-        if (!live.current) return;
-        const messages = messagesOf(body);
-        dispatch({ type: "loaded", messages });
-        return relay.post<unknown>("/admin/support/read", { up_to: lastMessageId(messages) }).then(() => {
-          seenSupport.current = Math.max(seenSupport.current, lastSupportId(messages));
-          if (live.current) onRead();
-        });
-      })
-      .catch((e) => { if (live.current) dispatch({ type: "load_failed", error: errorText(e) }); });
+  const fetchThread = useCallback(async (kind: "load" | "poll") => {
+    if (fetching.current) return;
+    fetching.current = true;
+    if (kind === "load") dispatch({ type: "load_started" });
+    try {
+      const body = await relay.get<unknown>("/admin/support/thread");
+      if (!live.current) return;
+      const messages = messagesOf(body);
+      dispatch({ type: kind === "load" ? "loaded" : "polled", messages });
+      const newest = lastSupportId(messages);
+      if (kind === "load" || newest > seenSupport.current) {
+        await relay.post<unknown>("/admin/support/read", { up_to: lastMessageId(messages) });
+        seenSupport.current = Math.max(seenSupport.current, newest);
+        if (live.current) onRead();
+      }
+    } catch (e) {
+      if (kind === "load" && live.current) dispatch({ type: "load_failed", error: errorText(e) });
+    } finally {
+      fetching.current = false;
+    }
   }, [onRead]);
 
   useEffect(() => {
     if (loadedOnce.current && !wake) return;
     loadedOnce.current = true;
-    load();
-  }, [wake, load]);
+    void fetchThread("load");
+  }, [wake, fetchThread]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      void Promise.resolve()
-        .then(() => relay.get<unknown>("/admin/support/thread"))
-        .then((body) => {
-          if (!live.current) return;
-          const messages = messagesOf(body);
-          dispatch({ type: "polled", messages });
-          const newest = lastSupportId(messages);
-          if (newest > seenSupport.current) {
-            return relay.post<unknown>("/admin/support/read", { up_to: lastMessageId(messages) }).then(() => {
-              seenSupport.current = Math.max(seenSupport.current, newest);
-              if (live.current) onRead();
-            });
-          }
-        })
-        .catch(() => {});
+      if (document.visibilityState === "visible") void fetchThread("poll");
     }, SUPPORT_THREAD_POLL_MS);
     return () => window.clearInterval(id);
-  }, [onRead]);
+  }, [fetchThread]);
 
   useEffect(() => {
     const el = listRef.current;
@@ -119,12 +111,16 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, dr
   const addPhotos = (files: File[]) => {
     if (files.length === 0) return;
     const take = files.slice(0, photoRoom(s));
-    void Promise.all(take.map((f) => toJpeg(f).then(
-      (blob): PendingPhoto => ({ key: `p${++photoSeq}`, blob, url: URL.createObjectURL(blob) }),
-    )))
-      .then((photos) => { if (live.current) dispatch({ type: "photos_added", photos, requested: files.length }); })
+    dispatch({ type: "photos_converting", count: take.length });
+    void Promise.all(take.map((f) => toJpeg(f)))
+      .then((blobs) => {
+        if (!live.current) return;
+        const photos = blobs.map((blob) => ({ key: `p${++photoSeq}`, blob, url: URL.createObjectURL(blob) }));
+        dispatch({ type: "photos_added", photos, requested: files.length, converted: take.length });
+      })
       .catch((e: unknown) => {
-        if (live.current) dispatch({ type: "photo_failed", error: e instanceof Error ? e.message : "Couldn't read that photo." });
+        if (!live.current) return;
+        dispatch({ type: "photo_failed", converted: take.length, error: e instanceof Error ? e.message : "Couldn't read that photo." });
       });
   };
 
@@ -142,6 +138,10 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, dr
         return relay.uploadForm<unknown>("/admin/support/messages/upload", form);
       })
       .then((body) => {
+        if (!supportStatusOf(body).configured) {
+          if (live.current) dispatch({ type: "send_failed", error: SUPPORT_FALLBACK_ERROR });
+          return;
+        }
         onEntry({ type: "sent", text: payload.text });
         if (!live.current) return;
         stick.current = true;
@@ -222,7 +222,7 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, dr
             <div role="alert" className="flex items-center gap-2 px-1 text-[12px] text-fg-dim">
               <span>{s.error}</span>
               {s.phase === "failed" && (
-                <button type="button" onClick={load} className="underline hover:text-fg">Retry</button>
+                <button type="button" onClick={() => void fetchThread("load")} className="underline hover:text-fg">Retry</button>
               )}
             </div>
           )}

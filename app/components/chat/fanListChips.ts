@@ -1,5 +1,5 @@
 import { platformHonours, type ChatListFilter } from "@/lib/chatFilters";
-import type { Platform } from "@/lib/platform";
+import type { AccountPlatform } from "@/lib/platform";
 
 import type { ActiveChip } from "./FanListFilters";
 
@@ -13,7 +13,7 @@ export type FanListChipSet = {
 const ALL: ActiveChip = { kind: "builtin", key: "all" };
 
 export function fanListChips({ platforms, tipsEnabled, pinnedFolderIds, active }: {
-  platforms: readonly Platform[];
+  platforms: readonly AccountPlatform[];
   tipsEnabled: boolean;
   pinnedFolderIds: readonly string[];
   active: ActiveChip;

@@ -8,7 +8,7 @@ import { relay, type OFMessage, type OFMessagesResp } from "@/lib/relay";
 import { compareFanIds, isValidFanId, sameUserId, type FanId } from "@/lib/fanId";
 import type { SendFailure } from "@/lib/sendFailure";
 import { eventBus } from "@/lib/events";
-import { appendMsg, dropMsg, failMsg, reconcileMsg, THREAD_KEEP, toUtcIso, trimThread } from "@/lib/threadCache";
+import { appendMsg, dropMsg, dropTombstoned, failMsg, reconcileMsg, THREAD_KEEP, toUtcIso, trimThread } from "@/lib/threadCache";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 
 import {
@@ -83,7 +83,7 @@ export function prefetchChatMessages(
         const { list } = await fetchHeadPage(accountId, fanId, {
           priority: user ? undefined : "background", signal, peek: true,
         });
-        return mergeTopPage(qc.getQueryData<OFMessage[]>(queryKey) || [], list);
+        return dropTombstoned(accountId, mergeTopPage(qc.getQueryData<OFMessage[]>(queryKey) || [], list));
       } finally {
         if (yieldOnOpen) backgroundFetches.delete(hash);
       }
@@ -110,6 +110,9 @@ export function useChatMessages({
     oldestCursorRef.current = cur == null || compareFanIds(n, cur) < 0 ? n : cur;
   }, []);
   const queryKey = ["messages", accountId, fanId] as const;
+  const selectThread = useCallback(
+    (list: OFMessage[]) => dropTombstoned(accountId, selectMessages(list)), [accountId],
+  );
 
   const startPager = (): OlderPager => {
     const key = `${accountId}:${fanId}`;
@@ -168,7 +171,7 @@ export function useChatMessages({
         });
         // Refetch overwrites the cache: merge the fresh page so load-older pages and optimistic rows survive
         const prev = qc.getQueryData<OFMessage[]>(queryKey) || [];
-        return mergeTopPage(prev, list);
+        return dropTombstoned(accountId, mergeTopPage(prev, list));
       } catch (err) {
         perfError(opId, "chat.messages", {
           message: (err as Error)?.message, aborted: signal?.aborted, phase: "initial",
@@ -176,7 +179,7 @@ export function useChatMessages({
         throw err;
       }
     },
-    select: selectMessages,
+    select: selectThread,
     staleTime: prefetchWindowMs ?? STALE_MS,
     // eslint-disable-next-line local/no-fixed-polling -- already SSE-aware: live/offline rate picked from sseConnected
     refetchInterval: enabled ? (sseConnected ? POLL_MS_REALTIME : POLL_MS_OFFLINE) : false,
@@ -247,7 +250,7 @@ export function useChatMessages({
       if (older.length === 0) return { added: 0, hasMore: more && progressed };
 
       qc.setQueryData<OFMessage[]>(queryKey, (prev = []) =>
-        mergeOlderPage(prev, older),
+        dropTombstoned(accountId, mergeOlderPage(prev, older)),
       );
       return { added: older.length, hasMore: more && progressed };
     } catch (err) {

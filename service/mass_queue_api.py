@@ -12,6 +12,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import mass_queue_decide
+import platforms
 import send_ops
 from automations.send_mass_decide import audience_filter_json, echoed_of
 from relay_host import (
@@ -20,7 +21,7 @@ from relay_host import (
     resolve_account_id as _resolve_account_id,
 )
 
-from side_effect_gate import raise_if_refused, refuse_if_platform_lacks
+from side_effect_gate import PLATFORM_LACKS_PREFIX, raise_if_refused, refuse_if_platform_lacks
 
 log = logging.getLogger("of-relay")
 
@@ -498,6 +499,18 @@ def of_edit_queued_message(queue_id: int, body: _EditQueuedMessageBody = Body(..
     ))
 
 
+async def _cancel_listed_post(account_id: str, queue_id: int) -> Any:
+    import mass_broadcast_cache as cache
+    refused = HTTPException(501, f"{PLATFORM_LACKS_PREFIX}unsend_mass_message")
+    if await cache.is_cached(account_id, queue_id):
+        raise refused
+    client = await asyncio.to_thread(_get_client)
+    listed = await asyncio.to_thread(_proxy, lambda: client.schedules())
+    if str(queue_id) not in {i["id"] for i in listed["list"]}:
+        raise refused
+    return await asyncio.to_thread(_proxy, lambda: client.cancel_scheduled(queue_id))
+
+
 @router.delete("/api/of/v2/messages/queue/{queue_id}")
 async def of_cancel_scheduled(request: Request, queue_id: int):
     """Cancel a previously scheduled message or unsend a mass broadcast.
@@ -510,18 +523,14 @@ async def of_cancel_scheduled(request: Request, queue_id: int):
     cache so the Settings → Mass messages list reflects the new state
     without waiting for the next refresh.
 
-    On a Fansly Creator this is ALSO the scheduled-POST cancel: the Fansly
-    shim's `cancel_scheduled` is Fansly's `POST /post/scheduled/{id}/cancel`,
-    so `queue_id` is a post id from `GET /api/of/v2/schedules` (the Fansly
-    Manager's Scheduled Posts page, roadmap 8.1). The bookkeeping below then
-    finds nothing to mark. Locked by test_fansly_cancel_scheduled_route.py."""
+    On a Platform that refuses `unsend_mass_message` (Fansly) a broadcast id
+    never reaches the post cancel: only an id the Shim's scheduled-post read
+    lists is cancelled, and no mass bookkeeping runs."""
     import mass_broadcast_cache as cache
+    account_id = _resolve_account_id(request)
+    if platforms.refusal_for_account(account_id, "unsend_mass_message"):
+        return await _cancel_listed_post(account_id, queue_id)
     resp = await asyncio.to_thread(_proxy, lambda: _get_client().cancel_scheduled(queue_id))
-    try:
-        account_id = _resolve_account_id(request)
-    except Exception as e:
-        log.warning("cancel bookkeeping skipped, account unresolved: %s", e)
-        return resp
 
     try:
         await cache.mark_canceled(account_id, queue_id)

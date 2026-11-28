@@ -105,9 +105,21 @@ async def case_stop_flushes_queued():
     assert await _n_msgs(fan) == 5, "stop() writes what was queued"
 
 
+async def case_snapshot_allows_writer_and_keeps_original_view():
+    query = select(Account.id).where(Account.id == "9999102")
+    async with of_writer.snapshot_session() as reader:
+        assert await reader.scalar(query) is None
+        async with of_writer.immediate_session() as writer:
+            writer.add(Account(id="9999102"))
+        assert await reader.scalar(query) is None
+    async with of_writer.snapshot_session() as reader:
+        assert await reader.scalar(query) == "9999102"
+
+
 _harness.run(
     case_one_transaction_and_coalesced_unread,
     case_per_chat_order_dm_read_dm,
     case_bad_op_fails_alone,
     case_stop_flushes_queued,
+    case_snapshot_allows_writer_and_keeps_original_view,
 )

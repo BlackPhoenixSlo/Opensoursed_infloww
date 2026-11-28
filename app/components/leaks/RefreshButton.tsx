@@ -4,40 +4,52 @@ import { useEffect, useId, useReducer } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { IfButton } from "@/components/ui/infloww";
-import { relay, RelayError } from "@/lib/relay";
+import { parseUtc } from "@/lib/format";
+import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
 import { afterWatchWrite } from "./leakKeys";
-import { cooldownUntil, loaded, refreshReducer, refreshView } from "./leakRefresh";
+import { cooldown, nextRefreshTime, refreshView, unchanged } from "./leakRefresh";
 import { viewerZone } from "./leakView";
 
-const unchanged = (e: Error) => e instanceof RelayError && (e.status === 429 || e.status === 503);
-
-export function RefreshButton({ creatorId, scopeAccountId, nextRefreshAt, pending }: {
+export function RefreshButton({ creatorId, scopeAccountId, nextRefreshAt, pending, expired, onQueued, onReadRetry }: {
   creatorId: string;
   scopeAccountId: string | null;
   nextRefreshAt: string | null;
   pending: boolean;
+  onQueued: (nextRefreshAt: string, queuedAt: string) => void;
+  expired: boolean;
+  onReadRetry: () => void;
 }) {
   const qc = useQueryClient();
   const noteId = useId();
-  const [state, dispatch] = useReducer(refreshReducer, loaded(nextRefreshAt, pending));
-  useEffect(() => dispatch({ type: "load", nextRefreshAt, pending }), [nextRefreshAt, pending]);
+  const [, tick] = useReducer((n: number) => n + 1, 0);
   const send = useMutation({
     mutationFn: () => relay.post<{ queued_at: string; next_refresh_at: string }>(
       `/admin/leaks/watches/${creatorId}/refresh`, undefined, { accountId: scopeAccountId }),
     onSuccess: (r) => {
-      dispatch({ type: "queued", nextRefreshAt: r.next_refresh_at });
+      onQueued(r.next_refresh_at, r.queued_at);
       void afterWatchWrite(qc, creatorId);
     },
     onError: (e) => {
-      const until = cooldownUntil(e);
-      if (until) return dispatch({ type: "cooldown", nextRefreshAt: until });
-      dispatch({ type: "fail", message: e.message });
       if (!unchanged(e)) void afterWatchWrite(qc, creatorId);
     },
   });
-  const view = refreshView(state, new Date(), viewerZone());
+  const localNextRefreshAt = send.data?.next_refresh_at ?? cooldown(send.error)?.until ?? null;
+  const expires = parseUtc(nextRefreshTime(localNextRefreshAt, nextRefreshAt))?.getTime();
+  useEffect(() => {
+    if (expires === undefined) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const update = () => {
+      const remaining = expires - Date.now();
+      if (remaining > 0) timer = setTimeout(update, Math.min(remaining, 2_147_483_647));
+      else tick();
+    };
+    update();
+    return () => clearTimeout(timer);
+  }, [expires]);
+  const view = refreshView({ sending: send.isPending, localNextRefreshAt, error: send.error },
+    { nextRefreshAt, pending, expired }, new Date(), viewerZone());
   return (
     <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
       <IfButton
@@ -46,8 +58,8 @@ export function RefreshButton({ creatorId, scopeAccountId, nextRefreshAt, pendin
         className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
         onClick={() => {
           if (view.disabled) return;
-          dispatch({ type: "send" });
-          send.mutate();
+          if (expired) onReadRetry();
+          else send.mutate();
         }}
       >
         {view.label}

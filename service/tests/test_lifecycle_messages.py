@@ -5,6 +5,7 @@ import _harness
 
 import os
 import tempfile
+from pathlib import Path
 
 os.environ["SETTINGS_BACKUP_DIR"] = tempfile.mkdtemp(prefix="lm_settings_backups_")
 _harness.bootstrap()
@@ -17,6 +18,7 @@ from fastapi import HTTPException  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 from sqlalchemy import select, update  # noqa: E402
 
+import accounts as account_registry  # noqa: E402
 import auth  # noqa: E402
 import chatters  # noqa: E402
 import fans as fans_api  # noqa: E402
@@ -29,6 +31,12 @@ import automation_executor as executor  # noqa: E402
 import automations.lifecycle_messages as lm  # noqa: E402
 from automations import _send_failure  # noqa: E402
 import lifecycle_message_config_api as api  # noqa: E402
+
+_TMP = tempfile.TemporaryDirectory(prefix="lifecycle_messages_")
+account_registry.SESSIONS_DIR = Path(_TMP.name)
+account_registry.ACCOUNTS_DIR = Path(_TMP.name) / "accounts"
+account_registry.ACTIVE_FILE = Path(_TMP.name) / "active.json"
+account_registry.MIGRATED_MARKER = Path(_TMP.name) / ".migrated"
 
 TEXT = "hey {name}, don't go 🥺"
 _REAL_MAKE_CLIENT = executor._make_client
@@ -166,11 +174,12 @@ async def _as(principal: str, aid: str, coro_fn):
         chatters._request_chatter.reset(tok_c)
 
 
-async def _refused(coro, status: int) -> None:
+async def _refused(coro, status: int, detail: str | None = None) -> None:
     try:
         await coro
     except HTTPException as e:
         assert e.status_code == status, (e.status_code, e.detail)
+        assert detail is None or e.detail == detail, e.detail
     else:
         raise AssertionError(f"expected {status}")
 
@@ -1142,6 +1151,61 @@ def case_a_discount_above_what_onlyfans_grants_for_the_price_is_refused():
     _sandboxed(go)
 
 
+async def _rule_rows(aid: str, kind: str) -> list[tuple[bool, str]]:
+    return [(r.is_enabled, r.steps_json) for r in await _rules(aid, kind)]
+
+
+def case_fansly_config_refuses_paid_kinds_on_and_always_saves_off():
+    async def go():
+        import account_page
+        fake = _use_fake()
+        fake.me = lambda: {"subscribePrice": 9.99}
+        fansly, of = "lm_cfg_fansly", "lm_cfg_of"
+        for aid, platform in ((fansly, "fansly"), (of, "onlyfans")):
+            await _seed_account(aid)
+            account_registry.save_meta(aid, {"id": aid, "platform": platform})
+            account_page.invalidate(aid)
+        lacks = {lm.EXPIRY: "platform_lacks:renewal_state",
+                 lm.EXPIRED: "platform_lacks:lapse_detection",
+                 lm.RESUBSCRIBE: "platform_lacks:return_detection"}
+
+        async def get(aid, kind):
+            return await _as("owner", aid, lambda: api.get_lifecycle_message_config(
+                account_id=aid, kind=kind))
+        assert (await get(fansly, lm.EXPIRY))["refusal"] == "platform_lacks:renewal_state"
+        assert (await get(fansly, lm.BIRTHDAY))["refusal"] is None
+        assert (await get(of, lm.EXPIRY))["refusal"] is None
+
+        for kind, reason in lacks.items():
+            await _save(fansly, kind, {"hours": lm.HOURS[kind][0]} if kind in lm.HOURS else {})
+            before = await _rule_rows(fansly, kind)
+            await _refused(_save(fansly, kind, {"enabled": True, "text": TEXT}), 501, reason)
+            assert await _rule_rows(fansly, kind) == before, kind
+            assert (await _save(of, kind, {"enabled": True, "text": TEXT}))["config"]["enabled"] is True
+            assert (await _save(of, kind, {"enabled": False}))["config"]["enabled"] is False
+        assert (await _save(fansly, lm.BIRTHDAY, {"enabled": True, "text": TEXT}))["config"]["enabled"] is True
+
+        legacy = {"enabled": True, "messages": [
+            {"variants": [TEXT], "discount": {"percent": 10, "months": 1}}]}
+        account_registry.save_meta(fansly, {"id": fansly, "platform": "onlyfans"})
+        await _save(fansly, lm.EXPIRY, legacy)
+        account_registry.save_meta(fansly, {"id": fansly, "platform": "fansly"})
+        before = await _rule_rows(fansly, lm.EXPIRY)
+        assert before[0][0] is True
+        await _refused(_save(fansly, lm.EXPIRY, {"hours": 5}), 501, "platform_lacks:renewal_state")
+        assert await _rule_rows(fansly, lm.EXPIRY) == before
+
+        fake.me = lambda: (_ for _ in ()).throw(RuntimeError("session dead"))
+        account_page.invalidate(fansly)
+        out = await _save(fansly, lm.EXPIRY, {**legacy, "enabled": False})
+        assert out["config"]["enabled"] is False, out
+        assert out["config"]["messages"][0]["discount"] == {"percent": 10, "months": 1}, out
+        assert [r for r, _ in await _rule_rows(fansly, lm.EXPIRY)] == [False]
+        account_page.invalidate(fansly)
+        account_page.invalidate(of)
+    _sandboxed(go)
+
+
 def case_a_backlog_of_due_follow_ups_never_holds_back_the_rules_own_run():
     async def go():
         _use_fake()
@@ -1245,6 +1309,7 @@ _harness.run(
     case_buyers_are_the_messaged_fans_who_spent_within_the_window,
     case_a_follow_up_is_claimed_once_and_a_failure_after_the_send_never_resends_it,
     case_a_discount_above_what_onlyfans_grants_for_the_price_is_refused,
+    case_fansly_config_refuses_paid_kinds_on_and_always_saves_off,
     case_a_backlog_of_due_follow_ups_never_holds_back_the_rules_own_run,
     case_every_text_is_cut_to_the_cap_on_save,
     case_pick_targets_table_claimed_and_gated_fans_drop_out_per_kind,

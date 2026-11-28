@@ -10,12 +10,15 @@ import contextlib  # noqa: E402
 import importlib  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
+
+os.environ.pop("OI_CELL_MAP", None)
 import sqlite3  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from itertools import count  # noqa: E402
 from pathlib import Path  # noqa: E402
+from typing import NamedTuple  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 
 import requests  # noqa: E402
@@ -30,26 +33,29 @@ import llm_client  # noqa: E402
 import platforms  # noqa: E402
 import promo_create_guard  # noqa: E402
 import run_decide  # noqa: E402
+import send_ops  # noqa: E402
 import side_effect_gate as gate  # noqa: E402
 import tenant_keys  # noqa: E402
 import test_platform_lift_table as lift_table  # noqa: E402
 import webhook_dispatch  # noqa: E402
 from _kind_verdict_seeds import (  # noqa: E402
-    CHAT_RULES, FAKE_STATE, FAN, HOST, LAPSED, PLATFORM_MESSAGE, SEEDS, WORLDS, ListsOF, OFStandIn, _NUDGE_CFG, _ai, _fan,
-    _lists, _out, _rows, _rule, _seen,
-    canned_llm, fan_ids, fansly_list, _s4s, no_key, session_for, tagged_lists,
+    CHAT_RULES, FAKE_STATE, FAN, HOST, LAPSED, LLM_REPLY, PLATFORM_MESSAGE, SEEDS, WORLDS, ListsOF, OFStandIn, _NUDGE_CFG, _ai, _fan,
+    _in, _lists, _out, _rows, _rule, _seen,
+    canned_llm, fan_groups, fan_ids, fansly_list, _s4s, no_key, session_for, tagged_lists, threadless,
 )
+from _kind_verdicts_autoreply import BANNED, LEAK_REPLY, WireOF, typing_on  # noqa: E402
 from _kind_verdicts_lifecycle import ONE_SEND  # noqa: E402
 from _kind_verdicts_nudge_online import hold_latch, nudge_grant, online_beside  # noqa: E402
 from _kind_verdicts_purchase_followup import _thanked  # noqa: E402
+from _kind_verdicts_send_welcome import OTHER_FAN, LostReply  # noqa: E402
 from _kind_verdicts_s4s_check import EMPTY_POST, IDLESS_POST, POST_ERROR, answers_post  # noqa: E402
 from _kind_verdicts_priority_mass import priority_run  # noqa: E402
-from automations import customs_watch, lifecycle_messages, purchase_followup  # noqa: E402
+from automations import _voice, customs_watch, lifecycle_messages, purchase_followup  # noqa: E402
 from of_client import OFAPIError, OFClient  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
-    Account, AccountAiConfig, AiDecision, AutomationRun, Fan, FanProfile, MassRun, Message, NudgeState, PriorityMassRecipient, PriorityMassRun, S4SMedia, S4SSlot,
-    ScheduledJob, SkipList, SmartList,
+    Account, AccountAiConfig, AiDecision, AutomationRun, Fan, FanProfile, FollowupState, MassRun, Message, NudgeState, PriorityMassRecipient, PriorityMassRun, S4SMedia, S4SSlot,
+    ScheduledJob, SkipList, SmartList, WelcomeSent,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "fansly"))
@@ -70,10 +76,9 @@ KIND_VERDICTS = {
                            "locked": "gated:platform_lacks:locked_text"},
         "scrape_chats": {"sweep": "same"},
         "scrape_fan": {"run": "same"},
-        "send_followup": {"run": "same"},
         "send_mass_message": {"broadcast": "gated:platform_lacks:send_mass_message"},
-        "unsend_messages": {"mass": "gated:platform_lacks:mass_message_history", "chat": "same"},
-        "welcome_chatter_for_info": {"run": "same"},
+        "unsend_messages": {"mass": "gated:platform_lacks:unsend_mass_message", "chat": "same"},
+        "welcome_chatter_for_info": {"run": "same", "spanish": "same"},
     },
     "onlyfans": {
         "auto_stories": {"story": "same"},
@@ -81,10 +86,9 @@ KIND_VERDICTS = {
         "scheduled_send": {"text": "same", "tags": "same", "locked": "same"},
         "scrape_chats": {"sweep": "same"},
         "scrape_fan": {"run": "same"},
-        "send_followup": {"run": "same"},
         "send_mass_message": {"broadcast": "same"},
         "unsend_messages": {"mass": "same", "chat": "same"},
-        "welcome_chatter_for_info": {"run": "same"},
+        "welcome_chatter_for_info": {"run": "same", "spanish": "same"},
     },
 }
 
@@ -100,11 +104,10 @@ PAYLOADS = {
     },
     "scrape_chats": {"sweep": {}},
     "scrape_fan": {"run": {"fan_ids": [FAN]}},
-    "send_followup": {"run": {"with_image": False}},
     "send_mass_message": {"broadcast": {
         "text": "hey all", "user_lists": ["fans"], "exclude_replied_hours": 0, "exclude_inbound_hours": 0}},
     "unsend_messages": {"mass": {"policy": {"mass_text_hours": 8}}, "chat": {"policy": {"text_hours": 1}}},
-    "welcome_chatter_for_info": {"run": {}},
+    "welcome_chatter_for_info": {"run": {}, "spanish": {}},
 }
 
 SAME_REASONS = {"reply_mass_funnel": {"landed": "no_active_funnel_runs"}}
@@ -114,9 +117,9 @@ SAME_EFFECTS = {
         "scheduled_send": {"text": ("POST /message", "table:chats", "table:fans", "table:messages")},
         "scrape_chats": {"sweep": ("table:chats", "table:fans", "table:messages", "table:scrape_history")},
         "scrape_fan": {"run": ("table:chats", "table:fans", "table:messages", "table:scrape_history")},
-        "send_followup": {"run": ("POST /message", "table:chats", "table:fans", "table:followup_state", "table:messages")},
         "unsend_messages": {"chat": ("POST /message/delete", "table:actions", "table:messages")},
-        "welcome_chatter_for_info": {"run": ("POST /message", "POST /message/ack", "table:chats", "table:fans", "table:messages")},
+        "welcome_chatter_for_info": dict.fromkeys(("run", "spanish"), (
+            "POST /message", "POST /message/ack", "table:chats", "table:fans", "table:messages")),
     },
     "onlyfans": {
         "auto_stories": {"story": ("post_story_from_url",)},
@@ -126,11 +129,11 @@ SAME_EFFECTS = {
                            "locked": ("send_message", "table:chats", "table:fans", "table:messages")},
         "scrape_chats": {"sweep": ("table:chats", "table:fans", "table:messages", "table:scrape_history")},
         "scrape_fan": {"run": ("table:chats", "table:fans", "table:messages", "table:scrape_history")},
-        "send_followup": {"run": ("send_message", "table:chats", "table:fans", "table:followup_state", "table:messages")},
         "send_mass_message": {"broadcast": ("send_mass_message", "table:mass_runs")},
         "unsend_messages": {"mass": ("cancel_scheduled", "table:actions", "table:mass_broadcast_cache"),
                             "chat": ("table:actions", "table:messages", "unsend_message")},
-        "welcome_chatter_for_info": {"run": ("mark_chat_read", "send_message", "table:chats", "table:fans", "table:messages")},
+        "welcome_chatter_for_info": dict.fromkeys(("run", "spanish"), (
+            "mark_chat_read", "send_message", "table:chats", "table:fans", "table:messages")),
     },
 }
 
@@ -321,7 +324,7 @@ async def _drive(platform: str, kind: str, branch: str, *, job_kind: str | None 
     token = fansly_shim.marker_calls.set(markers)
     ax._make_client, ax.of_write_paced = factory, _unpaced
     try:
-        with patch.object(llm_client, "_fire", canned_llm), \
+        with patch.object(llm_client, "_fire", canned_llm()), \
                 patch.object(OFClient, "from_account", session_for(platform, fake)), \
                 patch.dict("os.environ", {promo_create_guard.HOST_ENV: HOST}), \
                 patch.object(tenant_keys, "typesafe_key_for", no_key), \
@@ -538,6 +541,126 @@ async def case_welcome_toggle_refuses_before_client_lease_or_read_and_onlyfans_r
     assert fake.calls[:2] == ["my_settings", "message_templates"] and "send_message" not in fake.calls, fake.calls
 
 
+_FOLLOW_BACK = ("POST", f"/account/{FAN}/followers")
+
+
+def _writes(calls: list) -> list[tuple]:
+    return [(c[0], c[1]) for c in calls if c[0] != "GET"]
+
+
+def _sent_to(calls: list) -> list[tuple]:
+    return [(b["groupId"], b["content"]) for m, p, b, _q in calls if (m, p) == ("POST", "/message")]
+
+
+async def _welcomed(aid: str) -> list[int]:
+    async with get_session() as s:
+        return list((await s.execute(select(WelcomeSent.fan_id).where(WelcomeSent.account_id == aid))).scalars())
+
+
+_SEEN = ("subscribers_seen", "new_subscribers", "welcomes_sent", "errors", "skipped_cooldown")
+
+
+async def _welcome_stats(aid: str) -> list[tuple]:
+    async with get_session() as s:
+        rows = [json.loads(js) for js in (await s.execute(select(AutomationRun.stats_json).where(
+            AutomationRun.account_id == aid).order_by(AutomationRun.id))).scalars()]
+    return [(*(st[k] for k in _SEEN), sum(v for k, v in st.items() if k.startswith("skipped_") or k == "delayed"))
+            for st in rows]
+
+
+def _threadless(branch: str, fake=None):
+    fake = fake or StatefulFansly()
+    FAKE_STATE[("send_welcome", branch)](fake)
+    threadless(fake)
+    return fake
+
+
+async def case_a_follow_a_free_trial_or_both_welcome_once_in_one_new_group_and_the_next_tick_sends_nothing():
+    for branch in ("follow", "run", "both"):
+        fake = _threadless(branch)
+        t = await _turn("fansly", "send_welcome", branch, fake=fake)
+        groups = fan_groups(fake)
+        assert t.got[:2] == t.again[:2] == ("ok", None), (branch, t.got, t.again)
+        assert _writes(t.calls) == [("POST", "/group"), ("POST", "/message"), _FOLLOW_BACK], (branch, t.calls)
+        assert (len(groups), [(b["groupId"], b["content"]) for p, b in t.wire if p == "/message"]) == (
+            1, [(groups[0], "welcome babe")]), (branch, groups, t.wire)
+        assert (_writes(t.later), t.frames) == ([], []), (branch, t.later)
+        assert await _welcomed(t.aid) == [int(FAN)], branch
+        assert await _welcome_stats(t.aid) == [(1, 1, 1, 0, 0, 0), (1, 0, 0, 0, 0, 0)], branch
+        assert await _runs_and_jobs(t.aid) == ([("ok", None)] * 2, [("send_welcome", "done")] * 2), branch
+
+
+async def case_a_trigger_past_limit_on_a_partial_page_is_never_welcomed_because_only_page_one_is_read():
+    got, fake, aid = await _drive("fansly", "send_welcome", "partial")
+    first = list(fake.calls)
+    again, _fake, _aid = await _drive("fansly", "send_welcome", "partial", aid=aid, fake=fake)
+    page = fake.client().notifications(limit=1, type="subscribed")
+    assert ([str(row["user"]["id"]) for row in page["list"]], page["hasMore"]) == ([FAN], True), page
+    assert got[:2] == again[:2] == ("ok", None), (got, again)
+    assert [p for m, p, _b, _q in first if m == "GET"].count("/notifications") == 2, first
+    assert (await _welcomed(aid), _writes(fake.calls[len(first):])) == ([int(FAN)], []), fake.calls
+    assert OTHER_FAN not in {fake.groups[g]["partnerAccountId"] for g, _t in _sent_to(fake.calls)}
+    assert await _welcome_stats(aid) == [(1, 1, 1, 0, 0, 0), (1, 0, 0, 0, 0, 0)]
+
+
+async def case_a_lost_welcome_response_in_cell_mode_leaves_one_message_an_uncertain_claim_and_a_retry_sends_nothing():
+    fake, aid = _threadless("follow", LostReply()), await _account("fansly")
+    env = {"OI_CELL_MAP": "/nonexistent/placement.json", "OI_ACCOUNTS": f"fansly:{aid}", "OI_EPOCH": "1"}
+    skipped: list = []
+    real_skip = send_ops.skip_fan
+
+    def spy(e, **kw):
+        skipped.append(real_skip(e, **kw))
+        return skipped[-1]
+    with patch.object(send_ops, "_path", None), patch.object(send_ops, "skip_fan", spy), patch.dict(os.environ, env):
+        send_ops.install(f"sqlite:///{_harness.DB_PATH}")
+        got, _fake, _aid = await _drive("fansly", "send_welcome", "follow", aid=aid, fake=fake)
+        first = list(fake.calls)
+        with contextlib.closing(sqlite3.connect(_harness.DB_PATH)) as db:
+            claims = db.execute("SELECT kind, target, state FROM send_ops WHERE account=?", (aid,)).fetchall()
+        tick1 = list(skipped)
+        again, _fake, _aid = await _drive("fansly", "send_welcome", "follow", aid=aid, fake=fake)
+    retry = _writes(fake.calls[len(first):])
+    assert _writes(first) == [("POST", "/group"), ("POST", "/message")] and len(fan_groups(fake)) == 1, first
+    assert claims == [("send_welcome", FAN, "uncertain")], claims
+    assert (tick1, skipped[len(tick1):]) == ([None], ["op_uncertain"]), skipped
+    assert (retry.count(("POST", "/message")), retry.count(("POST", "/group"))) == (0, 0), retry
+    assert await _welcomed(aid) == [], (got, again)
+    assert await _runs_and_jobs(aid) == ([("ok", None)] * 2, [("send_welcome", "done")] * 2)
+    assert await _welcome_stats(aid) == [(1, 1, 0, 1, 0, 0), (1, 1, 0, 0, 0, 0)]
+
+
+async def _due_follow_up(aid: str) -> int:
+    async with get_session() as s:
+        job = (await s.execute(select(ScheduledJob).where(ScheduledJob.account_id == aid,
+                                                          ScheduledJob.status == "pending"))).scalar_one()
+        job.run_at = datetime.utcnow()
+        for fan in (await s.execute(select(Fan).where(Fan.account_id == aid))).scalars():
+            fan.automation_paused_until = None
+        return job.id
+
+
+async def case_a_welcome_follow_up_lands_in_the_welcome_thread_and_a_fan_reply_stops_the_next_step():
+    steps = [{"text": "still there?", "delay_minutes": 60}, {"text": "miss you", "delay_minutes": 60}]
+    fake, aid = _threadless("follow"), await _account("fansly")
+    got, _fake, _aid = await _drive("fansly", "send_welcome", "follow", aid=aid, fake=fake, extra={"follow_ups": steps})
+    (thread, _text), = _sent_to(fake.calls)
+    welcomed = len(fake.calls)
+    with typing_on(aid, "fansly", fake):
+        step1, _fake, _aid = await _drive("fansly", "send_welcome", "follow", aid=aid, fake=fake,
+                                          job_id=await _due_follow_up(aid))
+        await _rows(_in(timedelta(0)))(aid, "fansly")
+        replied = len(fake.calls)
+        step2, _fake, _aid = await _drive("fansly", "send_welcome", "follow", aid=aid, fake=fake,
+                                          job_id=await _due_follow_up(aid))
+    assert "job:send_welcome" in got[2] and step1[:2] == ("ok", None), (got, step1)
+    assert _calls("fansly", fake.calls[welcomed:replied]) == [_GROUPS_READ, ("POST", "/message", "still there?")], \
+        fake.calls[welcomed:replied]
+    assert _sent_to(fake.calls[welcomed:replied]) == [(thread, "still there?")], fake.calls[welcomed:replied]
+    assert (step2[:2], fake.calls[replied:]) == (("ok", "stopped_on_reply"), []), (step2, fake.calls[replied:])
+    assert await _runs_and_jobs(aid) == ([("ok", None)] * 2 + [("ok", "stopped_on_reply")], [("send_welcome", "done")] * 3)
+
+
 _LIFECYCLE = {"expiry_message": "platform_lacks:renewal_state", "expired_message": "platform_lacks:lapse_detection",
               "resubscribe_message": "platform_lacks:return_detection"}
 
@@ -707,6 +830,232 @@ async def case_cell_mode_holds_a_due_purchase_followup_with_zero_provider_calls_
         with _purchase_probe() as touched, patch.dict(os.environ, {"OI_CELL_MAP": "/nonexistent/placement.json"}):
             got, fake, _aid = await _drive(platform, "purchase_followup", "run")
         assert (got, touched, fake.calls) == (("skipped", "no_anchor", (), None), [], []), (platform, got, touched)
+
+
+def _wire(platform: str, fake) -> list[tuple]:
+    if platform == "fansly":
+        return [(p, b) for m, p, b, _q in fake.calls if m == "POST"]
+    return [(p.split("/api2/v2", 1)[1], b) for _m, p, b in fake.wire]
+
+
+def _calls(platform: str, calls: list) -> list:
+    if platform == "fansly":
+        return [(m, p, b.get("content", b) if b else b) for m, p, b, _q in calls]
+    return list(calls)
+
+
+class Turn(NamedTuple):
+    aid: str
+    got: tuple
+    calls: list
+    wire: list
+    again: tuple
+    later: list
+    frames: list
+
+
+async def _turn(platform: str, kind: str = "autoreply", branch: str = "run", seed=None, world=None,
+                fake=None) -> Turn:
+    aid = await _account(platform)
+    extra = await seed(aid, platform) if (seed := seed or SEEDS.get((kind, branch))) else None
+    fake = fake or (StatefulFansly() if platform == "fansly" else WireOF(aid))
+    world = world or WORLDS.get((kind, branch))
+    with typing_on(aid, platform, fake) as frames:
+        got, _fake, _aid = await _drive(platform, kind, branch, aid=aid, fake=fake, extra=extra, world=world)
+        calls = list(fake.calls)
+        wire = _wire(platform, fake)
+        again, _fake, _aid = await _drive(platform, kind, branch, aid=aid, fake=fake, extra=extra, world=world)
+    return Turn(aid, got, _calls(platform, calls), wire, again, _calls(platform, fake.calls[len(calls):]), frames)
+
+
+_FAN_GROUP = "900000000000000101"
+_GROUPS_READ = ("GET", "/messaging/groups", None)
+_TYPING = {"fansly": ("POST /message/typing",), "onlyfans": ()}
+_TYPING_POST = ("POST", "/message/typing", {"groupId": _FAN_GROUP})
+_FRAME = {"act": "typing", "typing_to": int(FAN)}
+
+
+def _of_body(text: str) -> dict:
+    return {"text": f"<p>{text}</p>", "lockedText": False, "mediaFiles": [], "price": 0, "previews": [],
+            "rfTag": [], "rfGuest": [], "rfPartner": [], "isForward": False}
+
+
+def _of_send(text: str) -> tuple:
+    return (f"/chats/{FAN}/messages", _of_body(text))
+
+
+def _fansly_send(text: str) -> tuple:
+    return ("/message", {"type": 1, "attachments": [], "likes": [], "content": text, "groupId": _FAN_GROUP,
+                         "inReplyTo": None, "scheduledFor": 0})
+
+
+def _unstamped(wire: list[tuple]) -> list[tuple]:
+    return [(p, {k: v for k, v in b.items() if k != "createdAt"}) for p, b in wire]
+
+
+def _visible(platform: str, wire: list[tuple]) -> list[str]:
+    if platform == "fansly":
+        return [b["content"] for p, b in wire if p == "/message"]
+    return [b["text"].removeprefix("<p>").removesuffix("</p>") for _p, b in wire]
+
+
+def _typed(platform: str, want: tuple) -> tuple:
+    return (*want[:2], tuple(sorted(want[2] + _TYPING[platform])), None)
+
+
+async def _runs_and_jobs(aid: str) -> tuple[list, list]:
+    async with get_session() as s:
+        runs = (await s.execute(select(AutomationRun.status, AutomationRun.stats_json)
+                                .where(AutomationRun.account_id == aid).order_by(AutomationRun.id))).all()
+        jobs = (await s.execute(select(ScheduledJob.kind, ScheduledJob.status)
+                                .where(ScheduledJob.account_id == aid).order_by(ScheduledJob.id))).all()
+    return [(st, json.loads(js or "{}").get("reason")) for st, js in runs], [tuple(j) for j in jobs]
+
+
+async def case_one_autoreply_turn_sends_the_same_visible_text_on_both_platforms_each_on_its_own_wire():
+    bubbles = ["hey you", "tell me more"]
+    want_wire = {"fansly": [("/message/typing", {"groupId": _FAN_GROUP}), *map(_fansly_send, bubbles)],
+                 "onlyfans": list(map(_of_send, bubbles))}
+    want_calls = {"fansly": [_GROUPS_READ, _TYPING_POST, _GROUPS_READ,
+                             ("POST", "/message", "hey you"), ("POST", "/message", "tell me more")],
+                  "onlyfans": ["send_message", "send_message"]}
+    want_frames = {"fansly": [], "onlyfans": [_FRAME] * 2}
+    for platform in ("fansly", "onlyfans"):
+        t = await _turn(platform)
+        assert t.got == _typed(platform, expected_run(platform, "autoreply", "run")), (platform, t.got)
+        assert (_visible(platform, t.wire), _unstamped(t.wire)) == (bubbles, want_wire[platform]), (platform, t.wire)
+        assert (t.calls, t.frames) == (want_calls[platform], want_frames[platform]), (platform, t.calls, t.frames)
+        assert (t.again[:2], t.later) == (("ok", None), []), (platform, t.again, t.later)
+        assert await _runs_and_jobs(t.aid) == ([("ok", None)] * 2, [("autoreply", "done")] * 2), platform
+
+
+async def _no_anchor_in_cell_mode(platform: str, kind: str, branch: str) -> list:
+    real = ax.run_once
+    returned = []
+
+    async def spy(*a, **k):
+        returned.append(await real(*a, **k))
+        return returned[-1]
+    aid = await _account(platform)
+    extra = await SEEDS[(kind, branch)](aid, platform)
+    fake = StatefulFansly() if platform == "fansly" else WireOF(aid)
+    if platform == "fansly" and (shape := FAKE_STATE.get((kind, branch))):
+        shape(fake)
+    where = (platform, kind, branch)
+    with typing_on(aid, platform, fake) as frames, patch.object(ax, "run_once", spy), \
+            patch.dict(os.environ, {"OI_CELL_MAP": "/nonexistent/placement.json"}):
+        got, _fake, _aid = await _drive(platform, kind, branch, aid=aid, fake=fake, extra=extra)
+    async with get_session() as s:
+        run_ids = (await s.execute(select(AutomationRun.id).where(AutomationRun.account_id == aid))).scalars().all()
+    assert returned == [{"status": "skipped", "reason": "no_anchor", "run_id": run_ids[0]}], (where, returned)
+    assert (got, fake.calls, frames) == (("skipped", "no_anchor", (), None), [], []), (where, got, fake.calls)
+    assert await _runs_and_jobs(aid) == ([("skipped", "no_anchor")], [(kind, "done")]), where
+    return fan_groups(fake) if platform == "fansly" else []
+
+
+async def case_cell_mode_autoreply_returns_no_anchor_with_zero_provider_calls_on_both_platforms():
+    for platform in ("fansly", "onlyfans"):
+        await _no_anchor_in_cell_mode(platform, "autoreply", "run")
+
+
+async def case_a_banned_word_in_the_autoreply_sends_and_types_nothing_on_both_platforms():
+    for platform in ("fansly", "onlyfans"):
+        t = await _turn(platform, seed=BANNED)
+        async with get_session() as s:
+            stats = [json.loads(j) for j in (await s.execute(select(AutomationRun.stats_json).where(
+                AutomationRun.account_id == t.aid).order_by(AutomationRun.id))).scalars()]
+        assert (t.got, t.calls, t.wire, t.later, t.frames) == (("ok", None, (), None), [], [], [], []), (platform, t)
+        assert [st["skipped_banned"] for st in stats] == [1, 1], (platform, stats)
+        assert (await _runs_and_jobs(t.aid))[1] == [("autoreply", "done")] * 2, platform
+
+
+async def case_a_leaking_autoreply_sends_one_canned_deflection_on_both_platforms():
+    sent = {}
+    for platform in ("fansly", "onlyfans"):
+        t = await _turn(platform, "autoreply", "leak")
+        sent[platform] = _visible(platform, t.wire)
+        assert len(sent[platform]) == 1 and sent[platform][0] in _voice.HER.off_deflections, (platform, sent)
+        want_calls = {"fansly": [_GROUPS_READ, _TYPING_POST, _GROUPS_READ, ("POST", "/message", sent[platform][0])],
+                      "onlyfans": ["send_message"]}
+        assert t.got == _typed(platform, expected_run(platform, "autoreply", "leak")), (platform, t.got)
+        assert not any("snap" in json.dumps(b) for _p, b in t.wire), (platform, t.wire)
+        assert (t.calls, t.frames) == (want_calls[platform], [] if platform == "fansly" else [_FRAME]), (platform, t)
+        assert (t.again[:2], t.later) == (("ok", None), []), (platform, t.again, t.later)
+        assert await _runs_and_jobs(t.aid) == ([("ok", None)] * 2, [("autoreply", "done")] * 2), platform
+    assert sent["fansly"] == sent["onlyfans"], (sent, LEAK_REPLY)
+
+
+async def case_the_spanish_welcome_sends_the_same_restricted_spanish_text_on_both_platforms():
+    text = "estás doormida? cuéntame más"
+    ack = ("/message/ack", {"messageIds": ["900000000000000304"], "type": 2})
+    want_wire = {"fansly": [("/message/typing", {"groupId": _FAN_GROUP}), _fansly_send(text), ack],
+                 "onlyfans": [_of_send(text)]}
+    want_calls = {"fansly": [_GROUPS_READ, _TYPING_POST, _GROUPS_READ, ("POST", "/message", text),
+                             ("GET", "/message", None), ("POST", *ack)],
+                  "onlyfans": ["send_message", "mark_chat_read"]}
+    for platform in ("fansly", "onlyfans"):
+        t = await _turn(platform, "welcome_chatter_for_info", "spanish")
+        assert t.got == _typed(platform, expected_run(platform, "welcome_chatter_for_info", "spanish")), (platform, t.got)
+        assert (_visible(platform, t.wire), _unstamped(t.wire)) == ([text], want_wire[platform]), (platform, t.wire)
+        assert (t.calls, t.frames) == (want_calls[platform], [] if platform == "fansly" else [_FRAME]), (platform, t)
+        assert (t.again[:2], t.later) == (("ok", None), []), (platform, t.again, t.later)
+        assert await _runs_and_jobs(t.aid) == ([("ok", None)] * 2, [("welcome_chatter_for_info", "done")] * 2), platform
+
+
+_FOLLOWUP_STATS = ("eligible", "followups_sent", "skipped_cooldown", "skipped_locked", "skipped_guard",
+                   "state_advanced", "errors")
+_FOLLOWUP_TICKS = [(1, 1, 0, 0, 0, 1, 0), (1, 0, 0, 0, 0, 0, 0)]
+
+
+async def _followup_ticks(aid: str) -> tuple[list, list, str, bool]:
+    async with get_session() as s:
+        stats = [json.loads(js) for js in (await s.execute(select(AutomationRun.stats_json).where(
+            AutomationRun.account_id == aid).order_by(AutomationRun.id))).scalars()]
+        state = await s.get(FollowupState, (aid, int(FAN)))
+    return ([tuple(st[k] for k in _FOLLOWUP_STATS) for st in stats], sorted(json.loads(state.messages_sent)),
+            state.phase, await ax.fan_on_cooldown(aid, int(FAN)))
+
+
+async def case_send_followup_sends_once_to_an_anchored_paying_fan_and_the_next_tick_is_held_by_its_step_not_a_cooldown():
+    want_calls = {"fansly": [_GROUPS_READ, ("POST", "/message", LLM_REPLY)], "onlyfans": ["send_message"]}
+    want_wire = {"fansly": [_fansly_send(LLM_REPLY)], "onlyfans": [_of_send(LLM_REPLY)]}
+    for platform in ("fansly", "onlyfans"):
+        t = await _turn(platform, "send_followup", "run")
+        assert t.got == expected_run(platform, "send_followup", "run"), (platform, t.got)
+        assert (_unstamped(t.wire), t.calls, t.frames) == (want_wire[platform], want_calls[platform], []), (platform, t)
+        assert (t.again[:2], t.later) == (("ok", None), []), (platform, t.again, t.later)
+        assert await _runs_and_jobs(t.aid) == ([("ok", None)] * 2, [("send_followup", "done")] * 2), platform
+        assert await _followup_ticks(t.aid) == (_FOLLOWUP_TICKS, ["1"], "tracking", True), platform
+
+
+async def case_send_followup_with_no_group_mints_one_fansly_group_sends_once_and_the_next_tick_is_held_on_both_platforms():
+    fake = StatefulFansly()
+    FAKE_STATE[("send_followup", "no_group")](fake)
+    assert fan_groups(fake) == []
+    mint = {"users": [{"userId": fake.account_id, "permissionFlags": 0}, {"userId": FAN, "permissionFlags": 0}],
+            "recipients": [], "lastMessage": None, "userSettings": None, "type": 1}
+    want_calls = {"fansly": [_GROUPS_READ, ("POST", "/group", mint), ("POST", "/message", LLM_REPLY)],
+                  "onlyfans": ["send_message"]}
+    for platform in ("fansly", "onlyfans"):
+        t = await _turn(platform, "send_followup", "no_group", fake=fake if platform == "fansly" else None)
+        assert t.got == expected_run(platform, "send_followup", "no_group"), (platform, t.got)
+        assert (t.calls, t.frames) == (want_calls[platform], []), (platform, t)
+        if platform == "fansly":
+            groups = fan_groups(fake)
+            assert (len(groups), [(b["groupId"], b["content"]) for p, b in t.wire if p == "/message"]) == (
+                1, [(groups[0], LLM_REPLY)]), (groups, t.wire)
+        else:
+            assert _unstamped(t.wire) == [_of_send(LLM_REPLY)], t.wire
+        assert (t.again[:2], t.later) == (("ok", None), []), (platform, t.again, t.later)
+        assert await _runs_and_jobs(t.aid) == ([("ok", None)] * 2, [("send_followup", "done")] * 2), platform
+        assert await _followup_ticks(t.aid) == (_FOLLOWUP_TICKS, ["1"], "tracking", True), platform
+
+
+async def case_cell_mode_send_followup_returns_no_anchor_with_zero_provider_calls_anchored_or_not_on_both_platforms():
+    for platform in ("fansly", "onlyfans"):
+        assert await _no_anchor_in_cell_mode(platform, "send_followup", "run") == (
+            [_FAN_GROUP] if platform == "fansly" else []), platform
+        assert await _no_anchor_in_cell_mode(platform, "send_followup", "no_group") == [], platform
 
 
 _PROMOTIONS = ("skipped", "platform_lacks:promotions", (), None)

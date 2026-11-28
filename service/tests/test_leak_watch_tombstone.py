@@ -11,6 +11,7 @@ import uuid  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 import httpx  # noqa: E402
 from sqlalchemy import delete, select  # noqa: E402
@@ -19,8 +20,9 @@ import _agency_fixtures as fx  # noqa: E402
 import account_page  # noqa: E402
 import accounts as account_registry  # noqa: E402
 import leak_tracker  # noqa: E402
+import notifications_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import LeakTrackerTenant, LeakWatch, LeakWatchTombstone, User, UserAccount, UserLlmKey  # noqa: E402
+from db.models import LeakTrackerTenant, LeakWatch, LeakWatchOptOut, LeakWatchTombstone, User, UserAccount, UserLlmKey  # noqa: E402
 
 V1 = Path(__file__).resolve().parent / "fixtures" / "leak_tracker_v1"
 TRACKER = "http://127.0.0.1:9"
@@ -117,6 +119,7 @@ def _reset() -> None:
             await s.execute(delete(LeakTrackerTenant))
             await s.execute(delete(LeakWatch))
             await s.execute(delete(LeakWatchTombstone))
+            await s.execute(delete(LeakWatchOptOut))
         for agency, key in ((AGENCY_A, KEY_1), (AGENCY_B, KEY_2)):
             await leak_tracker.store_key(agency, key)
             await leak_tracker.bind_tenant(agency, TENANT)
@@ -211,6 +214,18 @@ def case_the_job_retries_until_a_2xx_carrying_the_original_request_time():
         t.calls.clear()
         _land()
         assert t.calls == []
+
+
+def case_a_404_or_410_delete_counts_as_delivered():
+    for status in (404, 410):
+        _reset()
+        watch_id = _stone(CREATOR)
+        with _tracker() as t:
+            t.answer = {**LIMITED, "method": "DELETE", "status": status}
+            _land()
+            assert t.deletes() == [(watch_id, "2026-11-27T11:00:00Z")], (status, t.deletes())
+        assert _stones() == {}, status
+        assert not asyncio.run(leak_tracker.pending(AGENCY_A)), status
 
 
 def case_a_tenant_mismatch_keeps_the_tombstone_and_the_rest_still_land():
@@ -397,6 +412,77 @@ def case_unlink_tombstones_only_that_agencys_watch():
         assert leak_tracker._wake.is_set()
     finally:
         asyncio.run(_relink())
+
+
+def case_remove_and_unlink_block_enrollment_before_removing_an_untracked_account():
+    async def live(_account):
+        return {"username": "miavale", "name": "Mia Vale"}
+
+    for unlink in (True, False):
+        _reset()
+        attempts = []
+        async def enroll_during_removal(_account, *_owners):
+            attempts.append(await leak_tracker.ensure_watches(AGENCY_A, KEY_1, [CREATOR]))
+
+        try:
+            with (_tracker() as t, _kept_dir(CREATOR),
+                  patch.object(notifications_api, "drop_pinned", enroll_during_removal),
+                  patch.object(account_page, "of_me", live)):
+                t.answer = PUT_CREATED
+                if unlink:
+                    r = MASTER.request("DELETE", f"/admin/users/{AGENCY_A}/accounts/{CREATOR}",
+                                       json={"admin_password": os.environ["ADMIN_PASSWORD"]})
+                else:
+                    r = OWNER_A.delete(f"/admin/accounts/{CREATOR}")
+                assert r.status_code == 200, r.text
+                assert attempts == [0] and not t.calls and not _rows()
+        finally:
+            async def relink():
+                async with get_session() as s:
+                    if await s.get(UserAccount, (AGENCY_A, CREATOR)) is None:
+                        s.add(UserAccount(user_id=AGENCY_A, account_id=CREATOR))
+            asyncio.run(relink())
+
+
+def case_reconnecting_resumes_auto_enrollment_except_after_user_delete():
+    async def live(_account):
+        return {"username": "miavale", "name": "Mia Vale"}
+
+    async def relink():
+        async with get_session() as s:
+            if await s.get(UserAccount, (AGENCY_A, CREATOR)) is None:
+                s.add(UserAccount(user_id=AGENCY_A, account_id=CREATOR))
+
+    for unlink, user_deleted in ((True, False), (True, True), (False, False), (False, True)):
+        _reset()
+        with _tracker() as t, _kept_dir(CREATOR), patch.object(account_page, "of_me", live):
+            try:
+                _row(CREATOR)
+                t.answer = DELETED
+                if user_deleted:
+                    assert OWNER_A.delete(f"/admin/leaks/watches/{CREATOR}").status_code == 200
+                    asyncio.run(leak_tracker.land_tombstones())
+                    assert not _stones()
+                if unlink:
+                    r = MASTER.request("DELETE", f"/admin/users/{AGENCY_A}/accounts/{CREATOR}",
+                                       json={"admin_password": os.environ["ADMIN_PASSWORD"]})
+                else:
+                    r = OWNER_A.delete(f"/admin/accounts/{CREATOR}")
+                assert r.status_code == 200, r.text
+                asyncio.run(leak_tracker.land_tombstones())
+                assert not _stones()
+                assert asyncio.run(leak_tracker.ensure_watches(AGENCY_A, KEY_1, [CREATOR])) == 0
+                if not unlink:
+                    assert account_registry.get_account(CREATOR) is None
+                    account_registry.upsert_account(CREATOR)
+                linked = MASTER.post(f"/admin/users/{AGENCY_A}/accounts", json={
+                    "account_id": CREATOR, "admin_password": os.environ["ADMIN_PASSWORD"],
+                })
+                assert linked.status_code == 200, linked.text
+                t.answer = PUT_CREATED
+                assert asyncio.run(leak_tracker.ensure_watches(AGENCY_A, KEY_1, [CREATOR])) == int(not user_deleted)
+            finally:
+                asyncio.run(relink())
 
 
 def _agency_user(key: str = KEY_3) -> str:

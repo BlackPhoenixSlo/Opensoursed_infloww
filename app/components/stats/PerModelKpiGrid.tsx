@@ -8,6 +8,7 @@ import { AccountAvatarPicture, type AvatarHealth } from "@/components/ui/Account
 import { useAccounts } from "@/hooks/useAccounts";
 import { useScreen } from "@/lib/screenBundle";
 import type { AccountMeta } from "@/lib/relay";
+import { accountPlatform, DEFAULT_PLATFORM, type AccountPlatform } from "@/lib/platform";
 import { sessionConnectivity, type Connectivity } from "@/lib/sessionConnectivity";
 import {
   useAccountProfile,
@@ -109,7 +110,8 @@ export default function PerModelKpiGrid({ from, to }: Props) {
           const account = accountsQ.data?.accounts?.find((a) => a.id === m.account_id);
           return (
             <ModelCard key={m.account_id} m={m} activeUnavail={activeUnavail} from={from} to={to}
-              color={account?.color} of={ofReadState(account, accountsQ)} />
+              color={account?.color} of={ofReadState(account, accountsQ)}
+              platform={account ? accountPlatform(account) : DEFAULT_PLATFORM} />
           );
         })}
       </div>
@@ -166,9 +168,9 @@ function SkeletonModelCard({ account }: { account: AccountMeta | null }) {
   );
 }
 
-function ModelCard({ m, activeUnavail, from, to, of, color }: {
+function ModelCard({ m, activeUnavail, from, to, of, color, platform }: {
   m: PerModelRow; activeUnavail: boolean; from: string | null; to: string | null;
-  of: ReturnType<typeof ofReadState>; color?: string | null;
+  of: ReturnType<typeof ofReadState>; color?: string | null; platform: AccountPlatform;
 }) {
   const kinds = m.revenue_by_kind;
   const pending = m.pending_by_kind;
@@ -181,7 +183,7 @@ function ModelCard({ m, activeUnavail, from, to, of, color }: {
   // Live OF fan count is the real total: our DB fans roster only holds fans we've chatted with.
   const counts = useOfSubscriberCounts(ofId);
   const totalFans = counts.data?.active ?? null;
-  const newFansQ = useOfNewFans(ofId, from, to);
+  const newFansQ = useOfNewFans(ofId, from, to, platform);
   const newFans = newFansQ.data ?? null;
   const ltvDenom = paid === true ? m.new_subs_count : newFans;
   const ltvCents =

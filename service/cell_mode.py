@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from starlette.requests import HTTPConnection, Request
+from starlette.routing import Match
 
 CELL_PROTO = 2
 
@@ -183,6 +184,14 @@ def _scope_check(conn: HTTPConnection) -> str:
     return scope
 
 
+def account_path_param(conn: HTTPConnection) -> str | None:
+    for route in conn.app.router.routes:
+        match, scope = route.matches(conn.scope)
+        if match == Match.FULL:
+            return scope.get("path_params", {}).get("account_id")
+    return None
+
+
 async def route_guard(conn: HTTPConnection) -> None:
     scope = _scope_check(conn)
     if conn.scope["type"] == "http" and conn.scope["method"] not in _SAFE:
@@ -197,12 +206,11 @@ async def route_guard(conn: HTTPConnection) -> None:
     expect = conn.headers.get("x-cell-expect")
     if expect is not None and expect != f"{os.environ.get('OI_CELL_ID', '')}.{os.environ.get('OI_EPOCH', '')}":
         raise refusal(409, "not_owner", expected=expect)
-    named |= {a.strip() for a in q.get("accounts", "").split(",") if a.strip()}
+    named.update(a.strip() for a in q.get("accounts", "").split(",") if a.strip())
     if not named:
         return
     if scope != "agency" or not is_control():
-        ids = owned_ids()
-        if stray := sorted(a for a in named if a not in ids):
+        if stray := sorted(named - owned_ids()):
             raise refusal(409, "not_owner", accounts=stray)
     conn.scope.setdefault("state", {})[_STATE_KEY] = _data_gen
     gen = conn.headers.get("x-cell-gen")

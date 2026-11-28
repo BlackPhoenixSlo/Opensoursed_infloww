@@ -105,6 +105,7 @@ def _tracker(env: dict | None = None):
 
 
 def _reset() -> None:
+    leak_tracker._capped.clear()
     async def _wipe():
         async with get_session() as s:
             await s.execute(delete(UserLlmKey).where(UserLlmKey.provider == "leak_tracker"))
@@ -312,6 +313,7 @@ def case_rate_limits_refusals_and_down_stop_only_the_affected_agency():
             ("read timeout", httpx.ReadTimeout("slow"), "a1 a2 a3 b", "a1 a3 b")]:
         _reset()
         asyncio.run(leak_tracker.store_key(AGENCY_B, KEY_2))
+        asyncio.run(leak_tracker.bind_tenant(AGENCY_B, "tn_sync0002"))
         ids = {"a1": _row(CREATOR, synced_at=None, synced_paused=None),
                "a2": _row(SECOND, synced_at=None, synced_paused=None),
                "a3": _row(THIRD, synced_at=None, synced_paused=None),
@@ -331,19 +333,39 @@ def case_rate_limits_refusals_and_down_stop_only_the_affected_agency():
     assert leak_tracker.key_invalid(AGENCY_A), "a 401 marks the key no longer valid"
 
 
-def case_a_refused_row_stays_dirty_and_the_rest_are_pushed():
+def case_sync_enrolls_at_most_ten_unsynced_watches_per_pass():
     _reset()
-    capped = _row(CREATOR, synced_at=None, synced_paused=None)
-    fine = _row(SECOND, synced_at=None, synced_paused=None)
+    accounts = [str(1000020 + n) for n in range(12)]
+    async def seed():
+        async with get_session() as s:
+            s.add_all(Account(id=aid, nickname=aid, color="#aaaaaa") for aid in accounts)
+    asyncio.run(seed())
+    ids = [_row(aid, synced_at=None, synced_paused=None) for aid in accounts]
     with _tracker() as t:
-        t.by_watch[capped] = CREATOR_CAP
         _sync()
-        assert set(t.pushed()) == {capped, fine}
-        rows = _rows()
-        assert rows[capped].synced_at is None and rows[fine].synced_at == TODAY
+        assert list(t.pushed()) == ids[:10]
         t.calls.clear()
-        _sync(TODAY + timedelta(hours=1))
-        assert list(t.pushed()) == [capped], "retried next run"
+        _sync()
+        assert list(t.pushed()) == ids[10:]
+
+
+def case_cap_and_waitlist_pause_only_enrollments_for_a_day():
+    for refusal in (CREATOR_CAP, _golden("err_409_waitlist")):
+        _reset()
+        capped = _row(CREATOR, synced_at=None, synced_paused=None)
+        unsynced = _row(SECOND, synced_at=None, synced_paused=None)
+        existing = _row(THIRD, synced_at=TODAY - timedelta(days=1))
+        with _tracker() as t:
+            t.by_watch[capped] = refusal
+            _sync()
+            assert list(t.pushed()) == [capped, existing]
+            t.calls.clear()
+            _sync(TODAY + timedelta(hours=23))
+            assert set(t.pushed()).isdisjoint({capped, unsynced})
+            t.calls.clear()
+            t.by_watch.clear()
+            _sync(TODAY + timedelta(days=1))
+            assert {capped, unsynced} <= set(t.pushed())
 
 
 def case_a_put_answered_410_drops_the_row_with_no_tombstone_and_the_rest_are_pushed():

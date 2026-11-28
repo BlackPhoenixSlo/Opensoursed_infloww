@@ -17,13 +17,14 @@ import {
 } from "@/hooks/useMassMessages";
 import { SM, SM_MASS_COLUMNS } from "@/components/growth/smartMessagesControls";
 import { useAppliedSettings } from "@/lib/appliedSettings";
+import { accountPlatform, can } from "@/lib/platform";
 import { downloadCsv } from "@/lib/csv";
 import { cn } from "@/lib/utils";
 
 import { RefreshButton } from "./RefreshButton";
 import { MassMessageRowItem } from "./MassMessageRow";
 import {
-  filterMassRows, initialMassFilter, massCsvRows, massFilterReducer, mayHideOlder, narrowedBy, RANGE_DAYS,
+  filterMassRows, initialMassFilter, massCsvRows, massFilterReducer, mayHideOlder, moreNotLoaded, narrowedBy, RANGE_DAYS,
 } from "./massFilterBar";
 import { BULK_ACTIONS, bulkCounts, bulkTargets, visibleMassRows, type BulkAction } from "./massUnsendRules";
 import { bulkStatusLine } from "./bulkUnsendRun";
@@ -36,7 +37,8 @@ const LOAD_FAILED = "Couldn't load sent mass messages.";
 
 // OF keeps canUnsend: true (unsendSeconds 1000000) on mass rows long after the 24h chat window; no edit window here.
 export default function MassMessagesTab() {
-  const accounts = useActiveAccounts();
+  const active = useActiveAccounts();
+  const accounts = useMemo(() => active.filter((a) => can(accountPlatform(a), "mass_history")), [active]);
   const accountIds = useMemo(() => accounts.map((a) => a.id), [accounts]);
   const [filter, dispatch] = useReducer(massFilterReducer, initialMassFilter);
   const { daysBack, draft, hideUnsent, models: selectedModels } = filter;
@@ -51,7 +53,7 @@ export default function MassMessagesTab() {
   }, []);
   const { ask, modal: confirmModal } = useIfConfirm();
 
-  const { rows: loaded, isLoading, isFetching, error, queries, limit } = useMassMessages(accountIds, { daysBack });
+  const { rows: loaded, perCreator, isLoading, isFetching, error, queries, limit } = useMassMessages(accountIds, { daysBack });
   const cancelM = useCancelMassMessage();
   const refreshM = useRefreshMassMessages();
   const sending = useMassQueueProgress(accountIds, daysBack);
@@ -111,11 +113,9 @@ export default function MassMessagesTab() {
     () => bulkCounts(rows, selectedModels, now),
     [rows, selectedModels, now],
   );
-  const olderHidden = mayHideOlder(
-    filter.applied,
-    accountIds.flatMap((id, i) => (selectedModels.size === 0 || selectedModels.has(id) ? [queries[i]?.data?.length ?? 0] : [])),
-    limit,
-  );
+  const inView = perCreator.filter((p) => selectedModels.size === 0 || selectedModels.has(p.accountId));
+  const olderHidden = mayHideOlder(filter.applied, inView.map((p) => p.rows.length), limit);
+  const notLoaded = moreNotLoaded(inView).map(accountName);
 
   return (
     <div className="flex flex-col gap-4">
@@ -231,6 +231,11 @@ export default function MassMessagesTab() {
         {olderHidden && (
           <div className="text-[14px] text-fg-dim mb-3">
             Showing the newest {limit} per Creator: older matches may be hidden.
+          </div>
+        )}
+        {notLoaded.length > 0 && (
+          <div className="text-[14px] text-fg-dim mb-3">
+            Older broadcasts not loaded for {notLoaded.join(", ")}.
           </div>
         )}
         {bulkLine && <div role="status" className="text-[14px] text-fg-dim mb-3">{bulkLine}</div>}

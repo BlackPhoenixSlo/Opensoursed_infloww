@@ -35,7 +35,7 @@ export type LeakSetup = {
   previews: boolean;
 };
 
-function KeyCard({ setup, accountId }: { setup: LeakSetup; accountId: string | null }) {
+function ConnectCard({ setup, accountId }: { setup: LeakSetup; accountId: string | null }) {
   const qc = useQueryClient();
   const save = useMutation({
     mutationFn: (key: string) => relay.put<Pick<LeakSetup, "key" | "masked" | "brand" | "source">>("/admin/leaks/key", { key }, { accountId }),
@@ -59,25 +59,6 @@ function KeyCard({ setup, accountId }: { setup: LeakSetup; accountId: string | n
     </form>
   );
   const error = save.error ? <p role="alert" className="mt-2 text-[14px] text-err">{save.error.message}</p> : null;
-  if (setup.key === "set") {
-    const shared = setup.source === "instance";
-    return (
-      <IfCard aria-label="Removal service key" className="mb-4">
-        <p className="text-[14px] text-fg">
-          Connected to {setup.brand ?? "the removal service"}
-          {setup.masked && <> · <span className="font-mono">{setup.masked}</span></>}
-        </p>
-        <details className="mt-2 text-[14px]">
-          <summary className="cursor-pointer text-accent">{shared ? "Use your own key" : "Change key"}</summary>
-          {form}
-          {!shared && (
-            <IfButton variant="link" className="mt-2" disabled={save.isPending} onClick={() => save.mutate("")}>Disconnect</IfButton>
-          )}
-        </details>
-        {error}
-      </IfCard>
-    );
-  }
   return (
     <IfCard aria-label="Connect the removal service" title="Connect the removal service" className="max-w-[560px]">
       {setup.key === "invalid" ? (
@@ -136,7 +117,7 @@ export function LeakTracker() {
     return (
       <PageFrame title={TITLE}>
         {data.is_owner ? (
-          <KeyCard setup={data} accountId={accountId} />
+          <ConnectCard setup={data} accountId={accountId} />
         ) : data.key === "invalid" ? (
           <p className="text-[14px] text-muted">Key no longer valid. Ask the agency owner to connect the removal service again.</p>
         ) : (
@@ -148,7 +129,6 @@ export function LeakTracker() {
   if (!roster.data) {
     return (
       <PageFrame title={TITLE}>
-        {data.is_owner && <KeyCard setup={data} accountId={accountId} />}
         {roster.isPending ? (
           <TableSkeleton rows={6} />
         ) : (
@@ -174,7 +154,6 @@ export function LeakTracker() {
       creators={{ accounts, notes, chips, value: shown?.id ?? null, onChange: choose, all: { pick: () => choose(null), label: "All Models", row: true } }}
     >
       {strip && <LeakWeekStrip strip={strip} />}
-      {data.is_owner && <KeyCard setup={data} accountId={accountId} />}
       {down && <p role="status" className="mb-4 text-[14px] text-muted">{down}</p>}
       <LeakDisclaimer brand={data.brand} previews={data.previews} />
       <div data-leak-view={shown?.id ?? "all"}>

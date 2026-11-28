@@ -14,14 +14,14 @@ import {
 import { OtpCodeForm } from "@/components/setup/RemoteLoginOtp";
 import { useReportBusy } from "@/components/setup/useReportBusy";
 import { BRAND_NAME } from "@/lib/brand";
-import { DEFAULT_PLATFORM, PLATFORM_NAME, type Platform } from "@/lib/platform";
+import { DEFAULT_PLATFORM, PLATFORM_NAME, platformRow, type AccountPlatform, type Platform, type PlatformRow } from "@/lib/platform";
 
 export type { RemoteLoginStatus };
 
 const BB_FORM_ID = "browser-login-form";
-const LOGIN_ID: Record<Platform, { label: string; type: "email" | "text"; bindsProxy: boolean }> = {
-  onlyfans: { label: "email", type: "email", bindsProxy: true },
-  fansly: { label: "username or email", type: "text", bindsProxy: false },
+const LOGIN_ID: Record<Platform, { label: string; type: "email" | "text" }> = {
+  onlyfans: { label: "email", type: "email" },
+  fansly: { label: "username or email", type: "text" },
 };
 
 const LOST = "the relay lost this login (it restarted, or the login expired). Try again.";
@@ -36,18 +36,26 @@ function attachedText(s: RemoteLoginStatus) {
   return "No proxy was attached.";
 }
 
-export default function BrowserbaseLoginCard({
-  onLinked, initialNickname = "", keepProxy = false, active = true, onBusy, platform = DEFAULT_PLATFORM, expectedAccountId,
-}: {
+interface CardProps {
   onLinked?: (accountId: string) => void;
   initialNickname?: string;
   keepProxy?: boolean;
   active?: boolean;
   onBusy?: (running: boolean) => void;
-  platform?: Platform;
   expectedAccountId?: string;
-}) {
-  const site = PLATFORM_NAME[platform];
+}
+
+export default function BrowserbaseLoginCard({ platform = DEFAULT_PLATFORM, ...props }: CardProps & { platform?: AccountPlatform }) {
+  const row = platformRow(platform);
+  if (!row) return <IfHelp className="mt-0 text-[14px] leading-[22px]">{PLATFORM_NAME[platform]}</IfHelp>;
+  return <LoginCard {...props} row={row} />;
+}
+
+function LoginCard({
+  onLinked, initialNickname = "", keepProxy = false, active = true, onBusy, row, expectedAccountId,
+}: CardProps & { row: PlatformRow }) {
+  const platform = row.key;
+  const site = row.label;
   const loginId = LOGIN_ID[platform];
   const isDefault = platform === DEFAULT_PLATFORM;
   const ids = isDefault ? "bb" : `bb-${platform}`;
@@ -154,7 +162,7 @@ export default function BrowserbaseLoginCard({
   return (
     <div className="space-y-4">
       <IfHelp className="mt-0 text-[14px] leading-[22px]">
-        {!loginId.bindsProxy ? `${site} traffic after login uses the server IP.` : keepProxy ? "Keeps its current proxy." : "Proxy assigned automatically (an account already on one keeps it). You can add yours after linking."}
+        {!row.bindsProxy ? `${site} traffic after login uses the server IP.` : keepProxy ? "Keeps its current proxy." : "Proxy assigned automatically (an account already on one keeps it). You can add yours after linking."}
       </IfHelp>
 
       {!running && !done && (
@@ -239,7 +247,7 @@ export default function BrowserbaseLoginCard({
 
       {done && status && (
         <div className="space-y-3 text-sm">
-          <p className="text-ok">Account {status.account_id} added. {loginId.bindsProxy ? attachedText(status) : "Later traffic uses the server IP."}</p>
+          <p className="text-ok">Account {status.account_id} added. {row.bindsProxy ? attachedText(status) : "Later traffic uses the server IP."}</p>
         </div>
       )}
     </div>

@@ -1,12 +1,28 @@
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createElement } from "react";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+
+const platform = vi.hoisted(() => ({ current: "onlyfans" as "onlyfans" | "fansly" }));
+vi.mock("@/hooks/useCan", () => ({ useAccountPlatform: (id: string | null | undefined) => (id ? platform.current : null) }));
+vi.mock("@/lib/relay", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/lib/relay")>();
+  return { ...mod, relay: { ...mod.relay, get: vi.fn() } };
+});
+vi.mock("./SmartMessageFields", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./SmartMessageFields")>(), SmartMessageFields: () => null,
+}));
 
 import type { AutomationRule } from "@/hooks/useAutomations";
+import type { AccountPlatform } from "@/lib/platform";
+import { relay } from "@/lib/relay";
 
 import { unsaved } from "@/components/automations/sentDraft";
 
+import { DelayedWelcomeEditor } from "./DelayedWelcomeEditor";
 import {
-  buildSave, canSubmit, initWelcome, initWelcomeState, mergeTarget, welcomeIssues, welcomeReducer, type WelcomeAction,
-  type WelcomeEdit,
+  afterOfDisabled, buildSave, canSubmit, initWelcome, initWelcomeState, mergeTarget, nativeWelcomeRefusal, welcomeIssues,
+  welcomePlatformCopy, welcomeReducer, type WelcomeAction, type WelcomeEdit,
 } from "./delayedWelcomeForm";
 
 const RULE = (over: Partial<AutomationRule> = {}, payload: Record<string, unknown> = {}): AutomationRule => ({
@@ -78,8 +94,8 @@ describe("buildSave pins the old inline requests", () => {
       }],
   ])("%s", (_, rule, actions, req) => {
     const s = run(rule, actions);
-    expect(canSubmit(s)).toBe(true);
-    expect(buildSave(s, rule, "a")).toEqual(req);
+    expect(canSubmit(s, null)).toBe(true);
+    expect(buildSave(s, rule, "a", null)).toEqual(req);
   });
 });
 
@@ -89,9 +105,9 @@ describe("one gate: welcomeIssues / canSubmit / buildSave agree", () => {
     ["a price without media", [{ type: "patchExtras", patch: { price: "5" } }], { problem: "Add media to set a price" }],
   ])("%s", (_, actions, flagged) => {
     const s = run(null, actions);
-    expect(welcomeIssues(s)).toMatchObject(flagged);
-    expect(canSubmit(s)).toBe(false);
-    expect(buildSave(s, null, "a")).toBeNull();
+    expect(welcomeIssues(s, null)).toMatchObject(flagged);
+    expect(canSubmit(s, null)).toBe(false);
+    expect(buildSave(s, null, "a", null)).toBeNull();
   });
 });
 
@@ -167,5 +183,108 @@ describe("welcomeReducer: merge target, live, failed", () => {
       enabled: s.draft.enabled, minutes: s.draft.minutes, variants: s.draft.variants, unsaved: unsaved(s),
       target: mergeTarget(s)?.id ?? null,
     }).toEqual(want);
+  });
+});
+
+const WARNING = "Fansly's own welcome message can't be checked — turn it off in Fansly, or both will send.";
+
+describe("a Platform without a native welcome check: after-native-welcome refused on, always switchable off", () => {
+  it.each<[string, "onlyfans" | "fansly", string | null]>([
+    ["Fansly refuses with the warning", "fansly", WARNING],
+    ["OnlyFans control: no refusal", "onlyfans", null],
+  ])("%s", (_, p, want) => {
+    expect(nativeWelcomeRefusal(p)).toBe(want);
+  });
+
+  it.each<[string, AccountPlatform, { refusal: string | null; afterLabel: string }]>([
+    ["Fansly names Fansly", "fansly", {
+      refusal: WARNING, afterLabel: "Fansly's welcome message is message 1: while it is on, send only the follow-ups",
+    }],
+    ["OnlyFans names OnlyFans, no refusal", "onlyfans", {
+      refusal: null, afterLabel: "OnlyFans' welcome message is message 1: while it is on, send only the follow-ups",
+    }],
+    ["an unregistered key refuses without naming Unknown platform", "unknown", {
+      refusal: "This Creator's platform isn't recognised, so its own welcome message can't be checked.",
+      afterLabel: "The platform's welcome message is message 1: while it is on, send only the follow-ups",
+    }],
+  ])("welcome copy: %s", (_, p, want) => {
+    expect(welcomePlatformCopy(p)).toEqual(want);
+  });
+
+  const ON = RULE({}, { message: "m", after_of_welcome: true });
+  const OFF = RULE({}, { message: "m" });
+  type Row = [string, AutomationRule | null, WelcomeEdit[], string | null, { disabled: boolean; body: unknown }];
+  it.each<Row>([
+    ["refusal set + off: the switch is disabled, the save goes through", OFF, [], WARNING, {
+      disabled: true,
+      body: { id: 7, patch: { is_enabled: true, every_seconds: 600, payload: { message: "m", ...EXTRAS, delay_range: null } } },
+    }],
+    ["refusal set + stored on: switchable, refused until switched off", ON, [], WARNING, { disabled: false, body: null }],
+    ["refusal set + stored on, switched off: saves off, then the switch is disabled", ON,
+      [{ type: "patch", patch: { afterOf: false } }], WARNING, {
+        disabled: true,
+        body: {
+          id: 7, patch: {
+            is_enabled: true, every_seconds: 600,
+            payload: { message: "m", after_of_welcome: false, ...EXTRAS, delay_range: null },
+          },
+        },
+      }],
+    ["refusal set: switching on is refused", OFF, [{ type: "patch", patch: { afterOf: true } }], WARNING,
+      { disabled: false, body: null }],
+    ["OnlyFans control: switched on, it saves on", OFF, [{ type: "patch", patch: { afterOf: true } }], null, {
+      disabled: false,
+      body: {
+        id: 7, patch: {
+          is_enabled: true, every_seconds: 600,
+          payload: { message: "m", after_of_welcome: true, ...EXTRAS, delay_range: null },
+        },
+      },
+    }],
+  ])("%s", (_, rule, actions, refusal, want) => {
+    const s = run(rule, actions);
+    expect(afterOfDisabled(s, refusal)).toBe(want.disabled);
+    expect(welcomeIssues(s, refusal).refused).toBe(want.body === null);
+    expect(canSubmit(s, refusal)).toBe(want.body !== null);
+    expect(buildSave(s, rule, "a", refusal)).toEqual(want.body);
+  });
+});
+
+describe("DelayedWelcomeEditor names the Platform and warns about its native welcome", () => {
+  const get = relay.get as unknown as Mock;
+  const mount = (p: "onlyfans" | "fansly", payload: Record<string, unknown>) => {
+    platform.current = p;
+    get.mockResolvedValue({ rules: [RULE({ account_id: "acc" }, payload)] });
+    return render(createElement(QueryClientProvider,
+      { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+      createElement(DelayedWelcomeEditor, { accountId: "acc", onTouched: () => {} })));
+  };
+  afterEach(() => { cleanup(); vi.clearAllMocks(); });
+
+  it("Fansly, off: the warning, Fansly named, the switch disabled", async () => {
+    mount("fansly", { message: "m" });
+    expect(await screen.findByText(WARNING)).toBeTruthy();
+    const sw = screen.getByRole("switch", { name: /welcome message is message 1/ }) as HTMLButtonElement;
+    expect(sw.textContent).toContain("Fansly's welcome message is message 1");
+    expect(sw.disabled).toBe(true);
+    expect(screen.queryByText(/OnlyFans/)).toBeNull();
+  });
+
+  it("Fansly, stored on: switchable off, no claim of a check", async () => {
+    mount("fansly", { message: "m", after_of_welcome: true });
+    expect(await screen.findByText(WARNING)).toBeTruthy();
+    const sw = screen.getByRole("switch", { name: /welcome message is message 1/ }) as HTMLButtonElement;
+    expect(sw.disabled).toBe(false);
+    expect(screen.queryByText(/Checked once per run/)).toBeNull();
+  });
+
+  it("OnlyFans control: today's copy, no warning", async () => {
+    mount("onlyfans", { message: "m", after_of_welcome: true });
+    const sw = await screen.findByRole("switch", {
+      name: "OnlyFans' welcome message is message 1: while it is on, send only the follow-ups",
+    }) as HTMLButtonElement;
+    expect(sw.disabled).toBe(false);
+    expect(screen.getByText(/Checked once per run on OnlyFans/)).toBeTruthy();
+    expect(screen.queryByText(/can't be checked/)).toBeNull();
   });
 });

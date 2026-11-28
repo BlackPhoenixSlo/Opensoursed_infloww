@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { LifecycleMessageConfig } from "@/hooks/useLifecycleMessageConfig";
 
 import {
-  buildPayload, canSubmit, initLifecycle, lifecycleIssues, lifecycleReducer,
+  buildPayload, canSubmit, initLifecycle, lifecycleIssues, lifecycleReducer, lifecycleRefusal,
   type LifecycleAction, type LifecycleDraft, type LifecycleRules,
 } from "./lifecycleForm";
 
@@ -92,5 +92,39 @@ describe("one gate: lifecycleIssues / canSubmit / buildPayload agree", () => {
   });
   it("hours outside an expiry Trigger are not checked", () => {
     expect(canSubmit(run([{ type: "setHours", hours: "abc" }]), PLAIN)).toBe(true);
+  });
+});
+
+describe("a Platform that lacks the Trigger: refused on, always switchable off", () => {
+  const LACKS = "platform_lacks:renewal_state";
+  const NOT_HERE: LifecycleRules = { hours: { min: 1, max: 120 }, refusal: lifecycleRefusal("Nearing expiry", LACKS, null) };
+  const DISCOUNTED = cfg({ enabled: true, hours: 24, messages: [{ variants: ["hi"], follow_ups: [], discount: { percent: 10, months: 1 } }] });
+
+  it.each<[string, string | null, string | null, string | null]>([
+    ["the GET refusal wins and reads not on this platform", LACKS, "free page", "Nearing expiry: not on this platform"],
+    ["no GET refusal falls back to the free-page one", null, "free page", "free page"],
+    ["neither: nothing refused", null, null, null],
+  ])("%s", (_, platform, free, shown) => {
+    expect(lifecycleRefusal("Nearing expiry", platform, free)).toBe(shown);
+  });
+
+  it.each<[string, LifecycleAction[], LifecycleMessageConfig, LifecycleRules, unknown]>([
+    ["refusal on: switching on cannot be saved", [{ type: "setEnabled", on: true }], cfg(), NOT_HERE, null],
+    ["stored on: switched off it saves", [{ type: "setEnabled", on: false }], cfg({ enabled: true, text: "old" }), NOT_HERE,
+      { enabled: false, messages: [{ variants: ["old"], follow_ups: [], discount: null }], hours: 24, ...EXTRAS }],
+    ["off-recovery keeps the stored discount in the off save", [{ type: "setEnabled", on: false }], DISCOUNTED, NOT_HERE,
+      { enabled: false, messages: [{ variants: ["hi"], follow_ups: [], discount: { percent: 10, months: 1 } }], hours: 24, ...EXTRAS }],
+    ["OnlyFans control: no refusal, on saves", [{ type: "setEnabled", on: true }], cfg(), EXPIRY,
+      { enabled: true, messages: [{ variants: [EXAMPLE], follow_ups: [], discount: null }], hours: 24, ...EXTRAS }],
+  ])("%s", (_, actions, init, rules, body) => {
+    const s = run(actions, init);
+    expect(canSubmit(s, rules)).toBe(body !== null);
+    expect(buildPayload(s, rules)).toEqual(body);
+  });
+
+  it("a stored-on Trigger with the refusal still reads as refused until switched off", () => {
+    const s = run([], DISCOUNTED);
+    expect(lifecycleIssues(s, NOT_HERE).refused).toBe(true);
+    expect(buildPayload(s, NOT_HERE)).toBeNull();
   });
 });

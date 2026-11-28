@@ -35,7 +35,7 @@ vi.mock("@/contexts/UserContext", () => ({ useOptionalUser: () => (signedIn.user
 import { renderWithProviders } from "@/test-utils";
 import { AssistantProvider, AssistantWidget } from "./AssistantWidget";
 import { SUPPORT_EMPTY } from "./SupportPanel";
-import { SUPPORT_POLL_MS, SUPPORT_THREAD_POLL_MS } from "./supportReducer";
+import { SUPPORT_FALLBACK_ERROR, SUPPORT_POLL_MS, SUPPORT_THREAD_POLL_MS } from "./supportReducer";
 import { PageCreatorProvider } from "@/contexts/PageCreatorContext";
 
 const tree = () => <PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>;
@@ -86,6 +86,41 @@ async function openHelp() {
 }
 
 describe("Support tab", () => {
+  it("clears the open Support thread and draft when the principal changes", async () => {
+    hub.messages = [{ id: 1, from: "me", text: "Previous thread", at: "" }];
+    const view = renderWithProviders(tree());
+    await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Support" }));
+    await screen.findByText("Previous thread");
+    await userEvent.type(screen.getByRole("textbox", { name: "Message Support" }), "Previous draft");
+    await userEvent.upload(screen.getByLabelText("Choose photos"), new File(["img"], "a.png", { type: "image/png" }));
+    await screen.findByAltText("Photo to send");
+
+    signedIn.user = { username: "master", user_id: "u2" };
+    hub.messages = [];
+    view.rerender(tree());
+    await userEvent.click(await screen.findByRole("button", { name: "Support" }));
+    await screen.findByText(SUPPORT_EMPTY);
+    expect(screen.getByRole("textbox", { name: "Message Support" })).toHaveValue("");
+    expect(screen.queryByText("Previous thread")).toBeNull();
+    expect(screen.queryByAltText("Photo to send")).toBeNull();
+  });
+
+  it("keeps the draft and photo when the relay reports Support unavailable", async () => {
+    relayUpload.mockResolvedValueOnce({ configured: false });
+    await openHelp();
+    await userEvent.click(await screen.findByRole("button", { name: "Support" }));
+    await screen.findByText(SUPPORT_EMPTY);
+    await userEvent.upload(screen.getByLabelText("Choose photos"), new File(["img"], "a.png", { type: "image/png" }));
+    await screen.findByAltText("Photo to send");
+    const input = screen.getByRole("textbox", { name: "Message Support" });
+    await userEvent.type(input, "try again{Enter}");
+    await screen.findByText(SUPPORT_FALLBACK_ERROR);
+    expect(input).toHaveValue("try again");
+    expect(screen.getByAltText("Photo to send")).toBeInTheDocument();
+    expect(hub.messages).toEqual([]);
+  });
+
   it("is hidden when the hub is not configured", async () => {
     hub.configured = false;
     await openHelp();
@@ -203,6 +238,21 @@ describe("Support tab", () => {
     await act(async () => { vi.advanceTimersByTime(SUPPORT_THREAD_POLL_MS * 3); await new Promise((r) => setTimeout(r, 0)); });
     expect(threadCalls()).toBe(before + 1);
     vis.mockRestore();
+  });
+
+  it("skips polling while a thread request is pending", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/admin/support/unread") return Promise.resolve({ configured: true, unread: 0 });
+      if (path === "/admin/support/thread") return new Promise(() => {});
+      return Promise.resolve({});
+    });
+    await openHelp();
+    await userEvent.click(await screen.findByRole("button", { name: "Support" }));
+    const reads = () => relayGet.mock.calls.filter(([path]) => path === "/admin/support/thread").length;
+    await waitFor(() => expect(reads()).toBe(1));
+    await act(async () => { vi.advanceTimersByTime(SUPPORT_THREAD_POLL_MS * 2); });
+    expect(reads()).toBe(1);
   });
 
   it("a failed read is retried on the next poll", async () => {

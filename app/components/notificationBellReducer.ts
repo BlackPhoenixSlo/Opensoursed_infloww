@@ -1,3 +1,6 @@
+import { accountCan } from "@/lib/platform";
+import type { AccountMeta } from "@/lib/relay";
+
 export const BADGE_MAX = 999;
 
 export const OPEN_AGENCY_EVENT = "chatterly:open-agency-notifications";
@@ -71,6 +74,13 @@ export function markAllTargets(
   ids: readonly string[], countOf: CachedCount, readAt: (accountId: string) => number, since: number,
 ): string[] {
   return ids.filter((id) => !(countOf(id) === 0 && readAt(id) > since));
+}
+
+type PlatformAccount = Pick<AccountMeta, "id" | "platform">;
+
+export function markAllControl(liveIds: readonly string[], accounts: readonly PlatformAccount[]): { ids: string[]; shown: boolean } {
+  const ids = liveIds.filter((id) => accountCan(accounts, id, "notifications_read"));
+  return { ids, shown: liveIds.length === 0 || ids.length > 0 };
 }
 
 export function markAllStatus(failed: number, of: number): string | null {

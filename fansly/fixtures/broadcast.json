@@ -1,0 +1,365 @@
+{
+  "_source": "RECIPES.md 'Capture session 1126 (2026-11-26) — Phase 1b free actions' > '### Broadcast schedule / queue / history / cancel (§6.6) — W': the GET /message/broadcast/stats page shape; synthetic ids and text, one feed per walk rule keyed by the `before` cursor; the GET /message/broadcast/scheduled answer under `scheduled`, one row per queue rule",
+  "feeds": {
+    "walk": {
+      "0": {
+        "messages": [
+          {
+            "id": "900000000000004830",
+            "type": 3,
+            "content": "after the window",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1795338000,
+            "attachments": [],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          },
+          {
+            "id": "900000000000004829",
+            "type": 3,
+            "content": "Weekend Sale is LIVE",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1795113000,
+            "attachments": [],
+            "stats": {
+              "total": 12,
+              "delivered": 10,
+              "read": 4
+            },
+            "totalTipAmount": 5000
+          },
+          {
+            "id": "900000000000004828",
+            "type": 1,
+            "content": "not a broadcast row",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1795003200,
+            "attachments": [],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          }
+        ],
+        "accountMedia": [],
+        "accountMediaBundles": [],
+        "tips": [],
+        "tipGoals": []
+      },
+      "900000000000004828": {
+        "messages": [
+          {
+            "id": "900000000000004827",
+            "type": 3,
+            "content": "a broadcast with media",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1794902400,
+            "attachments": [
+              {
+                "contentType": 1,
+                "contentId": "900000000000004900",
+                "pos": 0
+              }
+            ],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          },
+          {
+            "id": "900000000000004826",
+            "type": 3,
+            "content": "good morning",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1794859200,
+            "attachments": [],
+            "stats": {
+              "total": 3,
+              "delivered": 3,
+              "read": 2
+            },
+            "totalTipAmount": 0
+          },
+          {
+            "id": "900000000000004825",
+            "type": 3,
+            "content": "twin one",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1794736800,
+            "attachments": [],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          },
+          {
+            "id": "900000000000004824",
+            "type": 3,
+            "content": "twin two",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1794650400,
+            "attachments": [],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          }
+        ],
+        "accountMedia": [],
+        "accountMediaBundles": [],
+        "tips": [],
+        "tipGoals": []
+      },
+      "900000000000004824": {
+        "messages": [
+          {
+            "id": "900000000000004823",
+            "type": 3,
+            "content": "before the window",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1793872800,
+            "attachments": [],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          },
+          {
+            "id": "900000000000004822",
+            "type": 3,
+            "content": "older still",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1793786400,
+            "attachments": [],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          }
+        ],
+        "accountMedia": [],
+        "accountMediaBundles": [],
+        "tips": [],
+        "tipGoals": []
+      },
+      "900000000000004822": {
+        "messages": [],
+        "accountMedia": [],
+        "accountMediaBundles": [],
+        "tips": [],
+        "tipGoals": []
+      }
+    },
+    "stalled": {
+      "0": {
+        "messages": [
+          {
+            "id": "900000000000004812",
+            "type": 3,
+            "content": "stall one",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1794736800,
+            "attachments": [],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          },
+          {
+            "id": "900000000000004811",
+            "type": 3,
+            "content": "stall two",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1794650400,
+            "attachments": [],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          }
+        ],
+        "accountMedia": [],
+        "accountMediaBundles": [],
+        "tips": [],
+        "tipGoals": []
+      },
+      "900000000000004811": {
+        "messages": [
+          {
+            "id": "900000000000004812",
+            "type": 3,
+            "content": "stall one",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1794736800,
+            "attachments": [],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          },
+          {
+            "id": "900000000000004811",
+            "type": 3,
+            "content": "stall two",
+            "groupId": "900000000000004700",
+            "senderId": "900000000000000001",
+            "correlationId": "900000000000004700",
+            "createdAt": 1794650400,
+            "attachments": [],
+            "stats": {
+              "total": 1,
+              "delivered": 1,
+              "read": 0
+            },
+            "totalTipAmount": 0
+          }
+        ],
+        "accountMedia": [],
+        "accountMediaBundles": [],
+        "tips": [],
+        "tipGoals": []
+      }
+    },
+    "empty": {
+      "0": {
+        "messages": [],
+        "accountMedia": [],
+        "accountMediaBundles": [],
+        "tips": [],
+        "tipGoals": []
+      }
+    },
+    "malformed": {
+      "0": {
+        "accountMedia": [],
+        "accountMediaBundles": [],
+        "tips": [],
+        "tipGoals": []
+      }
+    }
+  },
+  "scheduled": {
+    "scheduledBroadcastMessages": [
+      {
+        "id": "900000000000004955",
+        "groupId": "900000000000004701",
+        "accountId": "900000000000000001",
+        "status": 1,
+        "messageTemplate": "{\"type\":1,\"attachments\":[],\"likes\":[],\"content\":\"Flash sale Friday\",\"groupId\":\"900000000000004701\",\"scheduledFor\":1796407200000,\"inReplyTo\":null,\"gatewayMetadata\":{}}",
+        "version": 1,
+        "scheduledFor": 1796407200000
+      },
+      {
+        "id": "900000000000004954",
+        "groupId": "900000000000004701",
+        "accountId": "900000000000000001",
+        "status": 3,
+        "messageTemplate": "{\"type\":1,\"attachments\":[],\"likes\":[],\"content\":\"cancelled before it went out\",\"groupId\":\"900000000000004701\",\"scheduledFor\":1796126400000,\"inReplyTo\":null,\"gatewayMetadata\":{}}",
+        "version": 1,
+        "scheduledFor": 1796126400000
+      },
+      {
+        "id": "900000000000004953",
+        "groupId": "900000000000004701",
+        "accountId": "900000000000000001",
+        "status": 1,
+        "messageTemplate": "{\"type\":1,\"attachments\":[],\"likes\":[],\"content\":\"Cyber Monday bundle\",\"groupId\":\"900000000000004701\",\"scheduledFor\":1796117400000,\"inReplyTo\":null,\"gatewayMetadata\":{}}",
+        "version": 1,
+        "scheduledFor": 1796117400000
+      },
+      {
+        "id": "900000000000004952",
+        "groupId": "900000000000004701",
+        "accountId": "900000000000000001",
+        "status": 2,
+        "messageTemplate": "{\"type\":1,\"attachments\":[],\"likes\":[],\"content\":\"a status the capture never showed\",\"groupId\":\"900000000000004701\",\"scheduledFor\":1796169600000,\"inReplyTo\":null,\"gatewayMetadata\":{}}",
+        "version": 1,
+        "scheduledFor": 1796169600000
+      },
+      {
+        "id": "900000000000004951",
+        "groupId": "900000000000004701",
+        "accountId": "900000000000000001",
+        "status": 1,
+        "messageTemplate": "{\"type\":1,\"content\":\"half a templ",
+        "version": 1,
+        "scheduledFor": 1796310000000
+      },
+      {
+        "id": "900000000000004950",
+        "groupId": "900000000000004701",
+        "accountId": "900000000000000001",
+        "status": 1,
+        "messageTemplate": "{\"type\":1,\"attachments\":[],\"likes\":[],\"content\":\"Good morning loves\",\"groupId\":\"900000000000004701\",\"scheduledFor\":1796025600000,\"inReplyTo\":null,\"gatewayMetadata\":{}}",
+        "version": 1,
+        "scheduledFor": 1796025600000
+      }
+    ],
+    "groups": [
+      {
+        "id": "900000000000004701",
+        "type": 3,
+        "groupFlags": 32,
+        "groupFlagsMetadata": "",
+        "users": [
+          {
+            "userId": "900000000000000001",
+            "permissionFlags": 65535
+          }
+        ],
+        "recipients": [
+          {
+            "recipientId": "900000000000004702",
+            "type": 30000
+          }
+        ]
+      }
+    ]
+  }
+}

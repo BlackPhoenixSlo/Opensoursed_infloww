@@ -37,6 +37,7 @@ interface LifecycleMessageResponse {
   kind: LifecycleKind;
   config: LifecycleMessageConfig;
   defaults: LifecycleMessageConfig;
+  refusal: string | null;
 }
 
 export interface LifecycleBuyer {

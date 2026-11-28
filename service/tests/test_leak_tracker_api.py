@@ -10,6 +10,7 @@ import uuid  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
+from typing import get_args  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 
 import httpx  # noqa: E402
@@ -21,6 +22,7 @@ import accounts as account_registry  # noqa: E402
 import employees  # noqa: E402
 import account_page  # noqa: E402
 import leak_tracker  # noqa: E402
+import leak_tracker_api  # noqa: E402
 import platforms  # noqa: E402
 import relay_host  # noqa: E402
 import tenant_keys  # noqa: E402
@@ -393,6 +395,7 @@ async def _seed_scope() -> str:
 
 
 SCOPED_ID = asyncio.run(_seed_scope())
+account_registry.account_dir(SECOND).mkdir(exist_ok=True)
 account_registry.save_meta(FANSLY, {"id": FANSLY, "nickname": "creator_a3", "platform": "fansly"})
 SCOPED = fx.login_chatter("lt_scoped")
 EMP_SCOPED = asyncio.run(employees.get_or_create_mirror_employee(
@@ -534,7 +537,7 @@ def case_the_suggestion_is_the_live_identity_verified_or_empty_unverified():
     with _tracker() as t, _live({CREATOR: MIA_LIVE, FANSLY: MIA_LIVE}):
         body = OWNER_A.get(f"/admin/leaks/watches/{CREATOR}").json()
         assert body == {"tracked": False, "identity": None, "synced": False, "lanes": None, "this_week": None,
-                        "next_refresh_at": None, "removal": None, "offer": None, "leaks": [], "next_cursor": None, "stale": False, "fetched_at": None,
+                        "next_refresh_at": None, "last_checked_at": None, "removal": None, "offer": None, "leaks": [], "next_cursor": None, "stale": False, "fetched_at": None,
                         "suggested": {"username": "miavale", "display_name": "Mia Vale", "verified": True}}, body
         body = OWNER_A.get(f"/admin/leaks/watches/{SECOND}").json()
         assert body["suggested"] == empty, "no live session: typed and unverified"
@@ -664,7 +667,7 @@ def case_an_update_keeps_the_watch_id_and_refreshes_consent():
     assert row.display_name == "Mia" and row.synced_at < row.updated_at and row.synced_paused is False
 
 
-def case_concurrent_first_saves_do_not_share_a_refused_watch():
+def case_concurrent_save_of_a_refused_watch_returns_conflict():
     from server import app
 
     _connect()
@@ -696,13 +699,12 @@ def case_concurrent_first_saves_do_not_share_a_refused_watch():
             await asyncio.wait({second}, timeout=0.4)
             release.set()
             rejected, accepted = await asyncio.gather(first, second)
-        assert (rejected.status_code, accepted.status_code) == (422, 200)
+        assert (rejected.status_code, accepted.status_code) == (422, 409)
         return upstream
 
     with _tracker(), _live({}):
         upstream = asyncio.run(race())
-    (row,) = _watches()
-    assert upstream == {row.watch_id: row.display_name} == {row.watch_id: "Accepted"}
+    assert not upstream and not _watches()
 
 
 def case_a_shared_creator_watch_uses_the_named_roster_agency():
@@ -1015,7 +1017,7 @@ def case_a_malformed_creator_entry_is_unreadable():
     mia, rowan = CREATORS["response"]["creators"]
     for label, bad in [("counts a list", {"counts": [1, 2]}),
                        ("count a string", {"counts": {**mia["counts"], "live": "1"}}),
-                       ("count a bool", {"counts": {**mia["counts"], "new_today": True}}),
+                       ("count a bool", {"counts": {**mia["counts"], "live": True}}),
                        ("count missing", {"counts": {k: v for k, v in mia["counts"].items() if k != "live"}}),
                        ("timestamp a number", {"last_checked_at": 1764216300}),
                        ("paused_since an object", {"paused_since": {"at": "2026-11-20"}}),
@@ -1061,9 +1063,10 @@ def case_the_roster_passes_this_week_through_and_a_bad_this_week_reads_null():
         assert body["rows"][2]["this_week"] is None, label
 
 
-def case_a_pre_change_service_without_this_week_or_next_refresh_at_still_reads():
+def case_service_without_this_week_next_refresh_at_or_new_today_still_reads():
     mia, rowan = CREATORS["response"]["creators"]
-    old = [{**{k: v for k, v in c.items() if k not in ("this_week", "next_refresh_at")},
+    old = [{**{k: v for k, v in c.items() if k not in ("this_week", "next_refresh_at", "counts")},
+            "counts": {k: v for k, v in c["counts"].items() if k != "new_today"},
             "today": {"day": "2026-11-27", "state": "complete", "new": 1, "first_scan": 0, "came_back": 0, "gone": 0}}
            for c in (mia, rowan)]
     _connect()
@@ -1271,6 +1274,10 @@ def case_a_save_answered_410_drops_the_row_and_says_so():
         t.answer = PUT_CREATED
         assert _enrol().status_code == 200
     assert len(_watches()) == 1
+
+
+def case_every_refusal_kind_has_an_http_mapping():
+    assert set(leak_tracker_api.REFUSAL_HTTP) == set(get_args(leak_tracker.RefusalKind))
 
 
 if __name__ == "__main__":

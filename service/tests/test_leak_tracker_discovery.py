@@ -5,6 +5,7 @@ _harness.bootstrap()
 
 import json  # noqa: E402
 import os  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 
 import httpx  # noqa: E402
 
@@ -321,7 +322,7 @@ def case_refresh_cooldown_is_429_with_retry_after_and_next_refresh_at():
             _enrol_two(t)
             t.routes[MIA_REFRESH] = answer
             r = _refresh()
-        assert (r.status_code, r.json()) == (429, {"detail": "Refreshed recently",
+        assert (r.status_code, r.json()) == (429, {"detail": "Refreshed recently", "kind": "refresh_cooldown",
                                                     "next_refresh_at": "2026-11-28T04:00:00Z"}), (label, r.text)
         assert r.headers.get("retry-after") == retry, (label, r.headers)
 
@@ -332,7 +333,10 @@ def case_refresh_rate_limited_is_429_try_again_shortly():
         _enrol_two(t)
         t.routes[MIA_REFRESH] = {**LIMITED, "method": "POST", "headers": {"Retry-After": "30"}}
         r = _refresh()
-    assert (r.status_code, r.json()) == (429, {"detail": "Try again shortly", "next_refresh_at": None}), r.text
+    assert r.status_code == 429 and r.json()["detail"] == "Try again shortly", r.text
+    assert r.json()["kind"] == "rate_limited"
+    until = datetime.fromisoformat(r.json()["next_refresh_at"])
+    assert 25 <= (until - datetime.now(timezone.utc)).total_seconds() <= 30
     assert r.headers.get("retry-after") == "30"
 
 

@@ -13,7 +13,8 @@ const ACCOUNTS = [
   { id: "acc-a", nickname: "Model A", has_session: true, is_active: true },
   { id: "acc-b", nickname: "Model B", has_session: true, is_active: true },
 ];
-vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => ACCOUNTS }));
+let accounts: Array<(typeof ACCOUNTS)[number] & { platform?: string }> = ACCOUNTS;
+vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => accounts }));
 vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => ({ data: undefined }) }));
 
 import MassMessagesTab from "@/components/settings/MassMessagesTab";
@@ -66,6 +67,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  accounts = ACCOUNTS;
   vi.restoreAllMocks();
   expect(relayPost).not.toHaveBeenCalled();
 });
@@ -253,5 +255,59 @@ describe("bulk unsend on the Mass messages tab", () => {
     await answer("Unsend");
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "1 of 3 unsends failed. Those broadcasts may still be live — refresh and retry.");
+  });
+});
+
+describe("which Creators the Mass messages tab reads", () => {
+  const FANSLY = { id: "acc-f", nickname: "Nova Reyes", has_session: true, is_active: true, platform: "fansly" };
+  const NO_HISTORY = { id: "acc-x", nickname: "Model X", has_session: true, is_active: true, platform: "mym" };
+  const BIG = ["900539700124344321", "900539700124344322"];
+  const reads = () => relayGet.mock.calls.map(([p]) => String(p)).filter((p) => p.startsWith("/admin/mass-messages"))
+    .map((p) => new URLSearchParams(p.split("?")[1]).get("account_id"));
+
+  function serve(extra: Record<string, Record<string, unknown>>) {
+    const base = relayGet.getMockImplementation()!;
+    relayGet.mockImplementation((path: string) => {
+      const aid = new URLSearchParams(String(path).split("?")[1]).get("account_id") ?? "";
+      return String(path).startsWith("/admin/mass-messages") && extra[aid]
+        ? Promise.resolve({ account_id: aid, days_back: 30, items: ITEMS[aid] ?? [], ...extra[aid] })
+        : base(path);
+    });
+  }
+
+  it("a Creator whose Platform lacks mass history gets no query and no chip", async () => {
+    accounts = [...ACCOUNTS, NO_HISTORY];
+    await mount();
+    expect(reads().sort()).toEqual(["acc-a", "acc-b"]);
+    expect(screen.queryByRole("button", { name: "Model X" })).toBeNull();
+    expect(screen.getByRole("button", { name: "All (2)" })).toBeTruthy();
+  });
+
+  it("two adjacent big string ids render as two rows, neither offering an unsend", async () => {
+    accounts = [...ACCOUNTS, FANSLY];
+    serve({ "acc-f": { items: BIG.map((id) => ({ id, date: ago(5 * H), text: "nova hello", isFree: true, canUnsend: false, unsendSeconds: 0 })) } });
+    const keyClash = vi.spyOn(console, "error");
+    await mount();
+    await waitFor(() => expect(screen.getAllByText("nova hello")).toHaveLength(2));
+    expect(keyClash.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+    expect(button(/^Unsend all/).textContent).toContain("(9)");
+    const row = screen.getAllByText("nova hello")[0].closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Actions" }));
+    expect((screen.getByRole("menuitem", { name: SM_MASS_ACTIONS.unsend.label }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("the more-not-loaded line names only the Creator whose last read was incomplete", async () => {
+    serve({ "acc-a": { hasMore: true, incomplete: true }, "acc-b": { hasMore: false, incomplete: false } });
+    await mount();
+    expect(await screen.findByText("Older broadcasts not loaded for Model A.")).toBeTruthy();
+    expect(screen.queryByText(/Model B\./)).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Model B" })); });
+    expect(screen.queryByText(/Older broadcasts not loaded/)).toBeNull();
+  });
+
+  it("no line when every read was whole or did not say", async () => {
+    serve({ "acc-a": { hasMore: false, incomplete: false } });
+    await mount();
+    expect(screen.queryByText(/Older broadcasts not loaded/)).toBeNull();
   });
 });

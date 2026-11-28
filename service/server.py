@@ -524,7 +524,9 @@ async def _account_isolation_middleware(request: Request, call_next):
 
     # `is_account` raises rather than guess if it can't read the tree: a gate that can't answer must not allow.
     # A Creator a data Cell doesn't own is route_guard's 409 not_owner: the app reloads Placement on it, not on 403.
-    stray = {qaid} if _CELLS and qaid and not cell_mode.is_control() and qaid not in cell_mode.owned_ids() else set()
+    stray = set()
+    if _CELLS and not cell_mode.is_control():
+        stray = {v for v in (qaid, cell_mode.account_path_param(request)) if v} - cell_mode.owned_ids()
     if any(account_registry.is_account(c) for c in candidates - allowed_ids - stray):
         if _leak_tracker_api.owns(path):
             return _leak_tracker_api.hidden()
@@ -3401,15 +3403,10 @@ async def of_notifications_mark_read():
     """Mark all of the Creator's OF notifications read, as OF web does when its All notifications tab opens
     (the bell's badge). Answers OF's body (`{counters: {all, <type>: n}}`, the `/count` shape); drops the cached
     count and feed, whose read flags it changed. A non-2xx from OF is `_proxy`'s 502 and drops nothing. Unpaced:
-    a read flip reaches no fan (see `of_mark_chat_read`). Fansly: the shim's `/notifications/ack` (same answer)."""
+    a read flip reaches no fan (see `of_mark_chat_read`). Fansly: refused 501 before any client call."""
     aid = _current_aid()
-
-    def call():
-        mark = getattr(_get_client(), "notifications_read", None)
-        if mark is None:
-            raise HTTPException(status_code=501, detail="mark notifications read: not on this platform")
-        return mark()
-    result = await asyncio.to_thread(_proxy, call)
+    side_effect_gate.refuse_if_platform_lacks(aid, "notifications_read", "mark notifications read")
+    result = await asyncio.to_thread(_proxy, lambda: _get_client().notifications_read())
     relay_cache.invalidate("notifications_count", aid)
     relay_cache.invalidate("notifications", aid)
     return result
@@ -4246,6 +4243,37 @@ async def of_mass_message_history(
     return resp
 
 
+async def _walk_mass_history(aid: str, days_back: int, limit: int) -> int:
+    import mass_broadcast_cache as cache
+    end = datetime.utcnow()
+    start = end - timedelta(days=days_back)
+    fmt = "%Y-%m-%d %H:%M:%S"
+    client = _load_client(aid)
+
+    def _fetch():
+        with _priority_lane(aid):
+            return client.mass_message_history(
+                start_date=start.strftime(fmt),
+                end_date=end.strftime(fmt),
+                limit=limit, offset=0,
+            )
+    # Blocking OF round-trip off the event loop so a stale-cache refresh can't freeze vault-open / chat-click for everyone.
+    resp = await asyncio.to_thread(_fetch)
+    items = (resp.get("items") if isinstance(resp, dict) else None) or []
+    written = await cache.upsert_many(aid, items)
+    if isinstance(resp, dict) and isinstance(resp.get("hasMore"), bool):
+        cache.note_walk(aid, days_back, limit, has_more=resp["hasMore"], incomplete=bool(resp.get("incomplete")))
+    return written
+
+
+async def _mass_rows(aid: str, days_back: int, limit: int, **extra: Any) -> dict:
+    import mass_broadcast_cache as cache
+    since = datetime.utcnow() - timedelta(days=days_back)
+    items = await cache.list_for_account(aid, since=since, limit=limit)
+    return {"account_id": aid, "days_back": days_back, **extra, "items": items,
+            **(cache.last_walk(aid, days_back, limit) or {})}
+
+
 @app.get("/admin/mass-messages")
 async def admin_mass_messages_list(
     request: Request,
@@ -4259,35 +4287,17 @@ async def admin_mass_messages_list(
     snappy across reloads. Pair with POST /admin/mass-messages/refresh
     to force a fresh pull from OF and re-warm the cache.
 
-    Safety net: if the cache hasn't been refreshed within TTL_SECONDS
-    (1 day), pull from OF once before serving so the UI doesn't drift
-    silently when no-one clicks Refresh."""
+    Pulls once before serving when the cache is stale, or on Fansly when this window/limit has no walk flags yet."""
     import mass_broadcast_cache as cache
     aid = account_id or _resolve_account_id(request)
     side_effect_gate.refuse_if_platform_lacks(aid, "mass_message_history", "mass message history")
-    if await cache.is_stale(aid):
+    if await cache.is_stale(aid) or (platforms.for_account(aid).mass_walk_flags_need_walk
+                                     and cache.last_walk(aid, days_back, limit) is None):
         try:
-            end = datetime.utcnow()
-            start = end - timedelta(days=days_back)
-            fmt = "%Y-%m-%d %H:%M:%S"
-            client = _load_client(aid)
-
-            def _fetch():
-                with _priority_lane(aid):
-                    return client.mass_message_history(
-                        start_date=start.strftime(fmt),
-                        end_date=end.strftime(fmt),
-                        limit=limit, offset=0,
-                    )
-            # Blocking OF round-trip off the event loop so a stale-cache refresh can't freeze vault-open / chat-click for everyone.
-            resp = await asyncio.to_thread(_fetch)
-            items = (resp.get("items") if isinstance(resp, dict) else None) or []
-            await cache.upsert_many(aid, items)
+            await _walk_mass_history(aid, days_back, limit)
         except Exception as e:
             log.warning("mass_broadcast_cache safety-net refresh failed for %s: %s", aid, e)
-    since = datetime.utcnow() - timedelta(days=days_back)
-    items = await cache.list_for_account(aid, since=since, limit=limit)
-    return {"account_id": aid, "days_back": days_back, "items": items}
+    return await _mass_rows(aid, days_back, limit)
 
 
 @app.post("/admin/mass-messages/refresh")
@@ -4302,22 +4312,10 @@ async def admin_mass_messages_refresh(
     The frontend calls this when the user clicks Refresh. Done as a
     single HTTP call (vs. fetching from OF and then re-reading the cache)
     so the UI gets the new state in one roundtrip."""
-    import mass_broadcast_cache as cache
     aid = account_id or _resolve_account_id(request)
     side_effect_gate.refuse_if_platform_lacks(aid, "mass_message_history", "mass message history")
-    end = datetime.utcnow()
-    start = end - timedelta(days=days_back)
-    fmt = "%Y-%m-%d %H:%M:%S"
-    client = _load_client(aid)
     try:
-        def _fetch():
-            with _priority_lane(aid):
-                return client.mass_message_history(
-                    start_date=start.strftime(fmt),
-                    end_date=end.strftime(fmt),
-                    limit=limit, offset=0,
-                )
-        resp = await asyncio.to_thread(_fetch)
+        written = await _walk_mass_history(aid, days_back, limit)
     except OFAPIError as e:
         r = e.response
         status = r.status_code if r is not None else 500
@@ -4326,11 +4324,7 @@ async def admin_mass_messages_refresh(
             status_code=502,
             detail={"upstream_status": status, "upstream_body": body},
         )
-    items = (resp.get("items") if isinstance(resp, dict) else None) or []
-    written = await cache.upsert_many(aid, items)
-    since = datetime.utcnow() - timedelta(days=days_back)
-    rows = await cache.list_for_account(aid, since=since, limit=limit)
-    return {"account_id": aid, "days_back": days_back, "written": written, "items": rows}
+    return await _mass_rows(aid, days_back, limit, written=written)
 
 
 

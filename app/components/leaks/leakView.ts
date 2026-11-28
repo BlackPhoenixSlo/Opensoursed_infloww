@@ -1,6 +1,7 @@
 import { parseUtc } from "@/lib/format";
 
-import type { LeakWeek } from "./leakCoverage";
+import type { IdentityStart } from "./IdentityForm";
+import type { LeakLane, LeakWeek } from "./leakCoverage";
 import type { Removal, RemovalOffer } from "./removalOffer";
 
 export const NOT_TRACKED = "Not tracked";
@@ -15,7 +16,7 @@ export type LeakCounts = {
   gone: number;
   listed: number;
   not_checked: number;
-  new_today: number;
+  new_today?: number;
   found_on_first_scan: number;
   came_back_30d: number;
 };
@@ -66,6 +67,17 @@ export type LeakPreview = { vertical: "images" | "videos"; seen_at: string };
 export type LeakPage = { leaks: Leak[] | null; next_cursor: string | null; stale: boolean };
 
 export type LeakRemovalPage = LeakPage & { removal: Removal | null; offer: RemovalOffer | null };
+
+export type LeakWatchRead = LeakRemovalPage & {
+  tracked: boolean;
+  identity: (IdentityStart & { platform: string; on: boolean }) | null;
+  suggested: IdentityStart | null;
+  synced: boolean;
+  lanes: LeakLane[] | null;
+  this_week: LeakWeek | null;
+  next_refresh_at: string | null;
+  last_checked_at: string | null;
+};
 
 export type LeakRoster = {
   rows: LeakRosterRow[];

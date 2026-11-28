@@ -82,12 +82,13 @@ export interface SupportState {
   phase: "loading" | "ready" | "failed";
   messages: SupportMessage[];
   photos: PendingPhoto[];
+  converting: number;
   sending: boolean;
   error: string | null;
 }
 
 export const initialSupportState: SupportState = {
-  phase: "loading", messages: [], photos: [], sending: false, error: null,
+  phase: "loading", messages: [], photos: [], converting: 0, sending: false, error: null,
 };
 
 export const TOO_MANY_PHOTOS = `Up to ${MAX_SUPPORT_PHOTOS} photos per message.`;
@@ -97,9 +98,10 @@ export type SupportAction =
   | { type: "loaded"; messages: SupportMessage[] }
   | { type: "load_failed"; error: string }
   | { type: "polled"; messages: SupportMessage[] }
-  | { type: "photos_added"; photos: PendingPhoto[]; requested: number }
+  | { type: "photos_converting"; count: number }
+  | { type: "photos_added"; photos: PendingPhoto[]; requested: number; converted: number }
   | { type: "photo_removed"; key: string }
-  | { type: "photo_failed"; error: string }
+  | { type: "photo_failed"; converted: number; error: string }
   | { type: "send_started" }
   | { type: "sent"; messages: SupportMessage[]; keys: string[] }
   | { type: "send_failed"; error: string };
@@ -111,23 +113,28 @@ export function supportReducer(s: SupportState, a: SupportAction): SupportState 
     case "loaded":
       return { ...s, phase: "ready", messages: mergeMessages(s.messages, a.messages), error: null };
     case "polled": {
+      if (s.phase === "failed") return { ...s, phase: "ready", messages: mergeMessages(s.messages, a.messages), error: null };
       const messages = mergeMessages(s.messages, a.messages);
       return messages === s.messages ? s : { ...s, messages };
     }
     case "load_failed":
       return { ...s, phase: s.messages.length > 0 ? "ready" : "failed", error: a.error };
+    case "photos_converting":
+      return { ...s, converting: s.converting + Math.max(0, a.count) };
     case "photos_added": {
-      const room = photoRoom(s);
+      const converting = Math.max(0, s.converting - a.converted);
+      const room = photoRoom({ ...s, converting });
       const photos = a.photos.slice(0, room);
       const error = Math.max(a.requested, a.photos.length) > room ? TOO_MANY_PHOTOS : s.error;
-      return photos.length === 0 && error === s.error ? s : { ...s, photos: [...s.photos, ...photos], error };
+      if (photos.length === 0 && error === s.error && converting === s.converting) return s;
+      return { ...s, converting, photos: photos.length ? [...s.photos, ...photos] : s.photos, error };
     }
     case "photo_removed":
       return { ...s, photos: s.photos.filter((p) => p.key !== a.key) };
     case "photo_failed":
-      return { ...s, error: a.error };
+      return { ...s, converting: Math.max(0, s.converting - a.converted), error: a.error };
     case "send_started":
-      return s.phase !== "loading" && !s.sending ? { ...s, sending: true, error: null } : s;
+      return s.phase !== "loading" && !s.sending && s.converting === 0 ? { ...s, sending: true, error: null } : s;
     case "sent": {
       const keep = new Set(a.keys);
       return {
@@ -175,10 +182,10 @@ export function supportEntryReducer(s: SupportEntry, a: SupportEntryAction): Sup
   }
 }
 
-export const photoRoom = (s: SupportState): number => Math.max(0, MAX_SUPPORT_PHOTOS - s.photos.length);
+export const photoRoom = (s: SupportState): number => Math.max(0, MAX_SUPPORT_PHOTOS - s.photos.length - s.converting);
 
 export const canSend = (s: SupportState, draft: string): boolean =>
-  s.phase !== "loading" && !s.sending && (draft.trim().length > 0 || s.photos.length > 0);
+  s.phase !== "loading" && !s.sending && s.converting === 0 && (draft.trim().length > 0 || s.photos.length > 0);
 
 export interface SupportPayload {
   text: string;

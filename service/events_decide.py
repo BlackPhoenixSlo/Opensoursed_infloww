@@ -203,6 +203,7 @@ SSE_TYPES = frozenset({
     "creator_refreshed",
     "chat_read_changed",
     "chat_restrict_changed",
+    "chat_message_deleted",
 }) | STATE_TYPES
 
 ANY_SCOPE_TYPES = frozenset({"creator_warmed", "creator_refreshed", "chat_read_changed", "chat_restrict_changed",

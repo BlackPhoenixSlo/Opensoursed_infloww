@@ -23,7 +23,7 @@ export function GrowthRailFrame({ title, creator: { accounts, accountId, setAcco
           onChange={setAccountId}
           className="md:flex w-[260px] border-r border-border"
         />
-        <div className="min-w-0 flex-1 px-6 py-4">
+        <div className="min-w-0 flex-1 px-6 py-4 md:h-[calc(var(--vvh)-var(--shell-top))] md:overflow-y-auto">
           {accounts.length > 0 && (
             <IfCreatorSelect accounts={accounts} value={accountId} onChange={setAccountId} className="mb-4 md:hidden" />
           )}

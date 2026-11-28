@@ -624,6 +624,10 @@ def _country(p: dict[str, Any] | None, geo: Geo) -> str | None:
     return (geo(p) or p.get("verified_geo") or None) if p else None
 
 
+def _near(p: dict[str, Any], want_geo: str | None, geo: Geo) -> bool:
+    return not want_geo or _country(p, geo) in (want_geo, None)
+
+
 def _loads(data: dict[str, Any], deactivated: frozenset[str],
            skip: str | None = None) -> tuple[Callable[[dict[str, Any]], str], dict[str, int]]:
     entries = data.get("proxies", [])
@@ -639,7 +643,7 @@ def _pick_pool(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
                deactivated: frozenset[str]) -> dict[str, Any]:
     key, used = _loads(data, deactivated, skip=aid)
     want_geo = _country(like, geo)
-    same = [p for p in candidates if want_geo and _country(p, geo) in (want_geo, None)]
+    same = [p for p in candidates if _near(p, want_geo, geo)]
     candidates = same or candidates
     least = min(used.get(key(p), 0) for p in candidates)
     return rng.choice([p for p in candidates if used.get(key(p), 0) == least])
@@ -651,14 +655,11 @@ def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid:
                     probes: int | None = None, first_tier: int | None = None) -> dict[str, Any] | None:
     want_geo = _country(like, geo)
 
-    def near(p: dict[str, Any]) -> bool:
-        return not want_geo or _country(p, geo) in (want_geo, None)
-
     for tier in _tiers(candidates, first_tier):
         left = list(tier)
         spare = None
         while left:
-            if spare and not any(near(p) for p in left):
+            if spare and not any(_near(p, want_geo, geo) for p in left):
                 return spare
             pick = _pick_pool(left, data, aid, rng, like=like, geo=geo, deactivated=deactivated)
             label = pick.get("label") or ""
@@ -668,7 +669,7 @@ def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid:
                 checked[label] = bool(verify(pick))
                 probes = None if probes is None else probes - 1
             if checked[label]:
-                if near(pick):
+                if _near(pick, want_geo, geo):
                     return pick
                 spare = spare or pick
             left = [p for p in left if p.get("label") != label]
@@ -774,28 +775,32 @@ def rebalance_step(*, bad: set[str], due: set[str], geo: Geo, verify: Verify, de
     rng = rng or random
     data = load()
     pool = [p for p in data["proxies"] if is_pool(p)]
+    if any(p.get("label") in bad or p.get("label") in due for p in pool):
+        return None
     key, used = _loads(data, deactivated)
     for t in tiers:
         tier = [p for p in pool if _tier(p) == t]
-        if not tier or any(p.get("label") in bad or p.get("label") in due for p in tier):
-            continue
-        source = max(tier, key=lambda p: used.get(key(p), 0))
-        want_geo = _country(source, geo)
-        idle = [p for p in tier if not used.get(key(p), 0)
-                and (not want_geo or _country(p, geo) in (want_geo, None))]
-        mover = next((a for a in reversed(_ids_on(source)) if a not in deactivated), None)
-        if used.get(key(source), 0) < 2 or not idle or mover is None:
+        idle_peers = [p for p in tier if not used.get(key(p), 0)]
+        stacked = [p for p in tier if used.get(key(p), 0) >= 2]
+        for source in sorted(stacked, key=lambda p: -used.get(key(p), 0)):
+            want_geo = _country(source, geo)
+            idle = [p for p in idle_peers if _near(p, want_geo, geo)]
+            mover = next((a for a in reversed(_ids_on(source)) if a not in deactivated), None)
+            if idle and mover is not None:
+                break
+        else:
             continue
         target = _pick_answering(idle, data, mover, rng, like=source, geo=geo, verify=verify, checked={},
                                  deactivated=deactivated, probes=REBALANCE_PROBES)
-        if target is None or (want_geo and _country(target, geo) not in (want_geo, None)):
+        if target is None or not _near(target, want_geo, geo):
             continue
         src, dst = source["label"], target["label"]
         with _lock:
             data = _load_for_write()
             key, used = _loads(data, deactivated)
             now_src, now_dst = _by_label(data, src), _by_label(data, dst)
-            if not (is_pool(now_src) and mover in _ids_on(now_src) and is_pool(now_dst)
+            if not (is_pool(now_src) and mover in _ids_on(now_src) and used.get(key(now_src), 0) >= 2
+                    and is_pool(now_dst)
                     and not used.get(key(now_dst), 0)):
                 return None
             _bind(data, dst, mover)

@@ -28,6 +28,9 @@ ALBUM = "900539700124344600"
 SCHEDULED_POST = "900539700124344700"
 LIST = "900539700124344710"
 FIRST_NOTIFICATION = 900539700124344720
+FIRST_BROADCAST = 900539700124344800
+BROADCAST_GROUP = "900539700124344790"
+SCHEDULED_BROADCAST = "900539700124344902"
 NAME = "Nova Reyes"
 THREAD = {"route": f"/messages-pro/{ACCOUNT}/{FAN}", "creator": NAME}
 SESSION = {"token": "demo-shots-throwaway", "user_agent": "demo-shots", "device_id": "demo-shots",
@@ -41,6 +44,8 @@ LINES = [
     (12, True, "wow, love it", None),
     (4, False, "more coming tonight", None),
 ]
+BROADCASTS = [(2, "new beach set just dropped, check your DMs"), (6, "thank you for 1k fans, you're the best")]
+QUEUED_BROADCAST = (3, "flash sale this weekend, watch your DMs")
 VAULT_FILES = ["media/media-05.jpg", "media/media-09.jpg", "media/media-17.jpg", "media/media-22.jpg"]
 
 
@@ -86,6 +91,7 @@ def raw_payloads(now: datetime) -> dict[str, Any]:
                  "totalTipAmount": 0,
                  "attachments": [] if m is None else [{"contentType": 1, "contentId": grants[m]["id"]}]}
                 for i, (minutes, from_fan, text, m) in enumerate(LINES)][::-1]
+    queued_at = int((now + timedelta(days=QUEUED_BROADCAST[0])).timestamp() * 1000)
     return {
         "me": me, "accounts": [me, fan], "media": media,
         "groups": {"data": [{"groupId": GROUP, "partnerAccountId": FAN, "partnerUsername": fan["username"],
@@ -98,6 +104,18 @@ def raw_payloads(now: datetime) -> dict[str, Any]:
                                           "scheduledFor": int((now + timedelta(days=2)).timestamp() * 1000),
                                           "postTemplate": {"content": "beach set drops Friday"}}]},
         "lists": [{"id": LIST, "label": "Top fans"}],
+        "broadcasts": {"messages": [
+            {"id": str(FIRST_BROADCAST + len(BROADCASTS) - 1 - i), "type": 3, "content": text,
+             "groupId": BROADCAST_GROUP, "senderId": ACCOUNT, "correlationId": BROADCAST_GROUP,
+             "createdAt": int((now - timedelta(days=days)).timestamp()), "attachments": [],
+             "stats": {"total": 1, "delivered": 1, "read": 1}, "totalTipAmount": 0}
+            for i, (days, text) in enumerate(BROADCASTS)], "accountMedia": [], "accountMediaBundles": [],
+            "tips": [], "tipGoals": []},
+        "scheduled_broadcasts": {"scheduledBroadcastMessages": [
+            {"id": SCHEDULED_BROADCAST, "groupId": BROADCAST_GROUP, "accountId": ACCOUNT, "status": 1, "version": 1,
+             "messageTemplate": json.dumps({"type": 1, "attachments": [], "likes": [], "content": QUEUED_BROADCAST[1],
+                                            "groupId": BROADCAST_GROUP, "scheduledFor": queued_at, "inReplyTo": None}),
+             "scheduledFor": queued_at}], "groups": []},
         "notifications": [
             {"id": str(FIRST_NOTIFICATION), "type": 3003, "correlationGroupId": FAN,
              "createdAt": int((now - timedelta(hours=3)).timestamp())},
@@ -140,6 +158,10 @@ class FixtureShim(FanslyShimClient):
             return raw["scheduled"]
         if path == "/lists/account":
             return raw["lists"]
+        if path == "/message/broadcast/stats":
+            return raw["broadcasts"] if p.get("before") == "0" else {"messages": []}
+        if path == "/message/broadcast/scheduled":
+            return raw["scheduled_broadcasts"]
         if path == "/subscribers":
             return {"stats": {"totalActive": 1, "totalExpired": 0, "total": 1}, "subscriptions": []}
         if path == "/vault/albums":

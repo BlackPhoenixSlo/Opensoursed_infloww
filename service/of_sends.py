@@ -495,6 +495,9 @@ class SendsMixin:
     def cancel_scheduled(self, queue_id: int) -> Any:
         return self.delete_json(f"{API_BASE}/messages/queue/{queue_id}")
 
+    def unsend_mass_message(self, queue_id: int) -> Any:
+        return self.cancel_scheduled(queue_id)
+
     # Send the schedule item's own `id`, not its entity's.
     def publish_schedule(self, schedule_id: int) -> Any:
         send_tripwire.check("publish_schedule")

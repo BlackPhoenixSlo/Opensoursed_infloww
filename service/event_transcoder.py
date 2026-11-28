@@ -459,6 +459,15 @@ def patch_inbox_at_receipt(account_id: Any, event: dict) -> PriorInboxRow:
         return InboxRowUnpatched.VALUE
 
 
+def drop_unsent_thread_pages(account_id: Any, event: dict) -> None:
+    if account_id is None or td.first_key(event) != "chat_message_deleted":
+        return
+    body = event.get("chat_message_deleted")
+    chat = _int_or_none(body.get("fan_id")) if isinstance(body, dict) else None
+    if chat is not None:
+        relay_cache.invalidate("get_messages_tail", str(account_id), match=lambda ex: ex[0] == chat)
+
+
 def _int_or_none(v: Any) -> int | None:
     try:
         return int(v)

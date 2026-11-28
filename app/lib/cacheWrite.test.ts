@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { patchQueryData } from "./cacheWrite";
 
 describe("patchQueryData", () => {
-  it("a seed write into an empty cache keeps dataUpdatedAt 0 (ChatSurface ofSettled relies on it)", () => {
+  it("a seed write into an empty cache keeps dataUpdatedAt 0", () => {
     const qc = new QueryClient();
     patchQueryData<number[]>(qc, ["k"], () => [1]);
     expect(qc.getQueryData(["k"])).toEqual([1]);

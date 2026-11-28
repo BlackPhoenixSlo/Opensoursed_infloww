@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  initialUnknown, markUnknown, noteRoster, resetUnknownAccounts, seenNow, unknownIds, unknownReducer,
+  directIds, initialUnknown, markDirect, markUnknown, noteRoster, resetUnknownAccounts, seenNow, unknownIds, unknownReducer,
   type Action, type UnknownState,
 } from "./unknownAccounts";
 
@@ -24,6 +24,20 @@ describe("unknownReducer", () => {
     expect([...run(actions).ids].sort()).toEqual(want);
   });
 
+  const direct: Action = { type: "direct", id: "a", seen: { principal: "u1", roster: 5 } };
+  it.each<[string, Action[], string[]]>([
+    ["current roster", [roster("u1", 5), direct], ["a"]],
+    ["same roster", [roster("u1", 5), direct, roster("u1", 5)], ["a"]],
+    ["roster change clears", [roster("u1", 5), direct, roster("u1", 9)], []],
+    ["principal change clears", [roster("u1", 5), direct, roster("u2", 5)], []],
+    ["stale roster ignored", [roster("u1", 9), direct], []],
+    ["stale principal ignored", [roster("u2", 5), direct], []],
+  ])("direct reads: %s", (_name, actions, want) => {
+    const state = run(actions);
+    expect([...state.directIds]).toEqual(want);
+    expect([...state.ids]).toEqual([]);
+  });
+
   it("no-op actions keep the same state object", () => {
     const s = run([roster("u1", 5), unknown("a", "u1", 5)]);
     expect(unknownReducer(s, roster("u1", 5))).toBe(s);
@@ -34,6 +48,14 @@ describe("unknownReducer", () => {
 
 describe("unknown accounts store", () => {
   afterEach(resetUnknownAccounts);
+
+  it("reset clears direct reads", () => {
+    noteRoster("u1", 1);
+    markDirect("a", seenNow());
+    expect(directIds().has("a")).toBe(true);
+    resetUnknownAccounts();
+    expect(directIds().has("a")).toBe(false);
+  });
 
   it("a mark taken with seenNow holds until the roster changes", () => {
     noteRoster("u1", 1);

@@ -7,7 +7,7 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
-import { accountPlatform } from "@/lib/platform";
+import { accountPlatform, isPlatform } from "@/lib/platform";
 import { useDeferredMount } from "@/hooks/useDeferredMount";
 import { useNotificationSettings } from "@/hooks/useNotificationSettings";
 import { eventBus, type EventEnvelope } from "@/lib/events";
@@ -90,7 +90,10 @@ export function useNotificationDelta(): void {
   const settingsFor = useMemo(() => {
     const platformOf = new Map(active.map((a) => [a.id, accountPlatform(a)]));
     const off = { ...settings, enabled: false };
-    return (aid: string) => (settings.platforms[platformOf.get(aid) ?? "onlyfans"] ? settings : off);
+    return (aid: string) => {
+      const p = platformOf.get(aid) ?? "onlyfans";
+      return isPlatform(p) && settings.platforms[p] ? settings : off;
+    };
   }, [active, settings]);
 
   useEffect(() => {

@@ -1,3 +1,4 @@
+import type { FanId } from "@/lib/fanId";
 import type { OFMessage } from "@/lib/relay";
 import type { SendFailure } from "@/lib/sendFailure";
 
@@ -72,6 +73,30 @@ export function failMsg(prev: OFMessage[], tempId: number, failure?: SendFailure
 
 export function dropMsg(prev: OFMessage[], tempId: number): OFMessage[] {
   return prev.filter((m) => m._tempId !== tempId);
+}
+
+export function evictMessage(list: OFMessage[], id: FanId): OFMessage[] {
+  const gone = String(id);
+  const out = list.filter((m) => String(m.id) !== gone);
+  return out.length === list.length ? list : out;
+}
+
+const TOMBSTONES_MAX = 500;
+const tombstones = new Map<string, Set<string>>();
+
+export function tombstoneMessage(accountId: string, id: FanId): void {
+  let set = tombstones.get(accountId);
+  if (!set) { set = new Set(); tombstones.set(accountId, set); }
+  set.delete(String(id));
+  set.add(String(id));
+  if (set.size > TOMBSTONES_MAX) set.delete(set.values().next().value!);
+}
+
+export function dropTombstoned(accountId: string | null, list: OFMessage[]): OFMessage[] {
+  const set = accountId == null ? undefined : tombstones.get(accountId);
+  if (!set?.size) return list;
+  const out = list.filter((m) => !set.has(String(m.id)));
+  return out.length === list.length ? list : out;
 }
 
 // OF's CDN takes ~2-3s to populate file urls, so the server reply often has media with no playable urls.

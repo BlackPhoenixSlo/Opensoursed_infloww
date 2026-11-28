@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { TableSkeleton } from "@/components/ui/Skeleton";
 import { EmptyState, IfButton, IfSegmented } from "@/components/ui/infloww";
@@ -10,26 +9,14 @@ import { leakKeys } from "./leakKeys";
 import { DeleteWatch } from "./DeleteWatch";
 import { IdentityForm, type IdentityStart } from "./IdentityForm";
 import { LeakCoverageSection } from "./LeakCoverageSection";
-import type { LeakLane, LeakWeek } from "./leakCoverage";
 import { LeakPages } from "./LeakList";
 import { NO_PREVIEWS, previewTiles } from "./leakPreview";
 import { PreviewGrid } from "./LeakPreviewTiles";
-import { useLeakPages } from "./leakRead";
-import { recheck } from "./leakRefresh";
+import { useLeakPages, useRefreshCheck } from "./leakRead";
 import { RefreshButton } from "./RefreshButton";
-import { headerFacts, NOT_CHECKED, NOT_TRACKED, PAUSED, pausedLabel, viewerZone, type Leak, type LeakPage, type LeakRemovalPage, type LeakRosterRow } from "./leakView";
+import { headerFacts, NOT_CHECKED, NOT_TRACKED, PAUSED, pausedLabel, viewerZone, type Leak, type LeakPage, type LeakRosterRow } from "./leakView";
 import { RemovalArea } from "./RemovalArea";
 import { TrackingSwitch } from "./TrackingSwitch";
-
-type LeakWatchRead = LeakRemovalPage & {
-  tracked: boolean;
-  identity: (IdentityStart & { platform: string; on: boolean }) | null;
-  suggested: IdentityStart | null;
-  synced: boolean;
-  lanes: LeakLane[] | null;
-  this_week: LeakWeek | null;
-  next_refresh_at: string | null;
-};
 
 const EMPTY: IdentityStart = { username: "", verified: false, display_name: "" };
 
@@ -49,26 +36,10 @@ export function LeakCreator({ creatorId, scopeAccountId, name, canWrite, brand, 
   row?: LeakRosterRow;
   onDeleted: () => void;
 }) {
-  const qc = useQueryClient();
-  const pendingSince = useRef<number | null>(null);
-  const watch = useLeakPages<LeakWatchRead>(leakKeys.watch(creatorId, scopeAccountId), `/admin/leaks/watches/${creatorId}`,
-    scopeAccountId, (data) => {
-      const r = recheck(data?.pages[0]?.this_week?.state === "pending", pendingSince.current, Date.now());
-      pendingSince.current = r.since;
-      return r.every;
-    });
+  const { watch, checking, expired, queued } = useRefreshCheck(creatorId, scopeAccountId);
   const google = useLeakPages<LeakPage>(leakKeys.google(creatorId, scopeAccountId), `/admin/leaks/watches/${creatorId}?preview=1`, scopeAccountId,
-    undefined, previews && view === "google");
+    previews && view === "google");
   const [editing, setEditing] = useState(false);
-  const pending = watch.data?.pages[0]?.this_week?.state === "pending";
-  const wasPending = useRef(pending);
-  useEffect(() => {
-    if (wasPending.current && !pending) {
-      void qc.invalidateQueries({ queryKey: leakKeys.rosterRoot });
-      void qc.invalidateQueries({ queryKey: leakKeys.google(creatorId, scopeAccountId) });
-    }
-    wasPending.current = pending;
-  }, [pending, qc, creatorId, scopeAccountId]);
 
   if (watch.isPending) return <TableSkeleton rows={3} />;
   const w = watch.data?.pages[0];
@@ -126,7 +97,8 @@ export function LeakCreator({ creatorId, scopeAccountId, name, canWrite, brand, 
           <TrackingSwitch creatorId={creatorId} scopeAccountId={scopeAccountId} on={w.identity.on} paused={paused} canWrite={canWrite} />
           {canWrite && w.synced && w.identity.on && !paused && (
             <RefreshButton key={creatorId} creatorId={creatorId} scopeAccountId={scopeAccountId}
-              nextRefreshAt={w.next_refresh_at} pending={pending} />
+              nextRefreshAt={w.next_refresh_at} pending={checking} onQueued={queued}
+              expired={expired} onReadRetry={() => { void watch.refetch(); }} />
           )}
           {canWrite && (
             <div>

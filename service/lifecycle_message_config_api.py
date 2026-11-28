@@ -16,7 +16,7 @@ from automation_rule_read import primary_rule, rule_steps, rules_of_kind
 from automation_rules_api import ensure_kind_rule
 from automations.lifecycle_messages import (
     DEFAULT_FREQUENCY, DISCOUNT_KINDS, FREE_PAGE_REFUSAL, HOURS, KINDS, PAID_ONLY,
-    STORED_FREQUENCY, TEXT_MAX, clamp_hours, discount_cap, messages_of,
+    STORED_FREQUENCY, TEXT_MAX, clamp_hours, discount_cap, lifecycle_refusal, messages_of,
 )
 from chatters import assert_owner
 from db.engine import get_session
@@ -143,7 +143,7 @@ async def get_lifecycle_message_config(
     async with get_session() as s:
         config = _public(kind, await rules_of_kind(s, account_id, kind))
     return {"account_id": account_id, "kind": kind, "config": config,
-            "defaults": _defaults(kind)}
+            "defaults": _defaults(kind), "refusal": lifecycle_refusal(account_id, kind)}
 
 
 class _ConfigBody(BaseModel):
@@ -157,15 +157,19 @@ async def put_lifecycle_message_config(body: _ConfigBody = Body(...)) -> dict[st
     assert_account_owned(body.account_id)
     kind = _kind(body.kind)
     clean = _validate(kind, body.config)
-    await _check_discounts(body.account_id, clean.get("messages") or [])
-    if (kind in PAID_ONLY and clean.get("enabled") is True
-            and await subscribe_price_cents(body.account_id) == 0):
-        raise HTTPException(422, f"This Creator {FREE_PAGE_REFUSAL}")
+    refusal = lifecycle_refusal(body.account_id, kind)
+    if refusal is None:
+        await _check_discounts(body.account_id, clean.get("messages") or [])
+        if (kind in PAID_ONLY and clean.get("enabled") is True
+                and await subscribe_price_cents(body.account_id) == 0):
+            raise HTTPException(422, f"This Creator {FREE_PAGE_REFUSAL}")
     name = KINDS[kind]
     async with get_session() as s:
         rules = await rules_of_kind(s, body.account_id, kind)
         was_on = any(r.is_enabled for r in rules)
         merged = {**_public(kind, rules), **clean}
+        if refusal is not None and merged["enabled"]:
+            raise HTTPException(501, refusal)
         extras.check(merged)
         if merged["enabled"]:
             assert_owner()

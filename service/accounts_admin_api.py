@@ -713,23 +713,23 @@ async def admin_accounts_remove(account_id: str) -> dict[str, Any]:
     Cannot be undone."""
     if account_registry.get_account(account_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown account {account_id!r}")
-    await leak_tracker.drop_watches(account_id=account_id)
-    _stop_account_pump(account_id)
-    _invalidate_client(account_id)
-    # Purge caches so a re-added account can't read the prior session's chats/vault; best-effort.
-    try:
-        relay_cache.invalidate_account(account_id)
-    except Exception as e:  # noqa: BLE001
-        log.warning("relay_cache: invalidate-on-delete failed for %s: %s", account_id, e)
-    try:
-        await vault_cache.invalidate(account_id)
-    except Exception as e:  # noqa: BLE001
-        log.warning("vault_cache: invalidate-on-delete failed for %s: %s", account_id, e)
-    try:
-        await notifications_api.drop_pinned(account_id)
-    except Exception as e:  # noqa: BLE001
-        log.warning("notifications: drop-pinned-on-delete failed for %s: %s", account_id, e)
-    ok = account_registry.delete_account(account_id)
+    async with leak_tracker.removing_watches(account_id):
+        _stop_account_pump(account_id)
+        _invalidate_client(account_id)
+        # Purge caches so a re-added account can't read the prior session's chats/vault; best-effort.
+        try:
+            relay_cache.invalidate_account(account_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("relay_cache: invalidate-on-delete failed for %s: %s", account_id, e)
+        try:
+            await vault_cache.invalidate(account_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("vault_cache: invalidate-on-delete failed for %s: %s", account_id, e)
+        try:
+            await notifications_api.drop_pinned(account_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("notifications: drop-pinned-on-delete failed for %s: %s", account_id, e)
+        ok = account_registry.delete_account(account_id)
     _kick_db_sync(f"accounts-delete-{account_id}")
     return {"ok": ok}
 

@@ -190,23 +190,34 @@ const bundleAsks = () => get.mock.calls.filter(([path]) => path.startsWith("/adm
   .map(([path]) => new URLSearchParams(path.split("?")[1]).get("accounts"));
 
 it.each([
-  ["unknown to the Relay", { read: "chats", status: 404, detail: { error: "unknown_account", message: "Unknown account_id '20'" } }],
-  ["not on this screen", { read: "*", status: 404, detail: "not on this screen" }],
-])("All Models cell bundle: a Creator %s is marked and left out of the next read", async (_name, gone) => {
-  get.mockImplementation(async (path) => {
+  ["unknown to the Relay", true, { read: "chats", status: 404, detail: { error: "unknown_account", message: "Unknown account_id '20'" } }],
+  ["unsupported by the bundle", false, { read: "*", status: 404, detail: "Bundle does not include this Creator" }],
+])("All Models cell bundle: a Creator %s is left out of the next bundle", async (_name, unknown, rejection) => {
+  get.mockImplementation(async (path, ctx) => {
     if (path === "/auth/cells") return cellsMap as never;
     if (path.startsWith("/admin/screens/inbox")) return {
       answers: new URLSearchParams(path.split("?")[1]).get("accounts")!.split(",").map((id) => id === "20"
-        ? { accountId: id, ...gone }
+        ? { accountId: id, ...rejection }
         : { accountId: id, read: "chats", body: { list: [], hasMore: false } }),
     } as never;
+    if (ctx?.accountId === "20") return { list: [], hasMore: false } as never;
     throw new Error(path);
   });
   const hook = renderHook(() => useChatList(), { wrapper });
-  await waitFor(() => expect(unknownIds().has("20")).toBe(true));
   await waitFor(() => expect(hook.result.current.isFetching).toBe(false));
+  expect(unknownIds().has("20")).toBe(unknown);
+  expect(get.mock.calls.filter(([, ctx]) => ctx?.accountId === "20")).toHaveLength(unknown ? 0 : 1);
   await act(async () => { await client.refetchQueries({ queryKey: ["chats"] }); });
   expect(bundleAsks()).toEqual(["10,20", "10"]);
+  expect(hook.result.current.hasMore).toBe(false);
+  expect(get.mock.calls.filter(([, ctx]) => ctx?.accountId === "20")).toHaveLength(unknown ? 0 : 2);
+  if (!unknown) {
+    await act(async () => {
+      resetUnknownAccounts();
+      await client.refetchQueries({ queryKey: ["chats"] });
+    });
+    expect(bundleAsks()).toEqual(["10,20", "10", "10,20"]);
+  }
 });
 
 it("All-inbox resync leaves a marked Creator out of the head read and the tail repair", async () => {
@@ -230,3 +241,29 @@ it("All-inbox resync leaves a marked Creator out of the head read and the tail r
   const asked = get.mock.calls.map(([path, ctx]) => new URLSearchParams(path.split("?")[1]).get("accounts") ?? ctx?.accountId);
   expect(asked.some((ids) => ids?.split(",").includes("20"))).toBe(false);
 });
+
+it("keeps bundle rows when a direct Creator read outlasts the cell deadline", async () => {
+  get.mockImplementation(async (path) => {
+    if (path === "/auth/cells") return cellsMap as never;
+    if (path.startsWith("/admin/screens/inbox")) return {
+      answers: [
+        { accountId: "10", read: "chats", body: { list: [{ withUser: { id: 11 } }], hasMore: false } },
+        { accountId: "20", read: "*", status: 404, detail: "Not on this screen" },
+      ],
+    } as never;
+    if (path.startsWith("/api/of/v2/chats")) return new Promise<never>(() => {});
+    if (path.startsWith("/admin/fans/") || path.startsWith("/api/of/v2/users/list")) return {} as never;
+    throw new Error(path);
+  });
+  const hook = renderHook(() => ({ inbox: useChatList(), grey: useGreyAccounts() }), { wrapper });
+  await waitFor(() => {
+    expect([...hook.result.current.grey]).toEqual(["20"]);
+    expect(client.getQueryCache().findAll({ queryKey: ["chats"] }).map((q) => q.state.data))
+      .toContainEqual(expect.objectContaining({
+        pages: [expect.objectContaining({
+          rows: [expect.objectContaining({ __accountId: "10" })],
+          missing: ["20"],
+        })],
+      }));
+  }, { timeout: 3_500 });
+}, 5_000);

@@ -11,7 +11,7 @@ const { relayGet, relayPost, scope, accounts, router, accountsQ } = vi.hoisted((
   accounts: [
     { id: "acc-1", nickname: "Creator One" },
     { id: "acc-2", nickname: "Creator Two" },
-  ],
+  ] as { id: string; nickname: string; platform?: string }[],
 }));
 
 vi.mock("@/lib/relay", () => ({
@@ -151,6 +151,44 @@ describe("NotificationsPage", () => {
     } finally {
       window.removeEventListener(NOTIF_CLEARED_EVENT, cleared);
     }
+  });
+
+  describe("notifications_read Capability", () => {
+    const saved = accounts.map((a) => ({ ...a }));
+    afterEach(() => { accounts.splice(0, accounts.length, ...saved.map((a) => ({ ...a }))); });
+
+    it("mixed scope: Mark all read writes only the OnlyFans Creator and still clears the arrival badges", async () => {
+      accounts[1].platform = "fansly";
+      scope.accountId = null;
+      relayGet.mockResolvedValue({ list: [] });
+      relayPost.mockReset();
+      relayPost.mockResolvedValue({ counters: { all: 0 } });
+      const cleared = vi.fn();
+      window.addEventListener(NOTIF_CLEARED_EVENT, cleared);
+      try {
+        renderWithProviders(<NotificationsPage />);
+        await screen.findByText("No notifications");
+        await userEvent.click(screen.getByRole("button", { name: "Mark all read" }));
+        await vi.waitFor(() => expect(cleared).toHaveBeenCalledTimes(1));
+        expect(relayPost.mock.calls.map(([p, , ctx]) => [p, (ctx as { accountId: string }).accountId]))
+          .toEqual([["/api/of/v2/users/notifications/read", "acc-1"]]);
+        expect(screen.queryByRole("status")).toBeNull();
+      } finally {
+        window.removeEventListener(NOTIF_CLEARED_EVENT, cleared);
+      }
+    });
+
+    it.each<[string, string | null]>([["the scoped Fansly Creator", "acc-2"], ["All Creators, every one Fansly", null]])(
+      "%s: no Mark all read button", async (_n, scoped) => {
+        for (const a of accounts) a.platform = "fansly";
+        scope.accountId = scoped;
+        relayGet.mockResolvedValue({ list: [] });
+        relayPost.mockClear();
+        renderWithProviders(<NotificationsPage />);
+        await screen.findByText("No notifications");
+        expect(screen.queryByRole("button", { name: "Mark all read" })).toBeNull();
+        expect(relayPost).not.toHaveBeenCalled();
+      });
   });
 
   it("issues the bell's request (path and Creator scope) for every wired tab, for one Creator", async () => {

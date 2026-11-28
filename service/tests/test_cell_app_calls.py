@@ -26,6 +26,7 @@ from db.models import Account, Chat, Fan, Message, PriorityMassRun, Transaction,
 SERVICE = Path(__file__).resolve().parents[1]
 REGISTRY = SERVICE / "sessions" / "accounts"
 NOVA_A, NOVA_B = "900539700124344320", "900539700124344321"
+MOVED_ID = "876543210"
 FANS = ("900539700124344320", "900539700124344321")
 MSGS = ("900539700124344520", "900539700124344521")
 OWNER, PASSWORD = "cell_owner", "cell-owner-pw"
@@ -147,14 +148,14 @@ def _two_cells():
 
 @contextlib.contextmanager
 def _scheduled_sends_registry():
-    others = [p.name for p in REGISTRY.iterdir() if p.name not in (NOVA_A, NOVA_B)] if REGISTRY.is_dir() else []
+    others = [p.name for p in REGISTRY.iterdir() if p.name not in (NOVA_A, NOVA_B, MOVED_ID)] if REGISTRY.is_dir() else []
     if others:
         print(f"[skip] scheduled-sends resolves X-Account-Id in {REGISTRY}, which holds other Creators: not touched")
         yield False
         return
     made = []
     try:
-        for aid in (NOVA_A, NOVA_B):
+        for aid in (NOVA_A, NOVA_B, MOVED_ID):
             d = REGISTRY / aid
             if not d.exists():
                 d.mkdir(parents=True)
@@ -220,7 +221,8 @@ def _amendments(a: _Cell, b: _Cell, auth: dict) -> None:
     hdr = lambda aid: {**auth, "X-Account-Id": aid}  # noqa: E731
     one, batch = "/admin/ingest/transactions/1/attribute", "/admin/ingest/transactions/attribute"
 
-    st, _h, raw = _ask(a.port, "POST", one, hdr(NOVA_A), {"employee_id": "no_one", "account_id": NOVA_A})
+    st, _h, raw = _ask(a.port, "POST", f"{one}?account_id={NOVA_A}", hdr(NOVA_A),
+                       {"employee_id": "no_one", "account_id": NOVA_A})
     assert st == 200 and json.loads(raw)["account_id"] == NOVA_A, ("single via A", st, raw[:300])
     assert (at(a, 1), at(b, 1)) == (0, None), "single: only A's tx 1"
 
@@ -347,6 +349,11 @@ def case_app_calls_on_two_cells() -> None:
         auth = {"Cookie": _actor_cookie(key_dir)}
         _amendments(a, b, auth)
         _mass_runs(a, b, auth)
+        if registry:
+            _not_owner(*_ask(a.port, "GET", f"/admin/fans/{MOVED_ID}/by-ids", auth)[::2], "moved Creator path")
+            st, _h, raw = _ask(a.port, "POST", f"/admin/ingest/transactions/{MOVED_ID}/attribute", auth,
+                               {"employee_id": "no_one", "account_id": MOVED_ID})
+            assert st == 403 and raw == b"not your account", (st, raw[:300])
         _big_ids(a, auth, registry)
         _leases(a, b, auth)
         _gen_bump(b, auth)

@@ -91,6 +91,7 @@ interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "unre
   doFromQuestion: (question: string) => void;
   doCallbacks: DoCallbacks;
   support: SupportStatus;
+  principal: string | null;
   markSupportRead: () => void;
 }
 
@@ -343,7 +344,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     shown, threads,
     pick, newChat, openThread, userName,
     doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks,
-    support, markSupportRead,
+    support, principal, markSupportRead,
   };
   return (
     <AssistantContext.Provider value={value}>
@@ -531,13 +532,20 @@ const VARIANT = {
   },
 } as const;
 
-export function AssistantPanel({
-  variant,
-  onClose,
-}: {
+export function AssistantPanel(props: AssistantPanelProps) {
+  const { principal } = useAssistant();
+  return <AssistantPanelContent key={principal} {...props} />;
+}
+
+interface AssistantPanelProps {
   variant: "dock" | "page" | "sheet";
   onClose?: () => void;
-}) {
+}
+
+function AssistantPanelContent({
+  variant,
+  onClose,
+}: AssistantPanelProps) {
   const {
     shown, threads, active, held, userName, accounts, rosterLoaded, isUser, accountId, canGeneral, appFocus, canChat, openPages,
     ask, command, pick, newChat, openThread,

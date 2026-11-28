@@ -1,3 +1,4 @@
+import { isUnknownDetail } from "@/lib/relay";
 import type { OFChatItem } from "@/lib/relayTypes";
 import { compareFanIds } from "@/lib/fanId";
 
@@ -98,22 +99,21 @@ export function mergeCellRows(lists: readonly (readonly OFChatItem[])[], sort = 
 
 export interface BundleChats { accountId: string; body: unknown }
 
-// gone: the cell will not read her until its roster changes (not on this screen, or unknown to the Relay).
-export function bundleChats(body: unknown): { chats: BundleChats[]; failed: string[]; partial: string[]; gone: string[] } {
+export function bundleChats(body: unknown): { chats: BundleChats[]; failed: string[]; partial: string[]; gone: string[]; unsupported: string[] } {
   const b = (body ?? {}) as { answers?: unknown; partial?: unknown };
   const chats: BundleChats[] = [];
   const failed: string[] = [];
   const gone: string[] = [];
+  const unsupported: string[] = [];
   for (const a of Array.isArray(b.answers) ? b.answers : []) {
     const ans = a as { accountId?: unknown; read?: unknown; body?: unknown; status?: unknown; detail?: unknown };
     if (typeof ans.accountId !== "string" || (ans.read !== "chats" && ans.read !== "*")) continue;
     if (ans.status != null || ans.read === "*") failed.push(ans.accountId);
     else chats.push({ accountId: ans.accountId, body: ans.body });
-    if (ans.status === 404 && (ans.read === "*" || (ans.detail as { error?: unknown } | null)?.error === "unknown_account")) {
-      gone.push(ans.accountId);
-    }
+    if (ans.status === 404 && isUnknownDetail(ans.detail)) gone.push(ans.accountId);
+    else if (ans.status === 404 && ans.read === "*") unsupported.push(ans.accountId);
   }
-  return { chats, failed, partial: partialIds(b.partial), gone };
+  return { chats, failed, partial: partialIds(b.partial), gone, unsupported };
 }
 
 export interface HeadPage {

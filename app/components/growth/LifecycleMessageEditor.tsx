@@ -15,7 +15,7 @@ import { fmtCents } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 import {
-  FOLLOW_UP_DELAY_MAX as DELAY_MAX, MAX_VARIANTS, TEXT_MAX, badDelay, badMonths, buildPayload, initLifecycle, lifecycleIssues, lifecycleReducer,
+  FOLLOW_UP_DELAY_MAX as DELAY_MAX, MAX_VARIANTS, TEXT_MAX, badDelay, badMonths, buildPayload, initLifecycle, lifecycleIssues, lifecycleReducer, lifecycleRefusal,
   type FollowUpDraft, type LifecycleAction, type MessageDraft,
 } from "./lifecycleForm";
 import { SmartMessageFields } from "./SmartMessageFields";
@@ -68,7 +68,8 @@ export default function LifecycleMessageEditor({ accountId, kind, onTouched }: {
   if (!accountId) return <p className="text-[14px] text-fg-dim">Pick a Creator first.</p>;
   if (q.isError) return <p className="text-[14px] text-err">Couldn&apos;t load this Creator&apos;s message.</p>;
   if (!q.data) return <p className="text-[14px] text-fg-dim">Loading…</p>;
-  return <Form key={kind} accountId={accountId} kind={kind} initial={q.data.config} onTouched={onTouched} />;
+  return <Form key={kind} accountId={accountId} kind={kind} initial={q.data.config} platformRefusal={q.data.refusal}
+    onTouched={onTouched} />;
 }
 
 export function FollowUpsField({ id, steps, onChange }: {
@@ -116,14 +117,14 @@ export function FollowUpsField({ id, steps, onChange }: {
   );
 }
 
-function Form({ accountId, kind, initial, onTouched }: {
-  accountId: string; kind: LifecycleKind; initial: LifecycleMessageConfig; onTouched: () => void;
+function Form({ accountId, kind, initial, platformRefusal, onTouched }: {
+  accountId: string; kind: LifecycleKind; initial: LifecycleMessageConfig; platformRefusal: string | null; onTouched: () => void;
 }) {
   const formId = useId();
   const copy = LIFECYCLE_COPY[kind];
   const save = useSaveLifecycleMessageConfig(accountId, kind);
   const freeRefusal = useFreePageRefusal(accountId);
-  const refusal = PAID_ONLY_KINDS.has(kind) ? freeRefusal : null;
+  const refusal = lifecycleRefusal(copy.title, platformRefusal, PAID_ONLY_KINDS.has(kind) ? freeRefusal : null);
   const [draft, rawDispatch] = useReducer(lifecycleReducer, undefined, () => initLifecycle(initial, copy.example));
   const dispatch = (a: LifecycleAction) => { onTouched(); rawDispatch(a); };
   const { enabled, messages, hours, extras } = draft;
@@ -154,7 +155,7 @@ function Form({ accountId, kind, initial, onTouched }: {
             )}
           </>} />
         </div>
-        {/* On a free page it can be switched off, never on. */}
+        {/* Refused (free page or a Platform that lacks it): it can be switched off, never on. */}
         <IfSwitch label="On" checked={enabled} disabled={!!refusal && !enabled} onChange={(on) => dispatch({ type: "setEnabled", on })} />
         {refusal && <p className="text-warn">{refusal}</p>}
         {copy.hours && (

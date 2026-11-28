@@ -943,6 +943,27 @@ describe("FanList", () => {
     }
   });
 
+  it("in a mixed All Models inbox reads fan activity for the OnlyFans Creator only, never the Fansly one", async () => {
+    scopeKind = "all";
+    ACCOUNTS = [CREATOR_ACCOUNT, { ...OTHER_ACCOUNT, platform: "fansly" }];
+    routeRelay("/admin/accounts", () => ({ accounts: ACCOUNTS }));
+    routeRelay("/api/of/v2/chats?", (path, ctx) => {
+      const head = new URLSearchParams(path.split("?")[1]).get("offset") === "0";
+      const own = ctx?.accountId === ACCOUNT_ID ? [CHATS[0]] : [answered(FAN_FOUR, 30)];
+      return { list: head ? own : [], hasMore: false };
+    });
+    serveTransactions([]);
+    const activityReads = () => relayGet.mock.calls
+      .filter(([path]) => path.startsWith("/api/of/v2/payouts/transactions"))
+      .map(([, ctx]) => ctx?.accountId);
+    renderFanList({}, { allPlatforms: true });
+    await rowOf("Fixture Fan One");
+    await rowOf("Fixture Fan Four");
+
+    await vi.waitFor(() => expect(activityReads()).toContain(ACCOUNT_ID));
+    expect(activityReads()).toEqual([ACCOUNT_ID]);
+  });
+
   it("keeps only the OnlyFans cold seed when Pinned is selected in a mixed All Models inbox", async () => {
     scopeKind = "all";
     ACCOUNTS = [CREATOR_ACCOUNT, { ...OTHER_ACCOUNT, platform: "fansly" }];

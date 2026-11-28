@@ -795,22 +795,22 @@ async def admin_revoke_user_account(
     _assert_admin_password(body.admin_password)
     import leak_tracker  # lazy: both import this module
     import notifications_api
-    await leak_tracker.drop_watches(account_id=account_id, agency_user_id=user_id)
-    # Both drops run before the link goes; each is safe to retry after a 500.
-    await notifications_api.drop_pinned(account_id, [user_id])
-    async with get_session() as s:
-        result = await s.execute(
-            delete(UserAccount).where(
-                UserAccount.user_id == user_id,
-                UserAccount.account_id == account_id,
+    async with leak_tracker.removing_watches(account_id, user_id):
+        # Both drops run before the link goes; each is safe to retry after a 500.
+        await notifications_api.drop_pinned(account_id, [user_id])
+        async with get_session() as s:
+            result = await s.execute(
+                delete(UserAccount).where(
+                    UserAccount.user_id == user_id,
+                    UserAccount.account_id == account_id,
+                )
             )
-        )
-        if (result.rowcount or 0) == 0:
-            raise HTTPException(
-                status_code=404,
-                detail=f"user {user_id!r} does not hold account {account_id!r}",
-            )
-        events.on_commit(s, "assignment_changed", agency=user_id)
+            if (result.rowcount or 0) == 0:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"user {user_id!r} does not hold account {account_id!r}",
+                )
+            events.on_commit(s, "assignment_changed", agency=user_id)
     await split_inbox.owner_link_changed(account_id)
     return {"ok": True, "user_id": user_id, "account_id": account_id}
 

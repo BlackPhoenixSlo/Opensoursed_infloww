@@ -20,7 +20,7 @@ from chatters import get_request_chatter
 from db.engine import get_session
 from db.models import User
 from support_hub import MAX_FIELD, MAX_TEXT, ReadAck, ReadPosition, SentMessages, ThreadMessages, UnreadCount
-from support_photos import PHOTO_HEADERS, capped_form, form_text, read_photos
+from support_photos import capped_form, form_text, photo_response, read_photos
 
 log = logging.getLogger("of-relay.support_api")
 
@@ -232,7 +232,7 @@ async def photo(photo_id: int) -> Response:
     if r.status_code != 200:
         log.warning("support: hub GET photos answered %s", r.status_code)
         raise HTTPException(status_code=502, detail=UNREACHABLE)
-    return Response(r.content, media_type="image/jpeg", headers=PHOTO_HEADERS)
+    return photo_response(r.content)
 
 
 @router.post("/admin/support/read")

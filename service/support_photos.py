@@ -18,7 +18,7 @@ UPLOAD_CAP = MAX_PHOTOS * MAX_PHOTO_BYTES + 64 * 1024
 ONLY_PHOTOS = "Only photos (JPEG) can be sent."
 TOO_BIG = "Upload too large — max 4 photos of 3 MB."
 PHOTO_HEADERS = {"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'",
-                 "Cache-Control": "no-store", "Content-Disposition": "inline"}
+                 "Cache-Control": "private, max-age=86400", "Vary": "Cookie, Authorization", "Content-Disposition": "inline"}
 
 Photo = tuple[bytes, int, int]
 

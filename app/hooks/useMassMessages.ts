@@ -17,7 +17,7 @@ import { CREATOR_POOL, settlePool } from "@/lib/settlePool";
 const KEY_PREFIX = "mass-messages";
 
 export interface MassMessageRow {
-  id: number;
+  id: number | string;
   date?: string | null;
   text?: string | null;
   rawText?: string | null;
@@ -49,7 +49,14 @@ interface AdminListResp {
   account_id: string;
   days_back: number;
   items: MassMessageRow[];
+  hasMore?: boolean;
+  incomplete?: boolean;
 }
+
+export type CreatorMassPage = Pick<AdminListResp, "hasMore" | "incomplete"> & {
+  accountId: string;
+  rows: MassMessageRow[];
+};
 
 interface AdminRefreshResp extends AdminListResp {
   written: number;
@@ -60,40 +67,46 @@ export interface MassMessagesOptions {
   limit?: number;
 }
 
-async function fetchCached(accountId: string, daysBack: number, limit: number): Promise<MassMessageRow[]> {
+async function fetchCached(accountId: string, daysBack: number, limit: number): Promise<CreatorMassPage> {
   const qs = new URLSearchParams({
     account_id: accountId,
     days_back: String(daysBack),
     limit: String(limit),
   });
   const resp = await relay.get<AdminListResp>(`/admin/mass-messages?${qs.toString()}`);
-  return (resp.items ?? []).map((it) => ({ ...it, __accountId: accountId }));
+  return {
+    accountId,
+    rows: (resp.items ?? []).map((it) => ({ ...it, __accountId: accountId })),
+    hasMore: resp.hasMore,
+    incomplete: resp.incomplete,
+  };
 }
 
 // Not a useMemo on queries.map(q => q.data): on a cold load that list is empty and React compares only the old length, so it never recomputed.
-function combineQueries(queries: UseQueryResult<MassMessageRow[]>[]) {
-  const rows = queries
-    .flatMap((q) => q.data ?? [])
+function combineQueries(queries: UseQueryResult<CreatorMassPage>[]) {
+  const perCreator = queries.flatMap((q) => (q.data ? [q.data] : []));
+  const rows = perCreator
+    .flatMap((p) => p.rows)
     .sort((a, b) => {
       const ta = a.date ? new Date(a.date).getTime() : 0;
       const tb = b.date ? new Date(b.date).getTime() : 0;
       return tb - ta;
     });
-  return { queries, rows };
+  return { queries, rows, perCreator };
 }
 
 export function useMassMessages(accountIds: string[], opts: MassMessagesOptions = {}) {
   const daysBack = opts.daysBack ?? 30;
   const limit = opts.limit ?? 100;
 
-  const { queries, rows } = useQueries({
+  const { queries, rows, perCreator } = useQueries({
     queries: accountIds.map((accountId) => ({
       queryKey: [KEY_PREFIX, accountId, daysBack, limit] as const,
       queryFn: () => fetchCached(accountId, daysBack, limit),
       staleTime: 5 * 60 * 1000,
       gcTime: 30 * 60 * 1000,
       refetchOnWindowFocus: false,
-      placeholderData: (prev: MassMessageRow[] | undefined) => prev,
+      placeholderData: (prev: CreatorMassPage | undefined) => prev,
     })),
     combine: combineQueries,
   });
@@ -102,7 +115,7 @@ export function useMassMessages(accountIds: string[], opts: MassMessagesOptions 
   const isFetching = queries.some((q) => q.isFetching);
   const error = queries.find((q) => q.error)?.error as Error | undefined;
 
-  return { rows, isLoading, isFetching, error, queries, daysBack, limit };
+  return { rows, perCreator, isLoading, isFetching, error, queries, daysBack, limit };
 }
 
 async function refreshAccount(accountId: string, daysBack: number, limit: number): Promise<number> {
@@ -207,7 +220,7 @@ export function useMassQueueProgress(accountIds: string[], daysBack: number, lim
 
 export async function cancelMassMessage(
   qc: QueryClient,
-  { id, accountId }: { id: number; accountId: string },
+  { id, accountId }: { id: MassMessageRow["id"]; accountId: string },
 ): Promise<unknown> {
   const res = await relay.delete(`/api/of/v2/messages/queue/${id}`, { accountId });
   patchRowInCaches(qc, accountId, id);
@@ -217,22 +230,18 @@ export async function cancelMassMessage(
 
 export function useCancelMassMessage() {
   const qc = useQueryClient();
-  return useMutation<unknown, Error, { id: number; accountId: string }>({
+  return useMutation<unknown, Error, { id: MassMessageRow["id"]; accountId: string }>({
     mutationFn: (vars) => cancelMassMessage(qc, vars),
   });
 }
 
-function patchRowInCaches(qc: QueryClient, accountId: string, queueId: number): void {
-  qc.getQueryCache()
-    .findAll({ queryKey: [KEY_PREFIX, accountId] })
-    .forEach((q) => {
-      const rows = q.state.data as MassMessageRow[] | undefined;
-      if (!rows) return;
-      const next = rows.map((r) =>
-        r.id === queueId
-          ? { ...r, isCanceled: true, canUnsend: false, unsendSeconds: 0 }
-          : r,
-      );
-      qc.setQueryData(q.queryKey, next);
-    });
+function patchRowInCaches(qc: QueryClient, accountId: string, queueId: MassMessageRow["id"]): void {
+  qc.setQueriesData<CreatorMassPage>({ queryKey: [KEY_PREFIX, accountId] }, (page) => page && {
+    ...page,
+    rows: page.rows.map((r) =>
+      r.id === queueId
+        ? { ...r, isCanceled: true, canUnsend: false, unsendSeconds: 0 }
+        : r,
+    ),
+  });
 }
