@@ -62,15 +62,16 @@ ships off: no install connects anywhere until you opt in. To opt in:
 1. Get the service's URL and a Tracker key for your agency from the removal service.
 2. Add `LEAK_TRACKER_URL=<its https URL>` and `LEAK_TRACKER_ENABLED=1` to `.env`,
    then `docker compose up -d openinflowwww-relay`.
-3. As the agency owner, set `leak_tracker: true` in the agency's flags
-   (`PUT /admin/settings/flags`, keeping the other flags `GET` returns).
-4. Open Creators › Leak tracker and paste the key in the Tracker key card.
-   The service's name and contact link come from it at runtime.
+3. Paste the key in the Tracker key card on Creators › Leak tracker, or set
+   `LEAK_TRACKER_KEY=<key>` in `.env` to use one key for every agency that has
+   none of its own. The service's name and contact link come from it at runtime.
 
-What it sends: the key, and for each Creator you enrol (after ticking consent)
-the account id, platform, username (and whether it is verified), display name,
-aliases, optional Instagram and X handles, and whether tracking is paused. The
-consent record (who, when) stays in your DB. To turn it off, unset
+Once on, every agency is in unless its flags say `leak_tracker: false`, and
+every connected OnlyFans Creator is tracked automatically; deleting or pausing
+a Creator's tracking sticks. What it sends: the key, and for each tracked
+Creator the account id, platform, username (and whether it is verified),
+display name, aliases, optional Instagram and X handles, and whether tracking
+is paused. Who enrolled it and when stays in your DB. To turn it off, unset
 `LEAK_TRACKER_ENABLED` and recreate the relay, or force it off in Settings ›
 System.
 

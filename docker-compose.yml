@@ -94,6 +94,7 @@ services:
       # The Leak tracker: off unless both are set (https URL; the System switches panel can only force it off).
       LEAK_TRACKER_URL: "${LEAK_TRACKER_URL:-}"
       LEAK_TRACKER_ENABLED: "${LEAK_TRACKER_ENABLED:-}"
+      LEAK_TRACKER_KEY: "${LEAK_TRACKER_KEY:-}"
       # Support chat (service/support_api.py): the help widget's Support tab talks to the hub at
       # SUPPORT_HUB_URL with SUPPORT_HUB_TOKEN, labelled SUPPORT_INSTANCE; blank = tab hidden.
       # SUPPORT_HUB_PASSWORD set = this relay also serves the hub page at /support (one install only).

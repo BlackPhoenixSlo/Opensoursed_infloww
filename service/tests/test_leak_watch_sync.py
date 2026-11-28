@@ -112,6 +112,7 @@ def _reset() -> None:
             await s.execute(delete(AccountHealth))
         await account_health.load_write_gate()
         await leak_tracker.store_key(AGENCY_A, KEY_1)
+        await leak_tracker.bind_tenant(AGENCY_A, "tn_sync0001")
     asyncio.run(_wipe())
     for agency in (AGENCY_A, AGENCY_B):
         leak_tracker.forget_invalid(agency)
@@ -397,9 +398,8 @@ def case_an_identity_edited_mid_run_preserves_the_last_push_and_retries_the_late
             def save(request):
                 if not request.url.path.endswith(first):
                     return
-                assert OWNER_A.put(route, json=identity).status_code == 422
                 t.by_watch[raced] = DOWN
-                r = OWNER_A.put(route, json={**identity, "consent": True})
+                r = OWNER_A.put(route, json=identity)
                 assert r.json() == {"synced": False}, r.text
 
             t.during = save

@@ -1364,7 +1364,7 @@ async def _start_event_pumps() -> None:
 
     import leak_tracker
     if leak_tracker.jobs_on():
-        _spawn_bg(_periodic("leak watch sync", leak_tracker.SYNC_EVERY_S, leak_tracker.sync_watches,
+        _spawn_bg(_periodic("leak watch sync", leak_tracker.SYNC_EVERY_S, leak_tracker.sync_all,
                             first_after_s=leak_tracker.SYNC_FIRST_AFTER_S), "leak-watch-sync")
         _spawn_bg(leak_tracker.tombstone_loop(), "leak-watch-tombstones")
 

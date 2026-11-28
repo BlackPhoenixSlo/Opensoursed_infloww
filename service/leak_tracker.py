@@ -6,10 +6,12 @@ import json
 import logging
 import os
 import re
+import time
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Iterable, Literal
 from urllib.parse import urlsplit
 from weakref import WeakValueDictionary
 
@@ -17,17 +19,23 @@ import httpx
 from fastapi import HTTPException, Request
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 
 import account_health
+import account_page
+import agency_scope
+import platforms
 import runtime_switches
 from agency_context import AgencyContext, agency_context
 from automations._knobs import test_mode
 from db.engine import get_session
-from db.models import LeakTrackerTenant, LeakWatch, LeakWatchTombstone
+from db.models import (
+    LeakTrackerTenant, LeakWatch, LeakWatchAutoSkip, LeakWatchOptOut, LeakWatchTombstone, UserAccount,
+)
 from permissions import leak_page_granted, leak_writer, removal_offer_viewer
 from send_ops import cells
 from settings_schema import applied_blob
-from tenant_keys import NON_LLM_PROVIDERS, TRACKER_PROVIDER as PROVIDER, get_key, set_keys
+from tenant_keys import NON_LLM_PROVIDERS, TRACKER_PROVIDER as PROVIDER, get_key, owners_of_many, set_keys
 
 log = logging.getLogger("of-relay.leak_tracker")
 
@@ -43,10 +51,21 @@ SYNC_EVERY_S = 3600
 SYNC_FIRST_AFTER_S = 60
 TOMBSTONES_EVERY_S = 600
 TOMBSTONES_FIRST_AFTER_S = 60
+AUTO_CONSENT = "auto:owner-default"
+ENSURE_BATCH = 10
+ENSURE_GAP_S = 60.0
+AUTO_RETRY = timedelta(days=1)
+TENANT_RETRY_MIN_S, TENANT_RETRY_MAX_S = 30.0, 1800.0
+HANDLE = re.compile(r"[A-Za-z0-9_.-]{2,64}")
+NAME_MAX = 64
 
 _invalid: set[str] = set()
 _copies: dict[tuple[str, str], tuple[Any, str]] = {}
 _wake = asyncio.Event()
+_tenants: dict[str, str] = {}
+_tenant_misses: dict[str, tuple[float, float]] = {}
+_capped: dict[str, datetime] = {}
+_ensure_asked: dict[str, float] = {}
 
 
 @dataclass(frozen=True)
@@ -68,6 +87,18 @@ class Gates:
     key: str
     can_write: bool
     offer_viewer: bool
+    instance: bool
+
+
+RefusalKind = Literal["key_invalid", "handle_taken", "account_taken", "creator_cap", "waitlist", "identity",
+                      "watch_deleted", "unbound", "exists"]
+
+
+class Refused(Exception):
+    def __init__(self, kind: RefusalKind, detail: Any = None) -> None:
+        super().__init__(kind)
+        self.kind: RefusalKind = kind
+        self.detail = detail
 
 
 def _loopback(host: str) -> bool:
@@ -102,8 +133,48 @@ def not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Not Found")
 
 
+def tracker_on(flags: dict[str, Any]) -> bool:
+    return flags.get(FLAG) is not False
+
+
 def page_on(ctx: AgencyContext, flags: dict[str, Any], roles: dict[str, Any]) -> bool:
-    return deployment_on() and flags.get(FLAG) is True and leak_page_granted(ctx, roles)
+    return deployment_on() and tracker_on(flags) and leak_page_granted(ctx, roles)
+
+
+def instance_key() -> str:
+    raw = (os.environ.get("LEAK_TRACKER_KEY") or "").strip()
+    return raw if KEY_SHAPE.fullmatch(raw) else ""
+
+
+async def instance_tenant() -> str | None:
+    key = instance_key()
+    if not key:
+        return None
+    if key in _tenants:
+        return _tenants[key]
+    retry_at, wait = _tenant_misses.get(key, (0.0, 0.0))
+    now = time.monotonic()
+    if now < retry_at:
+        return None
+    try:
+        _tenants[key] = (await me(None, key)).tenant_id
+    except (Unreachable, KeyRefused):
+        wait = min(max(wait * 2, TENANT_RETRY_MIN_S), TENANT_RETRY_MAX_S)
+        _tenant_misses[key] = (now + wait, wait)
+        return None
+    _tenant_misses.pop(key, None)
+    return _tenants[key]
+
+
+async def agency_key(agency_user_id: str) -> tuple[str, bool]:
+    own = await get_key(agency_user_id, PROVIDER)
+    if own:
+        return own, False
+    inst = instance_key()
+    if not inst:
+        return "", False
+    held = await binding(agency_user_id)
+    return (inst, True) if held is None or held[1] else ("", False)
 
 
 async def require_gates(request: Request, *, need_key: bool) -> Gates:
@@ -128,8 +199,9 @@ async def _resolve_gates(request: Request) -> Gates:
         roles: dict[str, Any] = await applied_blob(s, ctx.agency_user_id, "roles")
     if not page_on(ctx, flags, roles):
         raise not_found()
-    key = await get_key(ctx.agency_user_id, PROVIDER)
-    return Gates(ctx=ctx, key=key, can_write=leak_writer(ctx, roles), offer_viewer=removal_offer_viewer(ctx, roles))
+    key, instance = await agency_key(ctx.agency_user_id)
+    return Gates(ctx=ctx, key=key, can_write=leak_writer(ctx, roles), offer_viewer=removal_offer_viewer(ctx, roles),
+                 instance=instance)
 
 
 class Unreachable(Exception):
@@ -177,7 +249,7 @@ def key_invalid(agency_user_id: str) -> bool:
 
 
 async def _invalidate_key(agency_user_id: str, key: str) -> None:
-    if await get_key(agency_user_id, PROVIDER) == key:
+    if (await agency_key(agency_user_id))[0] == key:
         _invalid.add(agency_user_id)
         drop_copies(agency_user_id)
 
@@ -278,9 +350,19 @@ def drop_watch_copies(agency_user_id: str, watch_id: str) -> None:
             _copies[k] = ({w: c for w, c in body.items() if w != watch_id}, at)
 
 
+async def opt_out(agency_user_id: str, account_id: str) -> None:
+    async with get_session() as s:
+        await s.execute(sqlite_insert(LeakWatchOptOut).values(
+            agency_user_id=agency_user_id, account_id=account_id, created_at=datetime.utcnow(),
+        ).on_conflict_do_nothing())
+
+
 async def forget_watch(agency_user_id: str, watch_id: str) -> None:
     async with get_session() as s:
+        account_id = await s.scalar(select(LeakWatch.account_id).where(LeakWatch.watch_id == watch_id))
         await s.execute(delete(LeakWatch).where(LeakWatch.watch_id == watch_id))
+    if account_id is not None:
+        await opt_out(agency_user_id, account_id)
     drop_watch_copies(agency_user_id, watch_id)
 
 
@@ -297,18 +379,56 @@ async def me(agency_user_id: str | None, key: str) -> Me:
     return Me(tenant_id=body["tenant_id"], brand=brand if isinstance(brand, str) and brand else None)
 
 
-async def bind_tenant(agency_user_id: str, tenant_id: str) -> str | None:
+async def bind_tenant(agency_user_id: str, tenant_id: str, *, via_instance: bool = False) -> tuple[str, bool] | None:
     async with get_session() as s:
         await s.execute(sqlite_insert(LeakTrackerTenant).values(
-            agency_user_id=agency_user_id, tenant_id=tenant_id, bound_at=datetime.utcnow(),
+            agency_user_id=agency_user_id, tenant_id=tenant_id, bound_at=datetime.utcnow(), via_instance=via_instance,
         ).on_conflict_do_nothing(index_elements=[LeakTrackerTenant.agency_user_id]))
-    return await bound_tenant(agency_user_id)
+    return await binding(agency_user_id)
+
+
+async def bind_instance(agency_user_id: str) -> bool:
+    tenant = await instance_tenant()
+    if tenant is None:
+        return False
+    held = await bind_tenant(agency_user_id, tenant, via_instance=True)
+    return held is not None and held[0] == tenant
+
+
+async def rebind(agency_user_id: str, tenant_id: str) -> None:
+    held = await binding(agency_user_id)
+    stones = held is not None and not held[1]
+    if held is not None and held[1]:
+        inst = await instance_tenant()
+        if inst is None:
+            raise Unreachable()
+        stones = held[0] == inst
+    now = datetime.utcnow()
+    async with get_session() as s:
+        rows = list((await s.scalars(select(LeakWatch).where(LeakWatch.agency_user_id == agency_user_id))).all())
+        if rows and stones:
+            await s.execute(sqlite_insert(LeakWatchTombstone).values([
+                {"watch_id": w.watch_id, "agency_user_id": agency_user_id, "account_id": w.account_id,
+                 "tenant_id": held[0], "requested_at": now} for w in rows
+            ]).on_conflict_do_nothing(index_elements=[LeakWatchTombstone.watch_id]))
+        for w in rows:
+            w.watch_id, w.synced_at, w.synced_paused, w.updated_at = str(uuid.uuid4()), None, None, now
+        await s.execute(update(LeakTrackerTenant).where(LeakTrackerTenant.agency_user_id == agency_user_id)
+                        .values(tenant_id=tenant_id, bound_at=now, via_instance=False))
+    drop_copies(agency_user_id)
+    _wake.set()
 
 
 async def bound_tenant(agency_user_id: str) -> str | None:
+    held = await binding(agency_user_id)
+    return held[0] if held else None
+
+
+async def binding(agency_user_id: str) -> tuple[str, bool] | None:
     async with get_session() as s:
-        return await s.scalar(select(LeakTrackerTenant.tenant_id).where(
-            LeakTrackerTenant.agency_user_id == agency_user_id))
+        row = (await s.execute(select(LeakTrackerTenant.tenant_id, LeakTrackerTenant.via_instance).where(
+            LeakTrackerTenant.agency_user_id == agency_user_id))).first()
+    return (row[0], bool(row[1])) if row else None
 
 
 async def store_key(agency_user_id: str, key: str) -> None:
@@ -354,11 +474,11 @@ async def sync_watches(now: datetime | None = None) -> None:
         for w in (await s.execute(select(LeakWatch).order_by(LeakWatch.id))).scalars():
             by_agency[w.agency_user_id].append(w)
     for agency, watches in by_agency.items():
-        key = await get_key(agency, PROVIDER)
+        key, _ = await agency_key(agency)
         if not key or key_invalid(agency):
             continue
         async with get_session() as s:
-            flag = (await applied_blob(s, agency, "flags")).get(FLAG) is True
+            flag = tracker_on(await applied_blob(s, agency, "flags"))
         for w in watches:
             bit = paused(w.on, flag, w.account_id in off)
             if watch_synced(w) and w.synced_paused == bit and w.synced_at >= day:
@@ -444,19 +564,22 @@ async def land_tombstones(agency_user_id: str | None = None, *, inline: bool = F
         for t in (await s.execute(q)).scalars():
             by_agency[t.agency_user_id].append(t)
     for agency, stones in by_agency.items():
-        key = await get_key(agency, PROVIDER)
+        key, _ = await agency_key(agency)
         if not key or key_invalid(agency):
             continue
         tenant = await bound_tenant(agency)
+        inst = instance_key() if any(t.tenant_id != tenant for t in stones) else ""
+        inst_tenant = await instance_tenant() if inst else None
         for t in stones:
-            if t.tenant_id != tenant:
+            use, who = _stone_key(t.tenant_id, tenant, key, agency, inst, inst_tenant)
+            if not use:
                 await _missed(t.watch_id, "tenant_mismatch", attempted=False)
                 if inline:
                     return
                 continue
             at = t.requested_at.strftime("%Y-%m-%dT%H:%M:%SZ")
             try:
-                r = await call(agency, key, "DELETE", f"/v1/watches/{t.watch_id}?requested_at={at}",
+                r = await call(who, use, "DELETE", f"/v1/watches/{t.watch_id}?requested_at={at}",
                                timeout=INLINE_TIMEOUT if inline else TIMEOUT)
             except Down:
                 await _missed(t.watch_id, "unreachable")
@@ -476,6 +599,15 @@ async def land_tombstones(agency_user_id: str | None = None, *, inline: bool = F
             await _missed(t.watch_id, f"http_{r.status_code}")
             if inline or r.status_code == 429:
                 break
+
+
+def _stone_key(stone_tenant: str, tenant: str | None, key: str, agency: str, inst: str,
+               inst_tenant: str | None) -> tuple[str, str | None]:
+    if stone_tenant == tenant:
+        return key, agency
+    if inst and stone_tenant == inst_tenant:
+        return inst, None
+    return "", None
 
 
 async def before_user_delete(agency_user_id: str) -> None:
@@ -498,3 +630,244 @@ async def tombstone_loop() -> None:
             await land_tombstones()
         except Exception:
             log.warning("leak watch tombstones cycle failed", exc_info=True)
+
+
+async def live(account_id: str, platform: str) -> dict[str, str] | None:
+    if platform != "onlyfans":
+        return None
+    seen = await account_page.of_me(account_id)
+    username = seen.get("username") if seen else None
+    if not isinstance(username, str) or not username:
+        return None
+    name = seen.get("name")
+    return {"username": username, "display_name": name[:NAME_MAX] if isinstance(name, str) else ""}
+
+
+def auto_identity(seen: dict[str, str] | None) -> dict[str, Any] | None:
+    if seen is None or not HANDLE.fullmatch(seen["username"].strip()):
+        return None
+    return {"username": seen["username"].strip().lower(), "display_name": seen["display_name"].strip(), "aliases": [],
+            "instagram": None, "x": None}
+
+
+def identity_out(row: LeakWatch) -> dict[str, Any]:
+    return {"platform": row.platform, "username": row.username, "verified": row.verified,
+            "display_name": row.display_name, "aliases": json.loads(row.aliases_json or "[]"),
+            "instagram": row.instagram, "x": row.x, "on": row.on}
+
+
+async def watch(agency: str, account_id: str) -> LeakWatch | None:
+    async with get_session() as s:
+        return await s.scalar(select(LeakWatch).where(LeakWatch.agency_user_id == agency,
+                                                      LeakWatch.account_id == account_id))
+
+
+async def handle_taken(agency: str, platform: str, account_id: str, username: str) -> bool:
+    async with get_session() as s:
+        return await s.scalar(select(LeakWatch.id).where(
+            LeakWatch.agency_user_id == agency, LeakWatch.platform == platform,
+            LeakWatch.username == username, LeakWatch.account_id != account_id)) is not None
+
+
+def refusal(r: httpx.Response) -> Refused | None:
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    body = body if isinstance(body, dict) else {}
+    if r.status_code == 409 and body.get("error") == "account_taken":
+        return Refused("account_taken")
+    if r.status_code == 409 and body.get("error") == "creator_cap":
+        cap = body.get("creators_max")
+        return Refused("creator_cap", cap if isinstance(cap, int) else None)
+    if r.status_code == 409 and body.get("error") == "waitlist":
+        return Refused("waitlist")
+    if r.status_code == 422:
+        field = body.get("field")
+        return Refused("identity", field if isinstance(field, str) and field else None)
+    return None
+
+
+async def push(agency: str, key: str, watch_id: str, body: dict[str, Any]) -> bool:
+    try:
+        r = await call(agency, key, "PUT", f"/v1/watches/{watch_id}", json=body)
+    except (Unreachable, KeyRefused):
+        return False
+    if r.status_code == 200:
+        return watch_acknowledged(r, watch_id)
+    if gone(r):
+        raise Gone()
+    if refused := refusal(r):
+        raise refused
+    return False
+
+
+async def save_watch(agency: str, key: str, account_id: str, ident: dict[str, Any], *, verified: bool,
+                     consent_by: str) -> bool:
+    if key_invalid(agency):
+        raise Refused("key_invalid")
+    platform = platforms.for_account(account_id).key
+    row = await watch(agency, account_id)
+    now = datetime.utcnow()
+    current = identity_out(row) if row is not None else None
+    changed = current is None or any(current[field] != value for field, value in ident.items())
+    consent = {"consent_at": now, "consent_by": consent_by} if changed else {}
+    if await handle_taken(agency, platform, account_id, ident["username"]):
+        raise Refused("handle_taken")
+    kept = row is not None and row.verified and row.username == ident["username"]
+    seen = await live(account_id, platform) if verified and not kept else None
+    verified = verified and (kept or (seen is not None and seen["username"].lower() == ident["username"]))
+    values = {"platform": platform, "username": ident["username"], "verified": verified,
+              "display_name": ident["display_name"], "aliases_json": json.dumps(ident["aliases"]),
+              "instagram": ident["instagram"], "x": ident["x"]}
+    if row is None and await bound_tenant(agency) is None and not await bind_instance(agency):
+        raise Refused("unbound")
+    if row is None:
+        watch_id, on = str(uuid.uuid4()), True
+        try:
+            async with get_session() as s:
+                s.add(LeakWatch(
+                    agency_user_id=agency, account_id=account_id, watch_id=watch_id, on=on,
+                    created_at=now, updated_at=now, **consent, **values,
+                ))
+        except IntegrityError:
+            if await handle_taken(agency, platform, account_id, ident["username"]):
+                raise Refused("handle_taken") from None
+            if await watch(agency, account_id) is not None:
+                raise Refused("exists") from None
+            raise
+    else:
+        watch_id, on = row.watch_id, row.on
+    bit = paused(on, True, await account_health.is_deactivated(account_id))
+    try:
+        pushed = await push(agency, key, watch_id, watch_body(account_id, bit, **values))
+    except Gone:
+        await forget_watch(agency, watch_id)
+        raise Refused("watch_deleted") from None
+    except Refused:
+        if row is None:
+            async with get_session() as s:
+                await s.execute(delete(LeakWatch).where(LeakWatch.watch_id == watch_id))
+        raise
+    async with get_session() as s:
+        live_row = await s.scalar(select(LeakWatch).where(LeakWatch.watch_id == watch_id))
+        if live_row is not None:
+            for k, v in {**values, **consent}.items():
+                setattr(live_row, k, v)
+            live_row.updated_at = now
+            if pushed:
+                live_row.synced_at = now
+                live_row.synced_paused = bit
+            if row is None:
+                await s.execute(delete(LeakWatchOptOut).where(LeakWatchOptOut.agency_user_id == agency,
+                                                              LeakWatchOptOut.account_id == account_id))
+    return pushed
+
+
+async def _auto_blocked(agency: str, ids: set[str], now: datetime) -> set[str]:
+    found: set[str] = set()
+    async with get_session() as s:
+        for t, extra in ((LeakWatch, ()), (LeakWatchOptOut, ()), (LeakWatchTombstone, ()),
+                         (LeakWatchAutoSkip, (LeakWatchAutoSkip.retry_after > now,))):
+            found |= set((await s.scalars(select(t.account_id).where(
+                t.agency_user_id == agency, t.account_id.in_(ids), *extra))).all())
+    return found
+
+
+async def _skip_auto(agency: str, account_id: str, reason: str, now: datetime) -> None:
+    async with get_session() as s:
+        await s.execute(sqlite_insert(LeakWatchAutoSkip).values(
+            agency_user_id=agency, account_id=account_id, reason=reason, retry_after=now + AUTO_RETRY,
+        ).on_conflict_do_update(index_elements=[LeakWatchAutoSkip.agency_user_id, LeakWatchAutoSkip.account_id],
+                                set_={"reason": reason, "retry_after": now + AUTO_RETRY}))
+
+
+def capped(key: str, now: datetime) -> bool:
+    return _capped.get(key, datetime.min) > now
+
+
+async def ensure_watches(agency: str, key: str, account_ids: Iterable[str], now: datetime | None = None) -> int:
+    now = now or datetime.utcnow()
+    ids = set(account_ids)
+    ids -= await _auto_blocked(agency, ids, now)
+    owners = await owners_of_many(ids)
+    off = await account_health.deactivated_ids()
+    todo = sorted(aid for aid, who in owners.items()
+                  if aid not in off and platforms.for_account(aid).key == "onlyfans" and agency in who)
+    made = 0
+    for aid in todo[:ENSURE_BATCH]:
+        ident = auto_identity(await live(aid, "onlyfans"))
+        if ident is None:
+            await _skip_auto(agency, aid, "no_identity", now)
+            continue
+        async with watch_lock(agency, aid):
+            if await _auto_blocked(agency, {aid}, now):
+                continue
+            try:
+                synced = await save_watch(agency, key, aid, ident, verified=True, consent_by=AUTO_CONSENT)
+            except Refused as e:
+                if e.kind in ("creator_cap", "waitlist"):
+                    _capped[key] = now + AUTO_RETRY
+                    return made
+                if e.kind in ("key_invalid", "unbound"):
+                    return made
+                if e.kind != "exists":
+                    await _skip_auto(agency, aid, e.kind, now)
+                continue
+        made += 1
+        if not synced:
+            break
+    return made
+
+
+_agency_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+async def ensure_agency(agency: str, now: datetime | None = None) -> int:
+    if not deployment_on():
+        return 0
+    now = now or datetime.utcnow()
+    lock = _agency_locks.setdefault(agency, asyncio.Lock())
+    if lock.locked():
+        return 0
+    async with lock:
+        async with get_session() as s:
+            if not tracker_on(await applied_blob(s, agency, "flags")):
+                return 0
+            ids = await agency_scope.agency_account_ids(s, agency)
+        key, _ = await agency_key(agency)
+        if not key or key_invalid(agency) or capped(key, now):
+            return 0
+        return await ensure_watches(agency, key, ids, now)
+
+
+async def ensure_each(agencies: Iterable[str], now: datetime | None = None) -> None:
+    for agency in agencies:
+        try:
+            await ensure_agency(agency, now)
+        except Exception:
+            log.warning("leak auto-track failed for Agency %s", agency, exc_info=True)
+
+
+async def ensure_all(now: datetime | None = None) -> None:
+    if not deployment_on():
+        return
+    async with get_session() as s:
+        agencies = sorted(set((await s.scalars(select(UserAccount.user_id).distinct())).all()))
+    await ensure_each(agencies, now)
+
+
+def ensure_wanted(agency: str) -> bool:
+    now = time.monotonic()
+    if agency in _ensure_asked and now - _ensure_asked[agency] < ENSURE_GAP_S:
+        return False
+    _ensure_asked[agency] = now
+    return True
+
+
+async def sync_all() -> None:
+    try:
+        await ensure_all()
+    except Exception:
+        log.warning("leak auto-track cycle failed", exc_info=True)
+    await sync_watches()

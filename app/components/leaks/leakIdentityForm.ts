@@ -9,20 +9,17 @@ export interface LeakIdentityForm {
   aliases: string[];
   instagram: string;
   x: string;
-  consent: boolean;
-  originalIdentity: string | null;
   error: string | null;
 }
 
 export type Action =
   | {
-    type: "adopt"; tracked: boolean; username: string; verified: boolean; display_name: string;
+    type: "adopt"; username: string; verified: boolean; display_name: string;
     aliases?: string[]; instagram?: string | null; x?: string | null;
   }
   | { type: "edit"; field: IdentityField; value: string }
   | { type: "addAlias"; value: string }
   | { type: "removeAlias"; index: number }
-  | { type: "setConsent"; value: boolean }
   | { type: "saveFailed"; message: string };
 
 export type LeakIdentityPayload = {
@@ -32,7 +29,6 @@ export type LeakIdentityPayload = {
   aliases: string[];
   instagram: string | null;
   x: string | null;
-  consent: boolean;
 };
 
 export const ALIASES_MAX = 5;
@@ -70,13 +66,13 @@ export const ALIAS_LANE_LABEL: Record<AliasLane, string> = {
 
 export const INITIAL_FORM: LeakIdentityForm = {
   username: "", verified: false, display_name: "", aliases: [], instagram: "", x: "",
-  consent: false, originalIdentity: null, error: null,
+  error: null,
 };
 
 export function leakIdentityFormReducer(state: LeakIdentityForm, action: Action): LeakIdentityForm {
   switch (action.type) {
-    case "adopt": {
-      const adopted = {
+    case "adopt":
+      return {
         ...INITIAL_FORM,
         username: action.username,
         verified: action.verified && action.username !== "",
@@ -85,8 +81,6 @@ export function leakIdentityFormReducer(state: LeakIdentityForm, action: Action)
         instagram: action.instagram ?? "",
         x: action.x ?? "",
       };
-      return { ...adopted, originalIdentity: action.tracked ? identityOf(adopted) : null };
-    }
     case "edit":
       if (action.field === "username") {
         const verified = state.verified && action.value === state.username;
@@ -99,8 +93,6 @@ export function leakIdentityFormReducer(state: LeakIdentityForm, action: Action)
     }
     case "removeAlias":
       return edited(state, { aliases: state.aliases.filter((_, i) => i !== action.index) });
-    case "setConsent":
-      return { ...state, consent: action.value };
     case "saveFailed":
       return { ...state, error: action.message };
   }
@@ -129,22 +121,12 @@ export function validate(state: LeakIdentityForm): Partial<Record<"username" | "
   return errors;
 }
 
-function identityOf(state: LeakIdentityForm): string {
-  const { username, display_name, aliases, instagram, x } = buildPayload(state);
-  return JSON.stringify([username.toLowerCase(), display_name, aliases, instagram, x]);
-}
-
 function edited(state: LeakIdentityForm, fields: Partial<LeakIdentityForm>): LeakIdentityForm {
-  const next = { ...state, ...fields, error: null };
-  return { ...next, consent: state.consent && identityOf(state) === identityOf(next) };
-}
-
-export function needsConsent(state: LeakIdentityForm): boolean {
-  return state.originalIdentity !== identityOf(state);
+  return { ...state, ...fields, error: null };
 }
 
 export function canSubmit(state: LeakIdentityForm): boolean {
-  return Object.keys(validate(state)).length === 0 && (!needsConsent(state) || state.consent);
+  return Object.keys(validate(state)).length === 0;
 }
 
 export function buildPayload(state: LeakIdentityForm): LeakIdentityPayload {
@@ -155,7 +137,6 @@ export function buildPayload(state: LeakIdentityForm): LeakIdentityPayload {
     aliases: state.aliases,
     instagram: state.instagram.trim() || null,
     x: state.x.trim() || null,
-    consent: state.consent,
   };
 }
 

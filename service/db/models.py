@@ -1839,6 +1839,7 @@ class LeakTrackerTenant(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String, nullable=False)
     bound_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    via_instance: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("0"))
 
 
 class LeakWatch(Base):
@@ -1881,6 +1882,31 @@ class LeakWatchTombstone(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _ts_now()
+
+
+class LeakWatchOptOut(Base):
+    __tablename__ = "leak_watch_opt_out"
+
+    agency_user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = _ts_now()
+
+
+class LeakWatchAutoSkip(Base):
+    __tablename__ = "leak_watch_auto_skip"
+
+    agency_user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    retry_after: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
 class UserSetting(Base):

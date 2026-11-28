@@ -270,7 +270,8 @@ async def get_applied(request: Request) -> dict[str, Any]:
     `denied_actions` the `<page>#<action>` Function permissions its role denies
     (`permissions.denied_actions`), `denied_cards` the Dashboard cards it
     hides (`permissions.denied_cards`). `flags` holds every `settings_schema.FLAGS`
-    name, false unless the Agency stored it true. 401 signed out.
+    name, false unless the Agency stored it true, except `leak_tracker`, true unless
+    stored false (and only where `leak_tracker.page_on` lets the session in). 401 signed out.
 
     An owner session (the Master included) is its own Agency and is never
     checked against a role, so it reads every page and "all" data; `enforced`

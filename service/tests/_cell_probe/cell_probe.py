@@ -26,7 +26,7 @@ COPIED = frozenset({
 CONTROL = frozenset({
     "clock_events", "chatters_invites", "ultra_plans", "grok_user_daily_cost",
     "push_sent", "accounts", "proxies", "leak_tracker_tenant", "leak_watch",
-    "leak_watch_tombstone",
+    "leak_watch_tombstone", "leak_watch_opt_out", "leak_watch_auto_skip",
 })
 CONTROL_PREFIX = "bio_"
 CELL_MODE_ONLY_JOBS = frozenset({"agency-copy-poll", "bell-notices-to-control", "grant-age-watch", "reservation-activation-retry"})

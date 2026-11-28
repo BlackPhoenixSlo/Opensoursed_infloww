@@ -37,6 +37,10 @@ Owner, rung 2: "I want it live on inflowwww" — the target is the public app.in
 
 ASSUMPTION: 42 and 76 render on the `none` branch with no Notice feed (ticket 42's own `none`/`former`/`unknown` rule), so the notice chain 33–40 trails the flip. Overturned if the owner wants Removal track counts live at the flip; then 33–41 move into wave 4.
 
+Owner 2026-11-28, rung 2: "turn all true by default for all if they connect a model they get tracked, all consent is ok its all accessible on google" — `leak_tracker` defaults on (only an explicit `false` turns it off), an instance `LEAK_TRACKER_KEY` stands in for Agencies with no own key, every connected OnlyFans Creator is auto-tracked (`consent_by` `auto:owner-default`) unless the Agency deleted or turned it off, and the per-Creator consent box is gone.
+
+ASSUMPTION: Changing LEAK_TRACKER_KEY to another tracker account is not supported in place; instance-bound watches would need a manual move.
+
 ## Adversary
 
 - Phase 1: codex — 12 accept, 10 partial, 1 reject, 0 needs-human. Six hats 9 accept. Cross-Phase 5 accept, 1 reject.

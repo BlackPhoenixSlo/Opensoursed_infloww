@@ -272,6 +272,17 @@ describe("/creators/leaks", () => {
     expect(setupGets()).toBe(1);
   });
 
+  it("the instance key reads connected with no mask, offers the owner's own key and no Disconnect", async () => {
+    serve(setup({ key: "set", masked: null, brand: "Example Removal", source: "instance" }));
+    renderWithProviders(<Page />);
+    const card = await screen.findByRole("region", { name: "Removal service key" });
+    expect(card.textContent).toContain("Connected to Example Removal");
+    expect(card.textContent).not.toContain("·");
+    expect(within(card).getByText("Use your own key")).toBeTruthy();
+    expect(within(card).getByLabelText("Tracker key")).toBeTruthy();
+    expect(within(card).queryByRole("button", { name: "Disconnect" })).toBeNull();
+  });
+
   it("a Team Leader with a set key sees no key card", async () => {
     serve(setup({ key: "set", is_owner: false, can_write: false }));
     const { container } = renderWithProviders(<Page />);
@@ -396,7 +407,7 @@ describe("/creators/leaks", () => {
     }
   });
 
-  it("an owner tracks a Not tracked Creator with consent, and the entry reads Not checked yet", async () => {
+  it("an owner tracks a Not tracked Creator with no consent box, and the entry reads Not checked yet", async () => {
     scopeAccount = "acc-a";
     let saved = false;
     serve(setup({ key: "set", brand: "Example Removal" }), {
@@ -413,18 +424,12 @@ describe("/creators/leaks", () => {
     expect(handle.readOnly).toBe(true);
     expect(screen.getByText("Verified from the live session")).toBeTruthy();
     expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Mia Vale");
-    expect(screen.getByTestId("leak-consent-text").textContent).toBe(
-      "I confirm this Creator agreed to leak tracking. This sends their handle, display name, aliases and linked socials to "
-      + "Example Removal, which checks leak sites daily and keeps the list of leak links and any removal notices while tracking "
-      + "is on. Pausing keeps it; deleting removes it within 30 days (removal-case records stay with Example Removal if you're "
-      + "their client).");
+    expect(screen.queryByRole("checkbox")).toBeNull();
     const save = saveIn() as HTMLButtonElement;
-    expect(save.disabled).toBe(true);
-    fireEvent.click(screen.getByRole("checkbox"));
     expect(save.disabled).toBe(false);
     fireEvent.click(save);
     await waitFor(() => expect(relayPut).toHaveBeenCalledWith("/admin/leaks/watches/acc-b", {
-      username: "miavale", verified: true, display_name: "Mia Vale", aliases: [], instagram: null, x: null, consent: true,
+      username: "miavale", verified: true, display_name: "Mia Vale", aliases: [], instagram: null, x: null,
     }, { accountId: "acc-a" }));
     await waitFor(() => expect(screen.getByRole("region", { name: "Creator B" }).textContent).toContain("Not checked yet"));
     await waitFor(() => expect(row("Creator B")?.textContent).toContain("Not checked yet"));
@@ -443,7 +448,6 @@ describe("/creators/leaks", () => {
     await pick("Creator B");
     fireEvent.click(screen.getByRole("button", { name: "Track this Creator" }));
     await screen.findByLabelText(/^Handle/);
-    fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(saveIn());
     await waitFor(() => expect(relayPut).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId("of-all-creators-row"));
@@ -462,10 +466,9 @@ describe("/creators/leaks", () => {
     fireEvent.change(handle, { target: { value: "mia_vale" } });
     fireEvent.change(screen.getByLabelText(/^Aliases/), { target: { value: "mia.v" } });
     fireEvent.click(screen.getByRole("button", { name: "Add alias" }));
-    fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(saveIn());
     await waitFor(() => expect(relayPut).toHaveBeenCalledWith("/admin/leaks/watches/acc-b", expect.objectContaining({
-      username: "mia_vale", verified: false, aliases: ["mia.v"], consent: true,
+      username: "mia_vale", verified: false, aliases: ["mia.v"],
     }), { accountId: null }));
   });
 
@@ -482,16 +485,6 @@ describe("/creators/leaks", () => {
     const aliasRow = (name: string) => screen.getByRole("button", { name: `Remove ${name}` }).closest("li")!;
     expect(aliasRow("miav").textContent).toContain("Only with the handle");
     expect(aliasRow("vale.mia").textContent).toContain("Searched on its own");
-  });
-
-  it("the consent box names the removal service when /v1/me gives no brand", async () => {
-    serve(setup({ key: "set", brand: null }));
-    renderWithProviders(<Page />);
-    await pick("Creator B");
-    fireEvent.click(screen.getByRole("button", { name: "Track this Creator" }));
-    const text = (await screen.findByTestId("leak-consent-text")).textContent ?? "";
-    expect(text).toContain("linked socials to the removal service, which checks");
-    expect(text).toContain("records stay with the removal service if you're their client");
   });
 
   it("a Team Leader reads Not tracked and gets no form", async () => {
@@ -619,18 +612,17 @@ describe("/creators/leaks", () => {
     expect(replace).toHaveBeenLastCalledWith("/creators/leaks?open=acc-a", { scroll: false });
   });
 
-  it("an edit the service already deleted reopens as the Track form with consent, and saving with consent tracks anew", async () => {
+  it("an edit the service already deleted reopens as the Track form, and saving tracks anew", async () => {
     let state: "tracked" | "gone" | "again" = "tracked";
     serve(setup({ key: "set" }), {
       "/admin/leaks/roster": () => (state === "gone" ? { ...ROSTER, rows: [], untracked: [...ROSTER.untracked, { account_id: "acc-a", name: "Creator A" }] } : ROSTER),
       "/admin/leaks/watches/acc-a": () => (state === "gone" ? untracked() : tracked()),
     });
-    relayPut.mockImplementation(async (_p: string, body: { consent?: boolean }) => {
+    relayPut.mockImplementation(async () => {
       if (state === "tracked") {
         state = "gone";
         throw new RelayError(409, {}, "The removal service already deleted this watch; save again to track this Creator anew");
       }
-      if (!body.consent) throw new RelayError(422, {}, "consent missing");
       state = "again";
       return { synced: true };
     });
@@ -642,12 +634,9 @@ describe("/creators/leaks", () => {
     fireEvent.click(saveIn());
     expect(await screen.findByRole("heading", { name: "Track Creator A" })).toBeTruthy();
     await waitFor(() => expect(row("Creator A")?.textContent).toContain("Not tracked"));
-    const save = saveIn() as HTMLButtonElement;
-    expect(save.disabled).toBe(true);
-    fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(save);
+    fireEvent.click(saveIn());
     await waitFor(() => expect(relayPut).toHaveBeenLastCalledWith("/admin/leaks/watches/acc-a",
-      expect.objectContaining({ consent: true }), { accountId: null }));
+      expect.objectContaining({ username: "miavale" }), { accountId: null }));
     await waitFor(() => expect(screen.queryByRole("form", { name: "Leak identity" })).toBeNull());
     expect(relayPut).toHaveBeenCalledTimes(2);
     expect(await within(screen.getByRole("region", { name: "Creator A" })).findByRole("button", { name: "Edit identity" })).toBeTruthy();
@@ -659,7 +648,7 @@ describe("/creators/leaks", () => {
     renderWithProviders(<Page />);
     await pick("Creator B");
     fireEvent.click(screen.getByRole("button", { name: "Track this Creator" }));
-    fireEvent.click(await screen.findByRole("checkbox"));
+    await screen.findByLabelText(/^Handle/);
     fireEvent.click(saveIn());
     expect((await screen.findByRole("alert")).textContent).toBe("Another Creator in this agency already uses that handle");
     expect(screen.getByRole("form", { name: "Leak identity" })).toBeTruthy();
@@ -672,7 +661,7 @@ describe("/creators/leaks", () => {
     renderWithProviders(<Page />);
     await pick("Creator B");
     fireEvent.click(screen.getByRole("button", { name: "Track this Creator" }));
-    fireEvent.click(await screen.findByRole("checkbox"));
+    await screen.findByLabelText(/^Handle/);
     fireEvent.click(saveIn());
     expect((await screen.findByRole("status")).textContent).toBe("Saved. It reaches Example Removal on the next sync.");
   });

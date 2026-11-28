@@ -9,17 +9,15 @@ import type { LeakTrimmed } from "./leakCoverage";
 
 const run = (actions: Action[], from: LeakIdentityForm = INITIAL_FORM) => actions.reduce(leakIdentityFormReducer, from);
 const adopt = (over: Partial<Extract<Action, { type: "adopt" }>> = {}): Action =>
-  ({ type: "adopt", tracked: false, username: "miavale", verified: true, display_name: "Mia Vale", ...over });
+  ({ type: "adopt", username: "miavale", verified: true, display_name: "Mia Vale", ...over });
 const edit = (field: "username" | "display_name" | "instagram" | "x", value: string): Action => ({ type: "edit", field, value });
-const consent: Action = { type: "setConsent", value: true };
-const valid = run([adopt(), consent]);
+const valid = run([adopt()]);
 
 describe("leakIdentityFormReducer", () => {
-  it("adopt fills the identity and resets consent and the error", () => {
-    const s = run([adopt({ aliases: ["mia.vale.x"], instagram: "miavale", x: null }), consent,
-      { type: "saveFailed", message: "boom" }, adopt({ tracked: true, username: "other", verified: false })]);
-    expect(s).toEqual({ ...INITIAL_FORM, username: "other", verified: false, display_name: "Mia Vale",
-      originalIdentity: JSON.stringify(["other", "Mia Vale", [], null, null]) });
+  it("adopt fills the identity and resets the error", () => {
+    const s = run([adopt({ aliases: ["mia.vale.x"], instagram: "miavale", x: null }),
+      { type: "saveFailed", message: "boom" }, adopt({ username: "other", verified: false })]);
+    expect(s).toEqual({ ...INITIAL_FORM, username: "other", verified: false, display_name: "Mia Vale" });
   });
 
   it.each<[string, Action[], Pick<LeakIdentityForm, "username" | "verified">]>([
@@ -118,36 +116,30 @@ describe("aliasLane", () => {
 
 describe("canSubmit", () => {
   it.each<[string, Action[], boolean]>([
-    ["create without consent", [adopt()], false],
-    ["create with consent", [adopt(), consent], true],
-    ["create with consent taken back", [adopt(), consent, { type: "setConsent", value: false }], false],
-    ["changed handle needs consent", [adopt({ tracked: true }), edit("username", "other")], false],
-    ["changed name needs consent", [adopt({ tracked: true }), edit("display_name", "Other")], false],
-    ["changed alias needs consent", [adopt({ tracked: true }), { type: "addAlias", value: "other" }], false],
-    ["changed social needs consent", [adopt({ tracked: true }), edit("x", "other")], false],
-    ["changed identity with fresh consent", [adopt({ tracked: true }), edit("x", "other"), consent], true],
-    ["subsequent change clears consent", [adopt({ tracked: true }), edit("x", "other"), consent, edit("x", "another")], false],
-    ["normalized unchanged handle keeps consent", [adopt({ tracked: true }), edit("username", " MiaVale ")], true],
-    ["update without consent", [adopt({ tracked: true })], true],
-    ["create, consent, invalid handle", [adopt(), consent, edit("username", "m")], false],
-    ["update, invalid alias", [adopt({ tracked: true }), { type: "addAlias", value: "leak" }], false],
+    ["create, no consent box", [adopt()], true],
+    ["changed handle", [adopt(), edit("username", "other")], true],
+    ["changed name", [adopt(), edit("display_name", "Other")], true],
+    ["changed alias", [adopt(), { type: "addAlias", value: "other" }], true],
+    ["changed social", [adopt(), edit("x", "other")], true],
+    ["invalid handle", [adopt(), edit("username", "m")], false],
+    ["invalid alias", [adopt(), { type: "addAlias", value: "leak" }], false],
   ])("%s", (_name, actions, want) => {
     expect(canSubmit(run(actions))).toBe(want);
   });
 });
 
 describe("buildPayload", () => {
-  it("sends the trimmed identity, nulls for empty socials, and the consent", () => {
+  it("sends the trimmed identity and nulls for empty socials, no consent field", () => {
     const s = run([adopt(), edit("display_name", "  Mia Vale "), { type: "addAlias", value: "mia.vale.x" },
-      edit("instagram", " miavale "), edit("x", ""), consent]);
+      edit("instagram", " miavale "), edit("x", "")]);
     expect(buildPayload(s)).toEqual({
       username: "miavale", verified: true, display_name: "Mia Vale", aliases: ["mia.vale.x"],
-      instagram: "miavale", x: null, consent: true,
+      instagram: "miavale", x: null,
     });
   });
 
   it("an unverified typed handle is sent as typed and unverified", () => {
-    const s = run([adopt(), edit("username", ""), edit("username", " mia_v "), consent]);
+    const s = run([adopt(), edit("username", ""), edit("username", " mia_v ")]);
     expect(buildPayload(s)).toMatchObject({ username: "mia_v", verified: false });
   });
 });

@@ -21,6 +21,7 @@ import employees  # noqa: E402
 import account_page  # noqa: E402
 import leak_tracker  # noqa: E402
 import platforms  # noqa: E402
+import relay_host  # noqa: E402
 import tenant_keys  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
@@ -29,6 +30,7 @@ from db.models import (  # noqa: E402
 )
 
 V1 = Path(__file__).resolve().parent / "fixtures" / "leak_tracker_v1"
+relay_host.spawn_bg = lambda coro, name: coro.close()
 TRACKER = "http://127.0.0.1:9"
 ON = {"LEAK_TRACKER_URL": TRACKER, "LEAK_TRACKER_ENABLED": "1", "OI_CELL_MAP": None}
 
@@ -151,7 +153,7 @@ def case_a_key_is_checked_against_me_then_stored_and_binds_the_tenant():
     with _tracker() as t:
         r = _put(KEY_1)
         assert r.status_code == 200, r.text
-        assert r.json() == {"key": "set", "masked": _masked(KEY_1), "brand": "Example Removal"}, r.json()
+        assert r.json() == {"key": "set", "masked": _masked(KEY_1), "brand": "Example Removal", "source": "own"}, r.json()
         assert t.bearers() == [f"Bearer {KEY_1}"], t.bearers()
         assert str(t.calls[0].url) == f"{TRACKER}/v1/me", t.calls[0].url
     assert _stored() == KEY_1
@@ -164,10 +166,10 @@ def case_setup_shows_the_masked_key_to_the_owner_only_and_never_the_key():
         assert _put(KEY_1).status_code == 200
         owner = OWNER_A.get("/admin/leaks/setup")
         assert owner.json() == {"key": "set", "masked": _masked(KEY_1), "is_owner": True, "can_write": True,
-                                "brand": "Example Removal"}, owner.json()
+                                "brand": "Example Removal", "source": "own"}, owner.json()
         admin = CHATTER_A.get("/admin/leaks/setup")
         assert admin.json() == {"key": "set", "masked": None, "is_owner": False, "can_write": True,
-                                "brand": "Example Removal"}, admin.json()
+                                "brand": "Example Removal", "source": "own"}, admin.json()
         for r in (owner, admin):
             assert KEY_1 not in r.text and KEY_1[4:] not in r.text
         assert set(t.bearers()) == {f"Bearer {KEY_1}"}
@@ -188,7 +190,8 @@ def case_setup_reports_the_brand_from_me_or_null():
 def case_setup_with_no_key_makes_no_call():
     _reset()
     with _tracker() as t:
-        assert _setup() == {"key": "missing", "masked": None, "is_owner": True, "can_write": True, "brand": None}
+        assert _setup() == {"key": "missing", "masked": None, "is_owner": True, "can_write": True, "brand": None,
+                            "source": None}
         assert t.calls == []
 
 
@@ -310,7 +313,7 @@ def case_an_empty_key_clears_it_and_keeps_the_binding():
         calls = len(t.calls)
         r = _put("   ")
         assert r.status_code == 200, r.text
-        assert r.json() == {"key": "missing", "masked": None, "brand": None}
+        assert r.json() == {"key": "missing", "masked": None, "brand": None, "source": None}
         assert len(t.calls) == calls, "clearing calls nobody"
         assert _stored() == "" and _setup()["key"] == "missing"
         t.answer = ME_OTHER
@@ -454,16 +457,16 @@ def case_enrol_with_consent_mints_the_watch_id_stores_who_and_when_and_pushes_th
     assert row.synced_at is not None and row.synced_paused is False
 
 
-def case_enrol_without_consent_is_refused_and_nothing_is_sent():
+def case_enrol_without_consent_saves_and_records_who_and_when():
     _connect()
     with _tracker() as t, _live({CREATOR: MIA_LIVE}):
         t.answer = PUT_CREATED
-        for consent in (False, None, "yes", 1):
-            r = _enrol(consent=consent)
-            assert r.status_code == 422, f"{consent!r}: {r.status_code} {r.text}"
-            assert r.json()["detail"] == "Consent is required to track this Creator"
-        assert t.calls == []
-    assert _watches() == []
+        r = _enrol(consent=None)
+        assert r.status_code == 200, r.text
+        assert len(t.calls) == 1
+    (row,) = _watches()
+    assert row.consent_by == f"user:{IDS['agency_a_owner']}:agency_a_owner", row.consent_by
+    assert row.consent_at is not None
 
 
 def case_an_admin_consents_under_the_employee_session():
@@ -516,18 +519,14 @@ def case_saving_a_kept_verified_handle_reads_no_live_identity():
     assert row.verified is True and _pushed(t)[-1]["verified"] is True
 
 
-def case_identity_changes_require_fresh_consent():
+def case_identity_changes_refresh_consent():
     _connect({"enforce": True, "roles": [], "assignments": {str(EMP_A): "admin"}})
     with _tracker() as t, _live({}):
         t.answer = PUT_CREATED
         assert _enrol().status_code == 200
         (before,) = _watches()
-        for change in ({"username": "other"}, {"display_name": "Other"}, {"aliases": ["newalias"]},
-                       {"instagram": "other"}, {"x": "other"}):
-            r = _enrol({**MIA, **change}, client=CHATTER_A, consent=False)
-            assert r.status_code == 422, r.text
-        assert len(t.calls) == 1
-        assert _enrol({**MIA, "display_name": "Other"}, client=CHATTER_A).status_code == 200
+        t.answer = PUT_UPDATED
+        assert _enrol({**MIA, "display_name": "Other"}, client=CHATTER_A, consent=None).status_code == 200
         (after,) = _watches()
         assert after.watch_id == before.watch_id
         assert after.consent_at > before.consent_at
@@ -672,6 +671,7 @@ def case_a_shared_creator_watch_uses_the_named_roster_agency():
             fx.store_blob(owner, "roles", {"enforce": True, "roles": [], "assignments": {str(employee): "admin"}})
             fx.store_blob(owner, "flags", {"leak_tracker": True})
             asyncio.run(leak_tracker.store_key(owner, KEY_1))
+            asyncio.run(leak_tracker.bind_tenant(owner, ME["response"]["tenant_id"]))
         with _tracker() as t, _live({}):
             t.answer = DOWN
             scope_b = {"X-Account-Id": other}

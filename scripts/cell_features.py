@@ -117,7 +117,7 @@ RULES: list[tuple[str, str | None, str, list[str], list[str], list[str]]] = [
       "/admin/mcp", "/admin/my-llm-keys", "/admin/ai-key-status", "POST /fleet/notices"],
      ["push-send", "bell-notices-to-control"], []),
     ("Proxies", None, "The proxy list is off (see Reads across every Creator); edits work, a down Cell's Creators show as missing.",
-     ["/admin/proxies", "/admin/proxy-pool"], ["proxy-health-probe"], []),
+     ["/admin/proxies", "/admin/proxy-pool"], ["proxy-health-probe", "proxy-rebalance"], []),
     ("Connect a Creator (sessions)", None,
      "Fansly session import is refused in Cell mode because the platform is not admitted.",
      ["/admin/session", "/admin/reload-session", "/admin/accounts", "/api/of/v2/sessions", "/api/of/live-window",

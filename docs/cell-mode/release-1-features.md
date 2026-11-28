@@ -133,7 +133,7 @@ Per-Relay tools. Perf log upload names several Creators: a down Cell's Creators 
 
 Say "yes, Release 1 features signed" in the build chat.
 We record your name, the date and the table's fingerprint
-(short form: `41ce06fb3d20ce3c`).
+(short form: `27acf82641f31146`).
 Any change to the table needs a new yes.
 
 ## What is in each part
@@ -446,7 +446,7 @@ Generated from `service/cell_features.json` by
 
 </details>
 
-<details><summary>Proxies (partial; 8 routes, 1 job)</summary>
+<details><summary>Proxies (partial; 8 routes, 2 jobs)</summary>
 
 - `DELETE /admin/proxies/{label}`
 - `POST /admin/proxies`
@@ -457,6 +457,7 @@ Generated from `service/cell_features.json` by
 - `POST /admin/proxy-pool/assign`
 - `POST /admin/proxy-pool/unbind`
 - `proxy-health-probe`
+- `proxy-rebalance`
 
 </details>
 

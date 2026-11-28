@@ -8,7 +8,7 @@ import { relay } from "@/lib/relay";
 
 import {
   ALIAS_LANE_LABEL, ALIASES_MAX, aliasLane, buildPayload, canSubmit, INITIAL_FORM, isTrimmed, leakIdentityFormReducer, TRIMMED_NOTE,
-  needsConsent, validate,
+  validate,
   type LeakIdentityPayload,
 } from "./leakIdentityForm";
 import type { LeakTrimmed } from "./leakCoverage";
@@ -22,26 +22,17 @@ export type IdentityStart = {
   x?: string | null;
 };
 
-export function disclosure(brand: string | null): string {
-  const b = brand || "the removal service";
-  return `I confirm this Creator agreed to leak tracking. This sends their handle, display name, aliases and linked socials to ${b}, `
-    + "which checks leak sites daily and keeps the list of leak links and any removal notices while tracking is on. "
-    + `Pausing keeps it; deleting removes it within 30 days (removal-case records stay with ${b} if you're their client).`;
-}
-
-export function IdentityForm({ creatorId, scopeAccountId, tracked, start, brand, trimmed, onDone, onCancel }: {
+export function IdentityForm({ creatorId, scopeAccountId, start, trimmed, onDone, onCancel }: {
   creatorId: string;
   scopeAccountId: string | null;
-  tracked: boolean;
   start: IdentityStart;
-  brand: string | null;
   trimmed: LeakTrimmed[];
   onDone: () => void;
   onCancel: () => void;
 }) {
   const qc = useQueryClient();
   const [state, dispatch] = useReducer(leakIdentityFormReducer, INITIAL_FORM,
-    (init) => leakIdentityFormReducer(init, { type: "adopt", tracked, ...start }));
+    (init) => leakIdentityFormReducer(init, { type: "adopt", ...start }));
   const [alias, setAlias] = useState("");
   const errors = validate(state);
   const save = useMutation({
@@ -156,17 +147,6 @@ export function IdentityForm({ creatorId, scopeAccountId, tracked, start, brand,
           {fieldError(errors.x, true)}
         </div>
       </div>
-      {needsConsent(state) && (
-        <label className="flex items-start gap-2 text-[14px] text-fg">
-          <input
-            type="checkbox"
-            className="mt-1 accent-info"
-            checked={state.consent}
-            onChange={(e) => dispatch({ type: "setConsent", value: e.target.checked })}
-          />
-          <span data-testid="leak-consent-text">{disclosure(brand)}</span>
-        </label>
-      )}
       {state.error && <p role="alert" className="text-[14px] text-err">{state.error}</p>}
       <div className="flex gap-2">
         <IfButton type="submit" variant="primary" disabled={!canSubmit(state) || save.isPending}>Save</IfButton>

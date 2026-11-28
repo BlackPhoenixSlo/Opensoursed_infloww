@@ -309,8 +309,11 @@ def case_agency_gate_reads_one_agency():
             _all_404(OWNER_B, "agency B flag off")
             _agency("agency_b_owner", flag=False)
             _all_404(OWNER_B, "agency B flag off, key set")
+            fx.store_blob(IDS["agency_b_owner"], "flags", {})
+            _all_reached(OWNER_B, "flag missing is on", creator="creator_b")
+            assert _flag(OWNER_B) is True
             fx.store_blob(IDS["agency_b_owner"], "flags", {"leak_tracker": "yes"})
-            _all_404(OWNER_B, "flag not a real true")
+            _all_reached(OWNER_B, "only a real false turns it off", creator="creator_b")
             _agency("agency_b_owner")
             _all_reached(OWNER_B, "agency B on", creator="creator_b")
             _all_404(OWNER_B, "agency B names agency A's Creator", {"X-Account-Id": IDS["creator_a"]})
@@ -349,7 +352,7 @@ def case_setup_is_exempt_from_the_key_gate():
             r = OWNER_A.get("/admin/leaks/setup")
             assert r.status_code == 200, r.text
             assert r.json() == {"key": "missing", "masked": None, "is_owner": True, "can_write": True,
-                                "brand": None}
+                                "brand": None, "source": None}
             assert OWNER_A.get(PROBE).status_code == 404
             assert _flag(OWNER_A) is True
             _set_key("agency_a_owner", "   ")
@@ -397,7 +400,7 @@ def case_role_table():
                     _all_reached(CHATTER_A, label, writes=writes, offers=offers)
                     body = CHATTER_A.get("/admin/leaks/setup").json()
                     assert body == {"key": "set", "masked": None, "is_owner": False, "can_write": writes,
-                                    "brand": None}, f"{label}: {body}"
+                                    "brand": None, "source": "own"}, f"{label}: {body}"
                 else:
                     _all_404(CHATTER_A, label)
                 assert _flag(CHATTER_A) is passes, label
@@ -415,7 +418,7 @@ def case_team_leader_with_no_key_reaches_setup_only():
             assert _flag(CHATTER_A) is True
             body = CHATTER_A.get("/admin/leaks/setup").json()
             assert body == {"key": "missing", "masked": None, "is_owner": False, "can_write": False,
-                            "brand": None}, body
+                            "brand": None, "source": None}, body
             assert CHATTER_A.get(PROBE).status_code == 404
     finally:
         _reset()

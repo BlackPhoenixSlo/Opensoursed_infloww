@@ -1,0 +1,21 @@
+{
+  "method": "PUT",
+  "path": "/v1/watches/w_other_0003",
+  "request": {
+    "account_id": "acc-1003",
+    "aliases": [
+      "mia.vale.x"
+    ],
+    "display_name": "Mia Vale",
+    "instagram": "miavale",
+    "paused": false,
+    "platform": "onlyfans",
+    "username": "example_three",
+    "verified": true,
+    "x": "miavale"
+  },
+  "response": {
+    "error": "waitlist"
+  },
+  "status": 409
+}

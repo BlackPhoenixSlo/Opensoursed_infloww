@@ -55,9 +55,7 @@ export function LeakCreator({ creatorId, scopeAccountId, name, canWrite, brand, 
           key={String(w.tracked)}
           creatorId={creatorId}
           scopeAccountId={scopeAccountId}
-          tracked={w.tracked}
           start={(w.tracked ? w.identity : w.suggested) ?? EMPTY}
-          brand={brand}
           trimmed={w.lanes?.find((l) => l.lane === "google_full")?.trimmed ?? []}
           onDone={close}
           onCancel={close}

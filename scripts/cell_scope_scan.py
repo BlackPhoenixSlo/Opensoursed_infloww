@@ -89,6 +89,7 @@ JOBS = {
     "vault-collect": ("model", "registry", "per-Creator vault collect"),
     "link-figures-prewarm": ("model", "registry", "per-Creator link figures"),
     "proxy-health-probe": ("cell_local", "none", "probes this Relay's proxies"),
+    "proxy-rebalance": ("cell_local", "none", "moves this Relay's Creators between its proxies"),
     "clock-in-missed": ("agency", "db", "agency shifts and clock events; control Cell only"),
     "leak-watch-sync": ("agency", "db", "pushes each Agency's Leak watches to the removal service; never started in "
                                         "cell mode (leak_tracker.jobs_on)"),

@@ -2,6 +2,7 @@
 # Nothing ever copies the house key into an agency row: every seeder variant handed the deployment's credential to an account that should not have it.
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -23,16 +24,24 @@ def billable_owners(links: list[tuple[str, bool]]) -> list[str]:
 
 
 async def owners_of(account_id: str) -> list[str]:
+    return (await owners_of_many([account_id])).get(account_id, [])
+
+
+async def owners_of_many(account_ids: Iterable[str]) -> dict[str, list[str]]:
     # A master's oversight link is dropped when a non-master link exists: billing the founder for agencies' traffic is the leak this module stops.
-    if not account_id:
-        return []
+    ids = [a for a in account_ids if a]
+    if not ids:
+        return {}
     async with get_session() as s:
         rows = (await s.execute(
-            select(UserAccount.user_id, User.is_admin)
+            select(UserAccount.account_id, UserAccount.user_id, User.is_admin)
             .join(User, User.id == UserAccount.user_id)
-            .where(UserAccount.account_id == account_id)
+            .where(UserAccount.account_id.in_(ids))
         )).all()
-    return billable_owners(list(rows))
+    links: dict[str, list[tuple[str, bool]]] = {}
+    for account_id, uid, is_admin in rows:
+        links.setdefault(account_id, []).append((uid, is_admin))
+    return {account_id: billable_owners(found) for account_id, found in links.items()}
 
 
 def payer_for(owners: list[str], keyed: dict[str, set[str]],

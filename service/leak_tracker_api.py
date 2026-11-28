@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
-import uuid
 from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any, Callable
@@ -12,31 +10,31 @@ from urllib.parse import unquote, urlencode, urlsplit
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from sqlalchemy import delete, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 
-import account_health
-import account_page
 import agency_scope
 import leak_removal
 import leak_tracker
 import platforms
+import relay_host
 from agency_context import AgencyContext
 from audit_log import credential_write
 from auth import require_actor_account_ids
 from chatters import current_actor
 from db.engine import get_session
 from db.models import Account, LeakWatch
+from leak_tracker import HANDLE, NAME_MAX
 from secrets_store import mask
 
 NOT_ACCEPTED = "Key not accepted"
 OTHER_TENANT = "Key belongs to another tracker account"
 UNREACHABLE = "The removal service is not reachable; nothing was saved"
 WRITERS_ONLY = "Only the owner or an Admin can change Leak tracking"
-CONSENT = "Consent is required to track this Creator"
 HANDLE_TAKEN = "Another Creator in this agency already uses that handle"
 ACCOUNT_TAKEN = "The removal service already tracks this Creator under another watch"
 CREATOR_CAP = "The removal service's Creator limit is reached"
+WAITLIST = "The removal service is full right now; try again later"
+ALREADY_TRACKED = "This Creator was just tracked by another save; reload to see it"
 KEY_INVALID = {"error": "key_invalid", "message": "Key no longer valid"}
 UNREADABLE = "The removal service gave an answer the CRM cannot read"
 NOT_REACHABLE = "The removal service is not reachable"
@@ -44,14 +42,12 @@ PENDING = ("A Leak watch delete is still pending at the removal service and need
            "Replace the key instead of clearing it, or try again later")
 WATCH_DELETED = "The removal service already deleted this watch; save again to track this Creator anew"
 
-HANDLE = re.compile(r"[A-Za-z0-9_.-]{2,64}")
 INSTAGRAM = re.compile(r"[A-Za-z0-9_.]{1,30}")
 X_HANDLE = re.compile(r"[A-Za-z0-9_]{1,15}")
 ALIASES_MAX = 5
 ALIAS_MIN = 4
-NAME_MAX = 64
 CLOSED = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
-# HANDLE through BANNED_ALIASES mirror the same limits in app/components/leaks/leakIdentityForm.ts.
+# HANDLE, NAME_MAX (from leak_tracker) and INSTAGRAM through BANNED_ALIASES mirror the same limits in app/components/leaks/leakIdentityForm.ts.
 BANNED_ALIASES = frozenset({
     *(p.key for p in platforms.ALL), "leak", "leaks", "leaked", "nude", "nudes", "naked", "free", "porn", "sexy", "model",
     "official", "babe", "baby", "video", "videos", "photo", "photos", "pics", "content", "premium", "vip",
@@ -81,10 +77,12 @@ def hidden() -> JSONResponse:
 async def get_setup(request: Request) -> dict[str, Any]:
     g = await leak_tracker.require_gates(request, need_key=False)
     agency = g.ctx.agency_user_id
-    out = {"key": "missing", "masked": None, "is_owner": g.ctx.is_owner, "can_write": g.can_write, "brand": None}
+    out = {"key": "missing", "masked": None, "is_owner": g.ctx.is_owner, "can_write": g.can_write, "brand": None,
+           "source": None}
     if not g.key:
         return out
-    out["masked"] = mask(g.key) if g.ctx.is_owner else None
+    out["source"] = "instance" if g.instance else "own"
+    out["masked"] = mask(g.key) if g.ctx.is_owner and not g.instance else None
     if leak_tracker.key_invalid(agency):
         return {**out, "key": "invalid"}
     try:
@@ -93,6 +91,13 @@ async def get_setup(request: Request) -> dict[str, Any]:
         return {**out, "key": "invalid"}
     except leak_tracker.Unreachable:
         return {**out, "key": "set"}
+
+
+async def _brand(agency: str, key: str) -> str | None:
+    try:
+        return (await leak_tracker.me(agency, key)).brand
+    except (leak_tracker.KeyRefused, leak_tracker.Unreachable):
+        return None
 
 
 @router.put("/key", dependencies=[Depends(credential_write)])
@@ -113,7 +118,10 @@ async def put_key(request: Request) -> dict[str, Any]:
         if await leak_tracker.pending(agency):
             raise HTTPException(status_code=409, detail=PENDING)
         await leak_tracker.store_key(agency, "")
-        return {"key": "missing", "masked": None, "brand": None}
+        inst, _ = await leak_tracker.agency_key(agency)
+        if not inst:
+            return {"key": "missing", "masked": None, "brand": None, "source": None}
+        return {"key": "set", "masked": None, "brand": await _brand(agency, inst), "source": "instance"}
     if not leak_tracker.KEY_SHAPE.fullmatch(key):
         raise HTTPException(status_code=422, detail=NOT_ACCEPTED)
     try:
@@ -122,10 +130,16 @@ async def put_key(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=NOT_ACCEPTED) from None
     except leak_tracker.Unreachable:
         raise HTTPException(status_code=503, detail=UNREACHABLE) from None
-    if await leak_tracker.bind_tenant(agency, me.tenant_id) != me.tenant_id:
-        raise HTTPException(status_code=422, detail=OTHER_TENANT)
+    held = await leak_tracker.bind_tenant(agency, me.tenant_id)
+    if held is None or held[0] != me.tenant_id:
+        if held is None or not held[1]:
+            raise HTTPException(status_code=422, detail=OTHER_TENANT)
+        try:
+            await leak_tracker.rebind(agency, me.tenant_id)
+        except leak_tracker.Unreachable:
+            raise HTTPException(status_code=503, detail=UNREACHABLE) from None
     await leak_tracker.store_key(agency, key)
-    return {"key": "set", "masked": mask(key), "brand": me.brand}
+    return {"key": "set", "masked": mask(key), "brand": me.brand, "source": "own"}
 
 
 def _invalid(field: str) -> HTTPException:
@@ -146,23 +160,6 @@ async def _agency_watches(agency: str, account_ids: dict[str, str]) -> list[Leak
     async with get_session() as s:
         return list((await s.scalars(select(LeakWatch).where(
             LeakWatch.agency_user_id == agency, LeakWatch.account_id.in_(account_ids)))).all())
-
-
-async def _watch(agency: str, account_id: str) -> LeakWatch | None:
-    async with get_session() as s:
-        return await s.scalar(select(LeakWatch).where(LeakWatch.agency_user_id == agency,
-                                                      LeakWatch.account_id == account_id))
-
-
-async def _live(account_id: str, platform: str) -> dict[str, str] | None:
-    if platform != "onlyfans":
-        return None
-    me = await account_page.of_me(account_id)
-    username = me.get("username") if me else None
-    if not isinstance(username, str) or not username:
-        return None
-    name = me.get("name")
-    return {"username": username, "display_name": name[:NAME_MAX] if isinstance(name, str) else ""}
 
 
 def _optional(value: Any, shape: re.Pattern[str], field: str) -> str | None:
@@ -206,42 +203,20 @@ def _identity(body: Any) -> dict[str, Any]:
             "x": _optional(body.get("x"), X_HANDLE, "x")}
 
 
-def _identity_out(row: LeakWatch) -> dict[str, Any]:
-    return {"platform": row.platform, "username": row.username, "verified": row.verified,
-            "display_name": row.display_name, "aliases": json.loads(row.aliases_json or "[]"),
-            "instagram": row.instagram, "x": row.x, "on": row.on}
-
-
-def _refusal(r: Any) -> HTTPException | None:
-    try:
-        body = r.json()
-    except ValueError:
-        body = None
-    body = body if isinstance(body, dict) else {}
-    if r.status_code == 409 and body.get("error") == "account_taken":
-        return HTTPException(status_code=409, detail=ACCOUNT_TAKEN)
-    if r.status_code == 409 and body.get("error") == "creator_cap":
-        cap = body.get("creators_max")
-        return HTTPException(status_code=409, detail=f"{CREATOR_CAP} ({cap})" if isinstance(cap, int) else CREATOR_CAP)
-    if r.status_code == 422:
-        field = body.get("field")
-        return HTTPException(status_code=422, detail=f"The removal service refused the {field}"
-                             if isinstance(field, str) and field else "The removal service refused the identity")
-    return None
-
-
-async def _push(agency: str, key: str, watch_id: str, body: dict[str, Any]) -> bool:
-    try:
-        r = await leak_tracker.call(agency, key, "PUT", f"/v1/watches/{watch_id}", json=body)
-    except (leak_tracker.Unreachable, leak_tracker.KeyRefused):
-        return False
-    if r.status_code == 200:
-        return leak_tracker.watch_acknowledged(r, watch_id)
-    if leak_tracker.gone(r):
-        raise leak_tracker.Gone()
-    if refused := _refusal(r):
-        raise refused
-    return False
+def _http(e: leak_tracker.Refused) -> HTTPException:
+    if e.kind == "key_invalid":
+        return HTTPException(status_code=409, detail=KEY_INVALID)
+    if e.kind == "creator_cap":
+        return HTTPException(status_code=409, detail=f"{CREATOR_CAP} ({e.detail})" if e.detail is not None else CREATOR_CAP)
+    if e.kind == "waitlist":
+        return HTTPException(status_code=409, detail=WAITLIST)
+    if e.kind == "identity":
+        return HTTPException(status_code=422, detail=f"The removal service refused the {e.detail}"
+                             if e.detail else "The removal service refused the identity")
+    if e.kind == "unbound":
+        return HTTPException(status_code=503, detail=UNREACHABLE)
+    return HTTPException(status_code=409, detail={"handle_taken": HANDLE_TAKEN, "account_taken": ACCOUNT_TAKEN,
+                                                  "watch_deleted": WATCH_DELETED, "exists": ALREADY_TRACKED}[e.kind])
 
 
 SERVICE_FIELDS = ("seeded", "paused", "paused_since", "last_checked_at", "next_check_at", "counts")
@@ -294,6 +269,8 @@ async def get_roster(request: Request) -> dict[str, Any]:
     g = await leak_tracker.require_gates(request, need_key=True)
     names = await _creators(g.ctx)
     watches = {w.account_id: w for w in await _agency_watches(g.ctx.agency_user_id, names)}
+    if not leak_tracker.key_invalid(g.ctx.agency_user_id) and leak_tracker.ensure_wanted(g.ctx.agency_user_id):
+        relay_host.spawn_bg(leak_tracker.ensure_each([g.ctx.agency_user_id]), "leak-auto-track")
     copy = await _read(g, "/v1/creators", _by_watch) if watches else None
     service = copy.body if copy else {}
     rows = []
@@ -495,7 +472,7 @@ async def get_watch(account_id: str, request: Request, cursor: str | None = None
     if account_id not in await _creators(g.ctx):
         raise leak_tracker.not_found()
     _cursor_ok(cursor)
-    row = await _watch(g.ctx.agency_user_id, account_id)
+    row = await leak_tracker.watch(g.ctx.agency_user_id, account_id)
     if row is not None:
         path = f"/v1/creators/{row.watch_id}/leaks?{_query([], cursor)}"
         page, detail, me, extra = PENDING_LEAKS, None, None, NO_DETAIL
@@ -511,10 +488,10 @@ async def get_watch(account_id: str, request: Request, cursor: str | None = None
         except leak_tracker.Gone:
             await leak_tracker.forget_watch(g.ctx.agency_user_id, row.watch_id)
         else:
-            return {"tracked": True, "identity": _identity_out(row), "suggested": None,
+            return {"tracked": True, "identity": leak_tracker.identity_out(row), "suggested": None,
                     "synced": leak_tracker.watch_synced(row), **extra, **page,
                     "stale": page["stale"] or bool(detail and detail.stale)}
-    live = await _live(account_id, platforms.for_account(account_id).key)
+    live = await leak_tracker.live(account_id, platforms.for_account(account_id).key)
     suggested = {**live, "verified": True} if live else {"username": "", "display_name": "", "verified": False}
     return {"tracked": False, "identity": None, "suggested": suggested, "synced": False, **NO_DETAIL, **NO_LEAKS}
 
@@ -524,7 +501,7 @@ async def get_offer(account_id: str, request: Request) -> dict[str, Any]:
     g = await leak_tracker.require_gates(request, need_key=True)
     if not g.offer_viewer or account_id not in await _creators(g.ctx):
         raise leak_tracker.not_found()
-    row = await _watch(g.ctx.agency_user_id, account_id)
+    row = await leak_tracker.watch(g.ctx.agency_user_id, account_id)
     if row is None or row.synced_at is None:
         raise leak_tracker.not_found()
     try:
@@ -653,83 +630,17 @@ async def put_watch(account_id: str, request: Request) -> dict[str, Any]:
     except ValueError:
         body = None
     ident = _identity(body)
+    actor = current_actor()
+    if actor is None:
+        raise HTTPException(status_code=401, detail="sign in required")
     agency = g.ctx.agency_user_id
     async with leak_tracker.watch_lock(agency, account_id):
-        return await _save_watch(g, account_id, body, ident)
-
-
-def _identity_changed(row: LeakWatch, ident: dict[str, Any]) -> bool:
-    current = _identity_out(row)
-    return any(current[field] != value for field, value in ident.items())
-
-
-async def _handle_taken(agency: str, platform: str, account_id: str, username: str) -> bool:
-    async with get_session() as s:
-        return await s.scalar(select(LeakWatch.id).where(
-            LeakWatch.agency_user_id == agency, LeakWatch.platform == platform,
-            LeakWatch.username == username, LeakWatch.account_id != account_id)) is not None
-
-
-async def _save_watch(g: leak_tracker.Gates, account_id: str, body: dict[str, Any],
-                      ident: dict[str, Any]) -> dict[str, Any]:
-    agency = g.ctx.agency_user_id
-    if leak_tracker.key_invalid(agency):
-        raise HTTPException(status_code=409, detail=KEY_INVALID)
-    platform = platforms.for_account(account_id).key
-    row = await _watch(agency, account_id)
-    now = datetime.utcnow()
-    consent = {}
-    if row is None or _identity_changed(row, ident):
-        if body.get("consent") is not True:
-            raise HTTPException(status_code=422, detail=CONSENT)
-        actor = current_actor()
-        if actor is None:
-            raise HTTPException(status_code=401, detail="sign in required")
-        consent = {"consent_at": now, "consent_by": f"{actor.kind}:{actor.id}:{actor.username}"}
-    if await _handle_taken(agency, platform, account_id, ident["username"]):
-        raise HTTPException(status_code=409, detail=HANDLE_TAKEN)
-    kept = row is not None and row.verified and row.username == ident["username"]
-    live = await _live(account_id, platform) if body.get("verified") is True and not kept else None
-    verified = body.get("verified") is True and (kept or (live is not None and live["username"].lower() == ident["username"]))
-    values = {"platform": platform, "username": ident["username"], "verified": verified,
-              "display_name": ident["display_name"], "aliases_json": json.dumps(ident["aliases"]),
-              "instagram": ident["instagram"], "x": ident["x"]}
-    if row is None:
-        watch_id, on = str(uuid.uuid4()), True
         try:
-            async with get_session() as s:
-                s.add(LeakWatch(
-                    agency_user_id=agency, account_id=account_id, watch_id=watch_id, on=on,
-                    created_at=now, updated_at=now, **consent, **values,
-                ))
-        except IntegrityError:
-            if await _handle_taken(agency, platform, account_id, ident["username"]):
-                raise HTTPException(status_code=409, detail=HANDLE_TAKEN) from None
-            raise
-    else:
-        watch_id, on = row.watch_id, row.on
-    paused = leak_tracker.paused(on, True, await account_health.is_deactivated(account_id))
-    push = leak_tracker.watch_body(account_id, paused, **values)
-    try:
-        pushed = await _push(agency, g.key, watch_id, push)
-    except leak_tracker.Gone:
-        await leak_tracker.forget_watch(agency, watch_id)
-        raise HTTPException(status_code=409, detail=WATCH_DELETED) from None
-    except HTTPException:
-        if row is None:
-            async with get_session() as s:
-                await s.execute(delete(LeakWatch).where(LeakWatch.watch_id == watch_id))
-        raise
-    async with get_session() as s:
-        live_row = await s.scalar(select(LeakWatch).where(LeakWatch.watch_id == watch_id))
-        if live_row is not None:
-            for k, v in {**values, **consent}.items():
-                setattr(live_row, k, v)
-            live_row.updated_at = now
-            if pushed:
-                live_row.synced_at = now
-                live_row.synced_paused = paused
-    return {"synced": pushed}
+            synced = await leak_tracker.save_watch(agency, g.key, account_id, ident, verified=body.get("verified") is True,
+                                                   consent_by=f"{actor.kind}:{actor.id}:{actor.username}")
+        except leak_tracker.Refused as e:
+            raise _http(e) from None
+    return {"synced": synced}
 
 
 @router.post("/watches/{account_id}/tracking")
@@ -787,4 +698,5 @@ async def delete_watch(account_id: str, request: Request) -> dict[str, Any]:
     if not g.can_write:
         raise HTTPException(status_code=403, detail=WRITERS_ONLY)
     await leak_tracker.drop_watches(account_id=account_id, agency_user_id=g.ctx.agency_user_id)
+    await leak_tracker.opt_out(g.ctx.agency_user_id, account_id)
     return {"tracked": False}

@@ -29,13 +29,16 @@ export type LeakSetup = {
   is_owner: boolean;
   can_write: boolean;
   brand: string | null;
+  source: "own" | "instance" | null;
 };
 
 function KeyCard({ setup, accountId }: { setup: LeakSetup; accountId: string | null }) {
   const qc = useQueryClient();
   const save = useMutation({
-    mutationFn: (key: string) => relay.put<Pick<LeakSetup, "key" | "masked" | "brand">>("/admin/leaks/key", { key }, { accountId }),
-    onSuccess: (res) => qc.setQueriesData<LeakSetup>({ queryKey: ["leak-tracker", "setup"] }, (prev) => (prev ? { ...prev, ...res } : prev)),
+    mutationFn: (key: string) => relay.put<Pick<LeakSetup, "key" | "masked" | "brand" | "source">>("/admin/leaks/key", { key }, { accountId }),
+    onSuccess: (res) => {
+      qc.setQueriesData<LeakSetup>({ queryKey: ["leak-tracker", "setup"] }, (prev) => (prev ? { ...prev, ...res } : prev));
+    },
   });
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -54,15 +57,19 @@ function KeyCard({ setup, accountId }: { setup: LeakSetup; accountId: string | n
   );
   const error = save.error ? <p role="alert" className="mt-2 text-[14px] text-err">{save.error.message}</p> : null;
   if (setup.key === "set") {
+    const shared = setup.source === "instance";
     return (
       <IfCard aria-label="Removal service key" className="mb-4">
         <p className="text-[14px] text-fg">
-          Connected to {setup.brand ?? "the removal service"} · <span className="font-mono">{setup.masked}</span>
+          Connected to {setup.brand ?? "the removal service"}
+          {setup.masked && <> · <span className="font-mono">{setup.masked}</span></>}
         </p>
         <details className="mt-2 text-[14px]">
-          <summary className="cursor-pointer text-accent">Change key</summary>
+          <summary className="cursor-pointer text-accent">{shared ? "Use your own key" : "Change key"}</summary>
           {form}
-          <IfButton variant="link" className="mt-2" disabled={save.isPending} onClick={() => save.mutate("")}>Disconnect</IfButton>
+          {!shared && (
+            <IfButton variant="link" className="mt-2" disabled={save.isPending} onClick={() => save.mutate("")}>Disconnect</IfButton>
+          )}
         </details>
         {error}
       </IfCard>
