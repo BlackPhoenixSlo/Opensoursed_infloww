@@ -397,6 +397,7 @@ describe("/creators/leaks", () => {
   });
 
   it("an owner tracks a Not tracked Creator with consent, and the entry reads Not checked yet", async () => {
+    scopeAccount = "acc-a";
     let saved = false;
     serve(setup({ key: "set", brand: "Example Removal" }), {
       "/admin/leaks/roster": () => (saved ? { ...ROSTER, rows: [...ROSTER.rows, { ...ROSTER.rows[0], account_id: "acc-b", name: "Creator B" }], untracked: [] } : ROSTER),
@@ -424,10 +425,10 @@ describe("/creators/leaks", () => {
     fireEvent.click(save);
     await waitFor(() => expect(relayPut).toHaveBeenCalledWith("/admin/leaks/watches/acc-b", {
       username: "miavale", verified: true, display_name: "Mia Vale", aliases: [], instagram: null, x: null, consent: true,
-    }, { accountId: "acc-b" }));
+    }, { accountId: "acc-a" }));
     await waitFor(() => expect(screen.getByRole("region", { name: "Creator B" }).textContent).toContain("Not checked yet"));
     await waitFor(() => expect(row("Creator B")?.textContent).toContain("Not checked yet"));
-    expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-b", { accountId: "acc-b" });
+    expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-b", { accountId: "acc-a" });
   });
 
   it("tracking the first Creator refreshes All Models without a reload", async () => {
@@ -465,7 +466,7 @@ describe("/creators/leaks", () => {
     fireEvent.click(saveIn());
     await waitFor(() => expect(relayPut).toHaveBeenCalledWith("/admin/leaks/watches/acc-b", expect.objectContaining({
       username: "mia_vale", verified: false, aliases: ["mia.v"], consent: true,
-    }), { accountId: "acc-b" }));
+    }), { accountId: null }));
   });
 
   it("each alias says whether it is searched on its own, and the display name only confirms", async () => {
@@ -505,6 +506,7 @@ describe("/creators/leaks", () => {
   });
 
   it("the owner flips Tracking off and the entry and drill-in read Paused, then on resumes", async () => {
+    scopeAccount = "acc-b";
     let on = true;
     const rowOf = () => ({ ...ROSTER.rows[0], on });
     serve(setup({ key: "set" }), {
@@ -518,12 +520,12 @@ describe("/creators/leaks", () => {
     expect(sw.getAttribute("aria-checked")).toBe("true");
     expect(sw.textContent).toContain("Tracking on");
     fireEvent.click(sw);
-    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/tracking", { on: false }, { accountId: "acc-a" }));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/tracking", { on: false }, { accountId: "acc-b" }));
     await waitFor(() => expect(screen.getByRole("switch", { name: "Tracking" }).getAttribute("aria-checked")).toBe("false"));
     expect(screen.getByRole("switch", { name: "Tracking" }).textContent).toContain("Paused");
     await waitFor(() => expect(row("Creator A")?.textContent).toContain("Paused"));
     fireEvent.click(screen.getByRole("switch", { name: "Tracking" }));
-    await waitFor(() => expect(relayPost).toHaveBeenLastCalledWith("/admin/leaks/watches/acc-a/tracking", { on: true }, { accountId: "acc-a" }));
+    await waitFor(() => expect(relayPost).toHaveBeenLastCalledWith("/admin/leaks/watches/acc-a/tracking", { on: true }, { accountId: "acc-b" }));
     await waitFor(() => expect(screen.getByRole("switch", { name: "Tracking" }).textContent).toContain("Tracking on"));
   });
 
@@ -557,6 +559,7 @@ describe("/creators/leaks", () => {
   });
 
   it("the owner deletes a tracked Creator: the entry reads Not tracked at once and the page goes back to All Models", async () => {
+    scopeAccount = "acc-b";
     let deleted = false;
     const later = () => new Promise(() => {});
     serve(setup({ key: "set", brand: "Example Removal" }), {
@@ -564,7 +567,12 @@ describe("/creators/leaks", () => {
       "/admin/leaks/all": () => (deleted ? NO_LEAKS : asAll("leaks")),
     });
     relayDelete.mockImplementation(async () => { deleted = true; return { tracked: false }; });
-    renderWithProviders(<><Page /><IfConfirmHost /></>);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const otherRoster = ["leak-tracker", "roster", "acc-a"];
+    const otherWatch = ["leak-tracker", "watch", "acc-a", "acc-a"];
+    client.setQueryData(otherRoster, MERGED);
+    client.setQueryData(otherWatch, tracked());
+    renderWithProviders(<><Page /><IfConfirmHost /></>, client);
     await screen.findByRole("list", { name: "All Leaks" });
     const pane = await pick("Creator A");
     fireEvent.click(await within(pane).findByRole("button", { name: "Delete" }));
@@ -573,7 +581,7 @@ describe("/creators/leaks", () => {
     expect(ask.textContent).toContain("Tracking stops now, and Example Removal removes the data within 30 days.");
     expect(relayDelete).not.toHaveBeenCalled();
     fireEvent.click(within(ask).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(relayDelete).toHaveBeenCalledWith("/admin/leaks/watches/acc-a", { accountId: "acc-a" }));
+    await waitFor(() => expect(relayDelete).toHaveBeenCalledWith("/admin/leaks/watches/acc-a", { accountId: "acc-b" }));
     expect(await screen.findByRole("region", { name: "All Models" })).toBeTruthy();
     expect(replace).toHaveBeenLastCalledWith("/creators/leaks", { scroll: false });
     await waitFor(() => expect(row("Creator A")?.textContent).toContain("Not tracked"));
@@ -581,6 +589,9 @@ describe("/creators/leaks", () => {
     expect(all.textContent).toContain("No Leaks found yet.");
     expect(within(all).queryByRole("button", { name: "Creator A" })).toBeNull();
     expect(relayDelete).toHaveBeenCalledTimes(1);
+    expect(client.getQueryData(otherRoster)).toEqual(MERGED);
+    expect(client.getQueryData(otherWatch)).toEqual(tracked());
+    expect(client.getQueryState(otherRoster)?.isInvalidated).toBe(false);
   });
 
   it("cancelling the delete sends nothing and keeps the drill-in", async () => {
@@ -636,7 +647,7 @@ describe("/creators/leaks", () => {
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(save);
     await waitFor(() => expect(relayPut).toHaveBeenLastCalledWith("/admin/leaks/watches/acc-a",
-      expect.objectContaining({ consent: true }), { accountId: "acc-a" }));
+      expect.objectContaining({ consent: true }), { accountId: null }));
     await waitFor(() => expect(screen.queryByRole("form", { name: "Leak identity" })).toBeNull());
     expect(relayPut).toHaveBeenCalledTimes(2);
     expect(await within(screen.getByRole("region", { name: "Creator A" })).findByRole("button", { name: "Edit identity" })).toBeTruthy();
@@ -671,6 +682,7 @@ describe("/creators/leaks lists the Leaks", () => {
   const KEY_REFUSED = () => new RelayError(409, { detail: { error: "key_invalid", message: "Key no longer valid" } }, "Key no longer valid");
 
   it("switching Agency closes the Start removal popup", async () => {
+    scopeAccount = "acc-b";
     const offer = { brand: "Example Removal", contact_url: "https://removal.example/contact", angle: "came_back", n: 1 };
     const removal = { status: "none", view: "offer", notices_updated_at: "2026-11-27T04:05:00Z", stale: false, counts: null };
     const scenes = { google: [], google_images: [], mega: [], forum: [], x: [] };
@@ -681,13 +693,14 @@ describe("/creators/leaks lists the Leaks", () => {
       "/admin/leaks/watches/acc-a/offer": { offer, preview_leak: null, video: null, scenes, last_checked_at: null },
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    client.setQueryData(["leak-tracker", "setup", "acc-b"], setup({ key: "set" }));
-    client.setQueryData(["leak-tracker", "roster", "acc-b"], MERGED);
+    client.setQueryData(["leak-tracker", "setup", "acc-c"], setup({ key: "set" }));
+    client.setQueryData(["leak-tracker", "roster", "acc-c"], MERGED);
     const { rerender } = renderWithProviders(<Page />, client);
     const pane = await screen.findByRole("region", { name: "Creator A" });
     fireEvent.click(await within(pane).findByRole("button", { name: "Contact us to start removal" }));
     expect(await screen.findByRole("dialog", { name: "Start removal with Example Removal" })).toBeTruthy();
-    scopeAccount = "acc-b";
+    expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/offer", { accountId: "acc-b" });
+    scopeAccount = "acc-c";
     rerender(<Page />);
     await screen.findByRole("region", { name: "Creator A" });
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -817,7 +830,7 @@ describe("/creators/leaks lists the Leaks", () => {
     fireEvent.click(within(pane).getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(leakIds(within(pane).getByRole("list", { name: "Creator A Leaks" })))
       .toEqual(["lk_0004", "lk_0003", "lk_0001", "lk_0002"]));
-    expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-a?cursor=c2", { accountId: "acc-a" });
+    expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-a?cursor=c2", { accountId: null });
   });
 
   it("a later page that fails says so and Load more retries it", async () => {

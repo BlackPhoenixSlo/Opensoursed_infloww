@@ -5,6 +5,7 @@ import time
 
 CRASH_WAIT = 5.0
 BLANK_PASSES = 3
+WORKER_TYPES = frozenset({"worker", "service_worker", "shared_worker"})
 TARGET_END = {"Target.targetCrashed": "crashed", "Target.targetDestroyed": "destroyed",
               "Target.detachedFromTarget": "detached"}
 
@@ -75,7 +76,8 @@ async def blank_web_pages(conn, sessions: dict, close_others: bool = False) -> t
         web = [t for t in infos if _is_web(t.get("url", ""))]
         pages = [t["targetId"] for t in web if t["type"] == "page"]
         frames = [t["targetId"] for t in infos if t["type"] == "iframe" and t["targetId"] not in tried]
-        if not pages and not frames:
+        workers = [t["targetId"] for t in infos if close_others and t["type"] in WORKER_TYPES]
+        if not pages and not frames and not workers:
             break
         seen |= set(pages)
         for tid in pages:
@@ -87,13 +89,11 @@ async def blank_web_pages(conn, sessions: dict, close_others: bool = False) -> t
                     await conn.send(method, {}, sid, timeout=3)
                 except Exception:
                     pass
-        if close_others:
-            for t in web:
-                if t["type"] in ("service_worker", "shared_worker"):
-                    try:
-                        await conn.send("Target.closeTarget", {"targetId": t["targetId"]}, timeout=3)
-                    except Exception:
-                        pass
+        for tid in workers:
+            try:
+                await conn.send("Target.closeTarget", {"targetId": tid}, timeout=3)
+            except Exception:
+                pass
         tried |= set(frames)
         unconfirmed |= await crash_confirmed(conn, frames, sessions)
         unconfirmed |= await crash_confirmed(conn, pages, sessions)
@@ -115,5 +115,6 @@ async def blank_web_pages(conn, sessions: dict, close_others: bool = False) -> t
         infos = (await conn.send("Target.getTargets"))["targetInfos"]
         unconfirmed |= {t["targetId"] for t in infos
                         if (t["type"] == "page" and _is_web(t.get("url", "")))
-                        or (t["type"] == "iframe" and t["targetId"] not in tried)}
+                        or (t["type"] == "iframe" and t["targetId"] not in tried)
+                        or (close_others and t["type"] in WORKER_TYPES)}
     return len(seen), sorted(unconfirmed)

@@ -39,6 +39,13 @@ class Platform:
     login: str
     free_follow: bool = False
     bind_login_proxy: bool = True
+    list_page: int | None = None
+    confirms_empty_active_roster: bool = False
+    retry_unconfirmed_list_adds: bool = False
+
+    @property
+    def list_member_limit(self) -> int | None:
+        return self.list_page - 1 if self.list_page is not None else None
 
 
 @dataclass(frozen=True)
@@ -63,7 +70,9 @@ def unknown_reason(key: str) -> str:
 
 ONLYFANS = Platform("onlyfans", "OF", "latest.json", None, frozenset(), login="remote_login_onlyfans")
 FANSLY = Platform("fansly", "Fansly", fansly_backend.SESSION_FILENAME, fansly_backend,
-                  frozenset(Lack), login="remote_login_fansly", free_follow=True, bind_login_proxy=False)
+                  frozenset(Lack), login="remote_login_fansly", free_follow=True, bind_login_proxy=False,
+                  list_page=fansly_backend.Shim.LIST_PAGE, confirms_empty_active_roster=True,
+                  retry_unconfirmed_list_adds=True)
 
 ALL: tuple[Platform, ...] = (ONLYFANS, FANSLY)
 KEYS: tuple[str, ...] = tuple(p.key for p in ALL)
@@ -96,9 +105,17 @@ def require_account(aid: str) -> Platform:
     return _known(for_account(aid))
 
 
+def lack_refusal(aid: str, lack: Lack) -> str | None:
+    return lack_reason(lack) if lack in for_account(aid).lacks else None
+
+
 def unknown_refusal(aid: str) -> str | None:
     p = for_account(aid)
     return unknown_reason(p.key) if isinstance(p, UnknownPlatform) else None
+
+
+def lacks_for_account(aid: str, lack: Lack) -> bool:
+    return lack in for_account(aid).lacks
 
 
 def refusal_for_account(aid: str, name: str) -> str | None:

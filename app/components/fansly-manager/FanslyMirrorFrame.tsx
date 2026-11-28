@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 import { withCreator } from "@/lib/fansly-mirror-route";
-import { useFanslyDoc } from "@/lib/fanslyMirrorDoc";
+import { onFanslyFrameReady, useFanslyDoc } from "@/lib/fanslyMirrorDoc";
 import { useFanslyPick } from "@/lib/fanslyMirrorPick";
 
 export function FanslyMirrorFrame({ src, title }: { src: string; title: string }) {
@@ -26,13 +26,10 @@ export function FanslyMirrorFrame({ src, title }: { src: string; title: string }
       ev.preventDefault();
       router.push(withCreator(href, shown));
     };
-    const attach = () => frame.contentDocument?.addEventListener("click", onClick);
-    if (frame.contentDocument?.readyState === "complete") attach();
-    frame.addEventListener("load", attach);
-    return () => {
-      frame.removeEventListener("load", attach);
-      frame.contentDocument?.removeEventListener("click", onClick);
-    };
+    return onFanslyFrameReady(frame, (doc) => {
+      doc.addEventListener("click", onClick);
+      return () => doc.removeEventListener("click", onClick);
+    });
   }, [key, shown, router]);
 
   return (

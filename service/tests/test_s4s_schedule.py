@@ -10,6 +10,7 @@ from datetime import datetime, timedelta  # noqa: E402
 from sqlalchemy import delete, select, text, update  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
+import accounts  # noqa: E402
 from _s4s_fixtures import (  # noqa: E402
     IDS, audit_rows, db, list_in_discovery, profile, seed_creators, with_env,
 )
@@ -21,7 +22,9 @@ B = IDS["creator_b"]
 C = "1000009"
 UNLINKED_B = "1000021"
 ORPHAN_C = "1000022"
-seed_creators({C: "agency_a_owner", UNLINKED_B: "agency_b_owner", ORPHAN_C: "agency_c_owner"},
+FANSLY_B = "1000023"
+seed_creators({C: "agency_a_owner", UNLINKED_B: "agency_b_owner", ORPHAN_C: "agency_c_owner",
+               FANSLY_B: "agency_b_owner"},
               users=("agency_c_owner",))
 
 OWNER_A = fx.login_owner("agency_a_owner")
@@ -33,9 +36,11 @@ list_in_discovery(OWNER_B, B, "Fixture Beta", "fixture_beta")
 list_in_discovery(OWNER_A, C, "Fixture Gamma", "fixture_gamma")
 list_in_discovery(OWNER_B, UNLINKED_B, "Fixture Leaving", "fixture_leaving")
 list_in_discovery(OWNER_C, ORPHAN_C, "Fixture Orphan", "fixture_orphan")
+list_in_discovery(OWNER_B, FANSLY_B, "Fixture Fansly", "fixture_fansly")
+accounts.save_meta(FANSLY_B, {**(accounts.load_meta(FANSLY_B) or {}), "platform": "fansly"})
 
 PID = {aid: profile(owner, aid)["profile_id"] for owner, aid in (
-    (OWNER_A, A), (OWNER_B, B), (OWNER_A, C), (OWNER_B, UNLINKED_B), (OWNER_C, ORPHAN_C))}
+    (OWNER_A, A), (OWNER_B, B), (OWNER_A, C), (OWNER_B, UNLINKED_B), (OWNER_C, ORPHAN_C), (OWNER_B, FANSLY_B))}
 
 KEYS = {"id", "slot_at", "status", "display_status", "reason", "partner", "own", "remove_at", "partner_issue"}
 PROJECTION_KEYS = {"profile_id", "display_name", "username", "avatar_url", "primary_caption", "daily_limit",
@@ -312,6 +317,31 @@ def case_opting_out_cancels_own_open_requests_and_future_slots_and_writes_nothin
     assert OWNER_A.put(f"/admin/s4s/profiles/{A}", json={"opted_in": True}).status_code == 200
     assert reads(OWNER_B, future[B]) == ("scheduled", "Will be posted shortly", None)
     assert act(OWNER_A, inside["id"], "cancel").status_code == 200
+
+
+
+def case_a_legacy_fansly_media_slot_whose_run_refused_reads_failed_and_the_row_is_not_written():
+    slots = booked(OWNER_A, A, OWNER_B, FANSLY_B, day(60))
+    legacy, of_side = slots[FANSLY_B], slots[A]
+    media = json.dumps([{"id": 7001, "media_type": "photo"}])
+    db(update(S4SRequest).where(S4SRequest.id == legacy.request_id).values(from_media_json=media, to_media_json=media))
+    assert reads(OWNER_B, legacy) == ("scheduled", "Will be posted shortly", None), "a pending job reads failed"
+
+    db(update(ScheduledJob).where(ScheduledJob.id.in_([legacy.job_id, of_side.job_id])).values(status="done"))
+    before = raw_slot(legacy.id)
+    assert reads(OWNER_B, legacy) == ("scheduled", "Failed", "platform_lacks:create_post:media")
+    assert raw_slot(legacy.id) == before, "reading wrote the slot"
+    assert reads(OWNER_A, of_side) == ("scheduled", "Will be posted shortly", None), "the OnlyFans poster reads failed"
+
+    for values, want in (({"status": "posting"}, ("posting", "In progress", None)),
+                         ({"status": "canceled", "reason": "owner_canceled"}, ("canceled", "Canceled", "owner_canceled"))):
+        db(update(S4SSlot).where(S4SSlot.id == legacy.id).values(**values))
+        assert reads(OWNER_B, legacy) == want, (values, reads(OWNER_B, legacy))
+    db(update(S4SSlot).where(S4SSlot.id == legacy.id).values(status="scheduled", reason=None))
+    assert raw_slot(legacy.id) == before
+
+    db(update(S4SRequest).where(S4SRequest.id == legacy.request_id).values(from_media_json=None))
+    assert reads(OWNER_B, legacy) == ("scheduled", "Will be posted shortly", None), "a text-only slot reads failed"
 
 
 

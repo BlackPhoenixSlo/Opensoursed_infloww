@@ -17,12 +17,14 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
 import dm_rate
+import platforms
 import run_slot
 import send_ops
 import smart_message_extras as extras
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
+from side_effect_gate import PLATFORM_LACKS_PREFIX, burst_refusal, burst_run_reason
 from ._knobs import bool_knob, test_mode
 from ._send_failure import revive_outcome, send_dropping_bad_media, skip_unreachable_fan
 from ._skiplist import load_hard_skip_ids
@@ -34,7 +36,7 @@ from .lifecycle_messages import (MAX_VARIANTS, follow_ups_of, pick, run_follow_u
 from ._run_pool import run_paced
 from .rhythm import INLINE_MAX_S
 from .pacing import ROLE_GIF as _ROLE_GIF, ROLE_OPENER as _ROLE_OPENER, welcome_burst_pace
-from .auto_follow import gated_follow, stamp_ping
+from .auto_follow import follow_is_free, gated_follow, stamp_ping
 from .welcome_compose import (_ADJS, _ADJS_HIM,
                               _bot_folder_media_id,
                               _clock_hours, _compose_bubbles,
@@ -92,6 +94,7 @@ class _Tally:
     hold_overrun_max_s: float = 0.0
     follow_ups_queued: int = 0
     after_of_welcome: int = 0
+    refused: str | None = None
 
 
 _FOLLOW_BACK_DEFAULT = True
@@ -115,7 +118,7 @@ def _find_user(item: dict) -> dict | None:
 
 
 # OF dropped the type= filter (it now 400s), so the feed is mixed: keep subscribe-ish items; untyped items pass through.
-def _extract_new_subscribers(resp: object) -> list[dict]:
+def _extract_new_subscribers(resp: object, kind: str = "subscribed") -> list[dict]:
     if isinstance(resp, list):
         items = resp
     elif isinstance(resp, dict):
@@ -128,7 +131,7 @@ def _extract_new_subscribers(resp: object) -> list[dict]:
         if not isinstance(it, dict):
             continue
         t = str(it.get("type") or "").lower()
-        if t and "subscrib" not in t:
+        if t and "subscrib" not in t and t != kind:
             continue
         user = _find_user(it)
         if not user:
@@ -548,6 +551,11 @@ async def _after_of_welcome(ctx: _RunCtx, sub: dict) -> None:
 async def _welcome_one(ctx: _RunCtx, w: send_welcome_decide.Welcome) -> None:
     sub = w.sub
     fan_id = sub["id"]
+    media, cents = _burst_media(ctx, fan_id)
+    paid = [{"media_files": media, "price": cents / 100}] if media else []
+    if refused := burst_refusal(ctx.account_id, fan_id, paid):
+        ctx.tally.refused = refused
+        return
     if await ax.fan_on_cooldown(ctx.account_id, fan_id):
         ctx.tally.skipped_cooldown += 1
         return
@@ -609,15 +617,24 @@ class _Candidates(NamedTuple):
 
 
 async def _source_subs(client, payload: dict, *, limit: int,
-                       delay: list[int] | None) -> list[dict]:
+                       delay: list[int] | None, follows: bool = False) -> list[dict]:
     test_fan = payload.get("test_fan")
     if test_fan:
         nm = payload.get("test_name") or ""
         return [{"id": int(test_fan), "username": nm or None, "name": nm or None}]
+    subs: list[dict] = []
+    for kind in ("followed", "subscribed") if follows else ("subscribed",):
+        seen = {s["id"] for s in subs}
+        subs.extend(s for s in await _read_typed(client, kind, limit=limit, delay=delay)
+                    if s["id"] not in seen)
+    return subs
+
+
+async def _read_typed(client, kind: str, *, limit: int, delay: list[int] | None) -> list[dict]:
     resp = await asyncio.to_thread(
-        client.notifications, limit=limit, offset=0, type="subscribed",
+        client.notifications, limit=limit, offset=0, type=kind,
     )
-    subs = _extract_new_subscribers(resp)
+    subs = _extract_new_subscribers(resp, kind)
     if delay:
         horizon = datetime.utcnow() - timedelta(minutes=delay[1] + _DELAY_SLACK_MIN)
         seen_ids = {s["id"] for s in subs}
@@ -628,9 +645,9 @@ async def _source_subs(client, payload: dict, *, limit: int,
                     or not stamps or min(stamps) < horizon):
                 break
             resp = await asyncio.to_thread(
-                client.notifications, limit=limit, offset=n * limit, type="subscribed",
+                client.notifications, limit=limit, offset=n * limit, type=kind,
             )
-            page = [s for s in _extract_new_subscribers(resp) if s["id"] not in seen_ids]
+            page = [s for s in _extract_new_subscribers(resp, kind) if s["id"] not in seen_ids]
             seen_ids.update(s["id"] for s in page)
             subs.extend(page)
     return subs
@@ -640,7 +657,8 @@ async def _candidates(account_id: str, client, payload: dict, *,
                       limit: int, of_welcome_on: bool | None) -> _Candidates:
     test_fan = bool(payload.get("test_fan"))
     delay = extras.delay_range(payload)
-    subs = await _source_subs(client, payload, limit=limit, delay=delay)
+    subs = await _source_subs(client, payload, limit=limit, delay=delay,
+                              follows=follow_is_free(account_id))
     starts_at = extras.window_start(payload)
     now = datetime.utcnow()
     reads = send_welcome_decide.Reads(welcomed=await _load_welcomed(account_id),
@@ -762,6 +780,7 @@ def _run_stats(ctx: _RunCtx, cands: _Candidates, *, after_of_welcome: bool,
         "handoff_enqueued": t.turn["handoff"],
         "handoff_no_engine": t.turn["no_engine"],
         "handoff_skipped_restricted": t.turn["restricted"],
+        **burst_run_reason(t.refused, t.sent),
     }
 
 
@@ -769,6 +788,9 @@ def _run_stats(ctx: _RunCtx, cands: _Candidates, *, after_of_welcome: bool,
 @register("send_welcome")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
+    after_of_welcome = bool_knob(payload, "after_of_welcome", False)
+    if after_of_welcome and platforms.refusal_for_account(account_id, "my_settings"):
+        return {"status": "skipped", "reason": f"{PLATFORM_LACKS_PREFIX}my_settings", "welcomes_sent": 0}
     if isinstance(payload.get("follow_up"), dict):
         return await run_follow_up(account_id, "send_welcome", payload["follow_up"],
                                    attribution_kind="welcome")
@@ -802,7 +824,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     stop_on_reply = _on_unless_off(payload, "stop_on_reply")
     early_mark = human_pace or stop_on_reply
     follow_ups = tuple(follow_ups_of(payload.get("follow_ups")))
-    after_of_welcome = bool_knob(payload, "after_of_welcome", False)
     run_started = time.monotonic()
 
     client = await asyncio.to_thread(ax._make_client, account_id)

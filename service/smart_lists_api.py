@@ -14,7 +14,7 @@ from attribution_backfill import REVENUE_KINDS, TRACKED_STATUSES
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import (
-    Fan, ScheduledJob, SmartList, SubscriberSnapshot, Transaction,
+    Fan, ScheduledJob, SmartList, SubscriberCrawl, SubscriberSnapshot, Transaction,
     User, UserAccount,
 )
 from isotime import iso_plain
@@ -170,12 +170,13 @@ _SNAPSHOT_MAX_AGE_S = 30 * 60
 
 async def _snapshot(s, account_id: str, now: datetime, *,
                     roster_fresh: bool = False) -> dict[int, tuple]:
+    crawl = await s.get(SubscriberCrawl, str(account_id))
     S = SubscriberSnapshot
     rows = (await s.execute(
         select(S.fan_id, S.seen_at, S.renew_on, S.subscribe_at, S.expired_at,
                S.resubscribed_at).where(S.account_id == str(account_id))
     )).all()
-    last = max((r.seen_at for r in rows), default=None)
+    last = crawl.crawled_at if crawl else max((r.seen_at for r in rows), default=None)
     fresh = last is not None and (
         roster_fresh or (now - last).total_seconds() < _SNAPSHOT_MAX_AGE_S)
     out: dict[int, tuple] = {}

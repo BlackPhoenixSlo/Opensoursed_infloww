@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from fansly_backend import ListGone as ListGone
 from side_effect_gate import ListAudience
 
 log = logging.getLogger("of-relay.of_paging")
@@ -116,18 +117,20 @@ def _one_page_member_ids(client, list_id, page: int) -> tuple[set[int], bool]:
     return ids, not complete
 
 
-def list_audience(client, list_id) -> ListAudience:
+def list_audience(client, list_id, *, list_page: int | None) -> ListAudience:
     try:
-        ids, cut = list_member_ids(client, list_id)
+        ids, cut = list_member_ids(client, list_id, list_page=list_page)
+    except ListGone:
+        raise
     except Exception as e:  # noqa: BLE001 — an unreadable list is an incomplete audience
         log.info("list_audience list=%s: members unreadable (%s)", list_id, e)
         return ListAudience(str(list_id), frozenset(), False)
     return ListAudience(str(list_id), frozenset(str(i) for i in ids), not cut)
 
 
-def list_member_ids(client, list_id, **paging) -> tuple[set[int], bool]:
-    if page := getattr(client, "platform_list_page", None):
-        return _one_page_member_ids(client, list_id, page)
+def list_member_ids(client, list_id, *, list_page: int | None, **paging) -> tuple[set[int], bool]:
+    if list_page is not None:
+        return _one_page_member_ids(client, list_id, list_page)
     pages: list = []
 
     def fetch(off):

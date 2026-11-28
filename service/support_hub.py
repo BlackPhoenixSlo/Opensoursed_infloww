@@ -12,10 +12,10 @@ import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -23,6 +23,7 @@ import client_addr
 import llm_client
 from automations._common import DEFAULT_MODEL
 from llm_client import LLMCapExceeded, LLMConfigError, LLMHTTPError, LLMKeyError, key_error_payload
+from support_photos import Photo, capped_form, form_text, photo_response, read_photos, reencode
 
 log = logging.getLogger("of-relay.support_hub")
 
@@ -63,6 +64,13 @@ CREATE TABLE IF NOT EXISTS messages (
   text TEXT NOT NULL,
   at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id, id);
+CREATE TABLE IF NOT EXISTS photos (
+  id INTEGER PRIMARY KEY,
+  message_id INTEGER NOT NULL REFERENCES messages(id),
+  w INTEGER NOT NULL,
+  h INTEGER NOT NULL,
+  data BLOB NOT NULL);
+CREATE INDEX IF NOT EXISTS photos_message ON photos(message_id);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, exp INTEGER NOT NULL);
 """
@@ -178,21 +186,18 @@ def _too_many() -> JSONResponse:
                         headers={"Retry-After": str(int(FAIL_WINDOW_S))})
 
 
-
 def _owner(request: Request) -> None:
     _require_enabled()
     value = request.cookies.get(COOKIE)
     if not value:
         raise HTTPException(status_code=401, detail="sign in required")
+    if _session_ok(value):
+        return
     ip = str(client_addr.client_address(request))
-    now = _clock()
-    if not _reserve(ip, now):
+    if not _reserve(ip, _clock()):
         log.warning("support hub: cookie checks throttled addr=%s", ip)
         raise HTTPException(status_code=429, detail="Too many tries. Wait 10 minutes.",
                             headers={"Retry-After": str(int(FAIL_WINDOW_S))})
-    if _session_ok(value):
-        _release(ip, now)
-        return
     log.warning("support hub: bad session cookie addr=%s", ip)
     raise HTTPException(status_code=401, detail="sign in required")
 
@@ -252,10 +257,24 @@ def _clip(text: str, limit: int = MAX_FIELD) -> str:
 
 
 def _message_rows(db: sqlite3.Connection, thread_id: int) -> list[dict[str, Any]]:
-    rows = db.execute(
-        "SELECT id, sender, text, at FROM (SELECT * FROM messages WHERE thread_id = ? "
-        "ORDER BY id DESC LIMIT 500) ORDER BY id", (thread_id,)).fetchall()
-    return [dict(r) for r in rows]
+    own = not db.in_transaction
+    if own:
+        db.execute("BEGIN")
+    try:
+        rows = [{**dict(r), "photos": []} for r in db.execute(
+            "SELECT id, sender, text, at FROM (SELECT id, sender, text, at FROM messages WHERE thread_id = ? "
+            "ORDER BY id DESC LIMIT 500) ORDER BY id", (thread_id,)).fetchall()]
+        pics = db.execute("SELECT p.id, p.message_id, p.w, p.h FROM photos p JOIN messages m "
+                          "ON m.id = p.message_id WHERE m.thread_id = ? AND m.id BETWEEN ? AND ? ORDER BY p.id",
+                          (thread_id, rows[0]["id"], rows[-1]["id"])).fetchall() if rows else []
+    finally:
+        if own:
+            db.execute("COMMIT")
+    by_id = {r["id"]: r for r in rows}
+    for p in pics:
+        if p["message_id"] in by_id:
+            by_id[p["message_id"]]["photos"].append({"id": p["id"], "w": p["w"], "h": p["h"]})
+    return rows
 
 
 def _thread_id(db: sqlite3.Connection, instance: str, user_key: str) -> int | None:
@@ -264,11 +283,43 @@ def _thread_id(db: sqlite3.Connection, instance: str, user_key: str) -> int | No
     return row["id"] if row else None
 
 
-def _add_message(db: sqlite3.Connection, thread_id: int, sender: str, text: str) -> None:
+def _add_message(db: sqlite3.Connection, thread_id: int, sender: str, text: str,
+                 photos: Sequence[Photo] = ()) -> None:
     at = _now()
-    db.execute("INSERT INTO messages (thread_id, sender, text, at) VALUES (?, ?, ?, ?)",
-               (thread_id, sender, text, at))
+    mid = db.execute("INSERT INTO messages (thread_id, sender, text, at) VALUES (?, ?, ?, ?)",
+                     (thread_id, sender, text, at)).lastrowid
+    for data, w, h in photos:
+        db.execute("INSERT INTO photos (message_id, w, h, data) VALUES (?, ?, ?, ?)", (mid, w, h, data))
     db.execute("UPDATE threads SET last_at = ? WHERE id = ?", (at, thread_id))
+
+
+def _db_full() -> bool:
+    try:
+        cap = float(os.environ.get("SUPPORT_HUB_MAX_DB_GB", "") or 2) * 1024 ** 3
+    except ValueError:
+        cap = 2 * 1024 ** 3
+    path = _db_path()
+    used = sum(os.path.getsize(p) for p in (path, path + "-wal") if os.path.exists(p))
+    return used > cap
+
+
+async def _form_message(request: Request, who_fields: Sequence[str] = ()) -> tuple[dict[str, str], str, list[bytes]]:
+    form = await capped_form(request, max_fields=1 + len(who_fields))
+    try:
+        who = {k: form_text(form, k, MAX_FIELD) for k in who_fields}
+        text = form_text(form, "text", MAX_TEXT).strip()
+        raw = await read_photos(form)
+    finally:
+        await form.close()
+    if not text and not raw:
+        raise HTTPException(status_code=400, detail="empty message")
+    return who, text, raw
+
+
+async def _photos(raw: Sequence[bytes]) -> list[Photo]:
+    if raw and await run_in_threadpool(_db_full):
+        raise HTTPException(status_code=507, detail="Photo storage is full — send text for now.")
+    return [await reencode(r) for r in raw]
 
 
 class Who(BaseModel):
@@ -299,10 +350,21 @@ def _require_text(text: str) -> str:
     return text
 
 
-@router.post(f"{API}/instance/messages")
-def instance_ingest(request: Request, body: Ingest = Body(...)) -> dict[str, Any]:
-    _instance(request)
-    text = _require_text(body.text)
+def _over_send_limit(db: sqlite3.Connection, tid: int | None) -> bool:
+    if tid is None:
+        return False
+    since = (datetime.now(timezone.utc) - timedelta(seconds=SEND_WINDOW_S)).isoformat(timespec="seconds")
+    return db.execute("SELECT COUNT(*) FROM messages WHERE thread_id = ? AND sender = 'user' AND at > ?",
+                      (tid, since)).fetchone()[0] >= SEND_LIMIT
+
+
+def _check_send_limit(who: dict[str, str]) -> None:
+    with contextlib.closing(_connect()) as db:
+        if _over_send_limit(db, _thread_id(db, _clip(who["instance"]), _clip(who["user_key"]))):
+            raise HTTPException(status_code=429, detail="send limit")
+
+
+def _ingest(who: dict[str, str], text: str, photos: Sequence[Photo] = ()) -> dict[str, Any]:
     with contextlib.closing(_connect()) as db:
         db.execute("BEGIN IMMEDIATE")
         try:
@@ -311,21 +373,51 @@ def instance_ingest(request: Request, body: Ingest = Body(...)) -> dict[str, Any
                 "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (instance, user_key) DO UPDATE SET "
                 "agency_id = excluded.agency_id, agency_name = excluded.agency_name, "
                 "name = excluded.name, role = excluded.role",
-                (_clip(body.instance), _clip(body.user_key), _clip(body.agency_id),
-                 _clip(body.agency_name), _clip(body.name), _clip(body.role), _now()))
-            tid = _thread_id(db, _clip(body.instance), _clip(body.user_key))
+                (_clip(who["instance"]), _clip(who["user_key"]), _clip(who["agency_id"]),
+                 _clip(who["agency_name"]), _clip(who["name"]), _clip(who["role"]), _now()))
+            tid = _thread_id(db, _clip(who["instance"]), _clip(who["user_key"]))
             assert tid is not None
-            since = (datetime.now(timezone.utc) - timedelta(seconds=SEND_WINDOW_S)).isoformat(timespec="seconds")
-            sent = db.execute("SELECT COUNT(*) FROM messages WHERE thread_id = ? AND sender = 'user' AND at > ?",
-                              (tid, since)).fetchone()[0]
-            if sent >= SEND_LIMIT:
+            if _over_send_limit(db, tid):
                 raise HTTPException(status_code=429, detail="send limit")
-            _add_message(db, tid, "user", text)
+            _add_message(db, tid, "user", text, photos)
             db.execute("COMMIT")
         except BaseException:
             db.execute("ROLLBACK")
             raise
         return {"messages": _message_rows(db, tid)}
+
+
+WHO_FIELDS = ("instance", "user_key", "agency_id", "agency_name", "name", "role")
+
+
+@router.post(f"{API}/instance/messages")
+def instance_ingest(request: Request, body: Ingest = Body(...)) -> dict[str, Any]:
+    _instance(request)
+    text = _require_text(body.text)
+    return _ingest(body.model_dump(include=set(WHO_FIELDS)), text)
+
+
+@router.post(f"{API}/instance/messages/upload")
+async def instance_ingest_upload(request: Request) -> dict[str, Any]:
+    _instance(request)
+    who, text, raw = await _form_message(request, WHO_FIELDS)
+    if not who["instance"].strip() or not who["user_key"].strip():
+        raise HTTPException(status_code=400, detail="instance and user_key required")
+    await run_in_threadpool(_check_send_limit, who)
+    return await run_in_threadpool(_ingest, who, text, await _photos(raw))
+
+
+@router.get(API + "/instance/photos/{photo_id}")
+def instance_photo(request: Request, photo_id: int, instance: str = Query(..., max_length=MAX_FIELD),
+                   user_key: str = Query(..., max_length=MAX_FIELD)) -> Response:
+    _instance(request)
+    with contextlib.closing(_connect()) as db:
+        row = db.execute("SELECT p.data FROM photos p JOIN messages m ON m.id = p.message_id "
+                         "JOIN threads t ON t.id = m.thread_id WHERE p.id = ? AND t.instance = ? "
+                         "AND t.user_key = ?", (photo_id, _clip(instance), _clip(user_key))).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such photo")
+    return photo_response(row["data"])
 
 
 @router.get(f"{API}/instance/thread")
@@ -403,12 +495,16 @@ def owner_threads(request: Request) -> dict[str, Any]:
     return {"threads": [{**dict(r), "unread": bool(r["unread"])} for r in rows]}
 
 
-def _owner_thread(db: sqlite3.Connection, thread_id: int) -> dict[str, Any]:
+def _thread_row(db: sqlite3.Connection, thread_id: int) -> dict[str, Any]:
     row = db.execute("SELECT id, instance, agency_id, agency_name, name, role, last_at FROM threads "
                      "WHERE id = ?", (thread_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="no such thread")
-    return {"thread": dict(row), "messages": _message_rows(db, thread_id)}
+    return dict(row)
+
+
+def _owner_thread(db: sqlite3.Connection, thread_id: int) -> dict[str, Any]:
+    return {"thread": _thread_row(db, thread_id), "messages": _message_rows(db, thread_id)}
 
 
 @router.get(API + "/threads/{thread_id}")
@@ -416,21 +512,55 @@ def owner_thread(request: Request, thread_id: int) -> dict[str, Any]:
     _owner(request)
     with contextlib.closing(_connect()) as db:
         out = _owner_thread(db, thread_id)
-        db.execute("UPDATE threads SET owner_read_id = COALESCE((SELECT MAX(id) FROM messages "
-                   "WHERE thread_id = ?), 0) WHERE id = ?", (thread_id, thread_id))
+        if out["messages"]:
+            db.execute("UPDATE threads SET owner_read_id = MAX(owner_read_id, ?) WHERE id = ?",
+                       (out["messages"][-1]["id"], thread_id))
     return out
+
+
+def _reply(thread_id: int, text: str, photos: Sequence[Photo] = ()) -> dict[str, Any]:
+    with contextlib.closing(_connect()) as db:
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            _thread_row(db, thread_id)
+            _add_message(db, thread_id, "support", text, photos)
+            db.execute("UPDATE threads SET owner_read_id = (SELECT MAX(id) FROM messages "
+                       "WHERE thread_id = ?) WHERE id = ?", (thread_id, thread_id))
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        return _owner_thread(db, thread_id)
+
+
+def _require_thread(thread_id: int) -> None:
+    with contextlib.closing(_connect()) as db:
+        _thread_row(db, thread_id)
 
 
 @router.post(API + "/threads/{thread_id}/reply")
 def owner_reply(request: Request, thread_id: int, body: Text = Body(...)) -> dict[str, Any]:
     _owner(request)
     text = _require_text(body.text)
+    return _reply(thread_id, text)
+
+
+@router.post(API + "/threads/{thread_id}/reply/upload")
+async def owner_reply_upload(request: Request, thread_id: int) -> dict[str, Any]:
+    _owner(request)
+    _, text, raw = await _form_message(request)
+    await run_in_threadpool(_require_thread, thread_id)
+    return await run_in_threadpool(_reply, thread_id, text, await _photos(raw))
+
+
+@router.get(API + "/photos/{photo_id}")
+def owner_photo(request: Request, photo_id: int) -> Response:
+    _owner(request)
     with contextlib.closing(_connect()) as db:
-        _owner_thread(db, thread_id)
-        _add_message(db, thread_id, "support", text)
-        db.execute("UPDATE threads SET owner_read_id = (SELECT MAX(id) FROM messages "
-                   "WHERE thread_id = ?) WHERE id = ?", (thread_id, thread_id))
-        return _owner_thread(db, thread_id)
+        row = db.execute("SELECT data FROM photos WHERE id = ?", (photo_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such photo")
+    return photo_response(row["data"])
 
 
 SUMMARY_SYSTEM = """\
@@ -461,14 +591,16 @@ def _digest_input() -> tuple[str, int, int]:
         blocks: list[str] = []
         used = 0
         for t in threads:
-            msgs = db.execute("SELECT sender, text FROM messages WHERE thread_id = ? ORDER BY id DESC "
-                              "LIMIT 40", (t["id"],)).fetchall()[::-1]
+            msgs = db.execute("SELECT sender, text, (SELECT COUNT(*) FROM photos WHERE message_id = m.id) AS n "
+                              "FROM messages m WHERE thread_id = ? ORDER BY id DESC LIMIT 40",
+                              (t["id"],)).fetchall()[::-1]
             if not any(m["sender"] == "user" for m in msgs):
                 continue
             head = (f"### {t['name'] or t['user_key']} ({t['role'] or 'user'}) · agency "
                     f"{t['agency_name'] or '?'} · install {t['instance']}")
             lines = [head] + [f"{'User' if m['sender'] == 'user' else 'Team'}: "
-                              f"{m['text'][:DIGEST_MSG_CHARS]}" for m in msgs]
+                              f"{' '.join([m['text'], *['[photo]'] * m['n']]).strip()[:DIGEST_MSG_CHARS]}"
+                              for m in msgs]
             block = "\n".join(lines)
             if used + len(block) > DIGEST_MAX_CHARS:
                 break
@@ -558,6 +690,14 @@ main { max-width:760px; margin:0 auto; padding:12px; }
 textarea, input { width:100%; font-family:inherit; font-size:16px; line-height:1.4; color:var(--fg); background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; }
 textarea { min-height:80px; resize:vertical; }
 .compose { display:flex; flex-direction:column; gap:8px; position:sticky; bottom:0; background:var(--bg); padding:8px 0 max(12px, env(safe-area-inset-bottom)); }
+.pics { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.pics img { display:block; width:120px; height:120px; object-fit:cover; border-radius:10px; background:var(--line); }
+.pending { display:flex; gap:8px; flex-wrap:wrap; }
+.pend { position:relative; }
+.pend img { display:block; width:64px; height:64px; object-fit:cover; border-radius:8px; }
+.pend button { position:absolute; top:-6px; right:-6px; padding:0 6px; line-height:20px; border-radius:50%; }
+.actions { display:flex; gap:8px; }
+.actions #send { flex:1; }
 .err { color:#ff8a80; min-height:1.2em; margin:6px 0; }
 #summary { white-space:pre-wrap; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:12px; }
 form { display:flex; flex-direction:column; gap:10px; max-width:360px; margin:40px auto; }
@@ -585,8 +725,13 @@ form { display:flex; flex-direction:column; gap:10px; max-width:360px; margin:40
     <div id="threadMeta" class="meta"></div>
     <div id="msgs" class="msgs"></div>
     <div class="compose">
+      <div id="pending" class="pending hidden"></div>
       <textarea id="reply" placeholder="Reply… (Ctrl/Cmd+Enter sends)"></textarea>
-      <button id="send" class="primary" type="button">Send</button>
+      <div class="actions">
+        <button id="pick" type="button" title="Add up to 4 photos">Photo</button>
+        <input id="file" class="hidden" type="file" accept="image/*" multiple>
+        <button id="send" class="primary" type="button">Send</button>
+      </div>
       <div id="threadErr" class="err"></div>
     </div>
   </section>
@@ -594,9 +739,12 @@ form { display:flex; flex-direction:column; gap:10px; max-width:360px; margin:40
 <script nonce="__NONCE__">
 (function () {
   var API = "/support/api";
+  var MAX_PHOTOS = 4, MAX_SIDE = 2048;
   var $ = function (id) { return document.getElementById(id); };
   var openId = null;
-  var shownKey = "";
+  var shown = { thread: null, ids: {} };
+  var pending = [];
+  var busy = { list: false, thread: false, send: false };
   function el(tag, cls, text) {
     var n = document.createElement(tag);
     if (cls) n.className = cls;
@@ -617,7 +765,8 @@ form { display:flex; flex-direction:column; gap:10px; max-width:360px; margin:40
   }
   function call(method, path, body) {
     var opt = { method: method, credentials: "same-origin", headers: {} };
-    if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+    if (body instanceof FormData) opt.body = body;
+    else if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
     return fetch(API + path, opt).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) {
         if (r.status === 401 && path !== "/login") { show("login"); throw new Error("Signed out"); }
@@ -626,8 +775,11 @@ form { display:flex; flex-direction:column; gap:10px; max-width:360px; margin:40
       });
     });
   }
-  function loadThreads() {
+  function loadThreads(poll) {
+    if (busy.list) return Promise.resolve();
+    busy.list = true;
     return call("GET", "/threads").then(function (j) {
+      if (poll && $("list").classList.contains("hidden")) return;
       var box = $("threads");
       box.replaceChildren();
       if (!j.threads.length) box.appendChild(el("p", "meta", "No messages yet."));
@@ -639,44 +791,153 @@ form { display:flex; flex-direction:column; gap:10px; max-width:360px; margin:40
         who.appendChild(el("span", null, (t.name || "?") + " · " + (t.role || "user")));
         b.appendChild(who);
         b.appendChild(el("div", "meta", t.instance + " · " + (t.agency_name || t.agency_id || "no agency") + " · " + when(t.last_at)));
-        b.appendChild(el("div", "last", (t.last_sender === "support" ? "You: " : "") + (t.last_text || "")));
+        b.appendChild(el("div", "last", (t.last_sender === "support" ? "You: " : "") + (t.last_text || "[photo]")));
         b.addEventListener("click", function () { openThread(t.id); });
         box.appendChild(b);
       });
       $("listErr").textContent = "";
-      show("list");
-    }).catch(function (e) { $("listErr").textContent = e.message; });
+      if (!poll) show("list");
+    }).catch(function (e) { $("listErr").textContent = e.message; })
+      .finally(function () { busy.list = false; });
+  }
+  function atBottom() {
+    return window.innerHeight + window.scrollY >= document.body.scrollHeight - 60;
+  }
+  function photoRow(photos) {
+    var row = el("div", "pics");
+    photos.forEach(function (p) {
+      var a = el("a");
+      a.href = API + "/photos/" + p.id;
+      a.target = "_blank";
+      a.rel = "noopener";
+      var img = el("img");
+      img.src = a.href;
+      img.alt = "Photo";
+      img.loading = "lazy";
+      a.appendChild(img);
+      row.appendChild(a);
+    });
+    return row;
   }
   function renderThread(j) {
     var t = j.thread;
+    if (t.id !== openId) return;
     $("title").textContent = t.name || "Thread";
     $("threadMeta").textContent = (t.role || "user") + " · " + (t.agency_name || t.agency_id || "no agency") + " · " + t.instance;
     var box = $("msgs");
-    box.replaceChildren();
+    var fresh = shown.thread !== t.id;
+    if (fresh) { box.replaceChildren(); shown = { thread: t.id, ids: {} }; }
+    var stick = fresh || atBottom();
+    var added = false;
     j.messages.forEach(function (m) {
-      var b = el("div", "msg " + m.sender, m.text);
+      if (shown.ids[m.id]) return;
+      shown.ids[m.id] = true;
+      added = true;
+      var b = el("div", "msg " + m.sender);
+      if (m.text) b.appendChild(el("div", null, m.text));
+      if (m.photos && m.photos.length) b.appendChild(photoRow(m.photos));
       b.appendChild(el("div", "meta", (m.sender === "support" ? "You" : (t.name || "User")) + " · " + when(m.at)));
       box.appendChild(b);
     });
-    var key = t.id + ":" + j.messages.length;
-    if (key !== shownKey) { shownKey = key; window.scrollTo(0, document.body.scrollHeight); }
+    if (added && stick) window.scrollTo(0, document.body.scrollHeight);
+  }
+  function refreshThread() {
+    if (openId == null || busy.thread || $("thread").classList.contains("hidden")) return;
+    busy.thread = true;
+    call("GET", "/threads/" + openId).then(renderThread).catch(function () {})
+      .finally(function () { busy.thread = false; });
   }
   function openThread(id) {
     $("threadErr").textContent = "";
     show("thread");
     openId = id;
+    shown = { thread: null, ids: {} };
+    clearPending();
     call("GET", "/threads/" + id).then(renderThread).catch(function (e) { $("threadErr").textContent = e.message; });
+  }
+  function drawPending() {
+    var box = $("pending");
+    box.replaceChildren();
+    pending.forEach(function (p, i) {
+      var cell = el("div", "pend");
+      var img = el("img");
+      img.src = p.url;
+      img.alt = "Photo to send";
+      var x = el("button", null, "×");
+      x.type = "button";
+      x.title = "Remove photo";
+      x.addEventListener("click", function () { pending.splice(i, 1); drawPending(); });
+      cell.appendChild(img);
+      cell.appendChild(x);
+      box.appendChild(cell);
+    });
+    box.classList.toggle("hidden", !pending.length);
+    $("pick").disabled = pending.length >= MAX_PHOTOS;
+  }
+  function clearPending() { pending = []; drawPending(); }
+  function toJpeg(file) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onerror = function () { reject(new Error("Couldn't read that photo.")); };
+      fr.onload = function () {
+        var img = new Image();
+        img.onerror = function () { reject(new Error("That file isn't a photo.")); };
+        img.onload = function () {
+          var k = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+          var c = document.createElement("canvas");
+          c.width = Math.max(1, Math.round(img.naturalWidth * k));
+          c.height = Math.max(1, Math.round(img.naturalHeight * k));
+          var g = c.getContext("2d");
+          g.fillStyle = "#fff";
+          g.fillRect(0, 0, c.width, c.height);
+          g.drawImage(img, 0, 0, c.width, c.height);
+          c.toBlob(function (blob) {
+            if (!blob) { reject(new Error("Couldn't read that photo.")); return; }
+            resolve({ blob: blob, url: c.toDataURL("image/jpeg", 0.85) });
+          }, "image/jpeg", 0.85);
+        };
+        img.src = fr.result;
+      };
+      fr.readAsDataURL(file);
+    });
+  }
+  function addFiles(files) {
+    var id = openId;
+    var list = Array.prototype.filter.call(files, function (f) { return f.type.indexOf("image/") === 0; });
+    var room = MAX_PHOTOS - pending.length;
+    if (list.length > room) $("threadErr").textContent = "Up to " + MAX_PHOTOS + " photos per message.";
+    list.slice(0, Math.max(0, room)).forEach(function (f) {
+      toJpeg(f).then(function (p) {
+        if (openId === id && pending.length < MAX_PHOTOS) { pending.push(p); drawPending(); }
+      }).catch(function (e) { if (openId === id) $("threadErr").textContent = e.message; });
+    });
   }
   function send() {
     var text = $("reply").value.trim();
-    if (!text || openId == null) return;
+    if ((!text && !pending.length) || openId == null || busy.send) return;
+    busy.send = true;
+    var id = openId;
+    var sent = pending.slice();
+    var req;
+    if (sent.length) {
+      var fd = new FormData();
+      fd.append("text", text);
+      sent.forEach(function (p, i) { fd.append("photos", p.blob, "photo" + i + ".jpg"); });
+      req = call("POST", "/threads/" + id + "/reply/upload", fd);
+    } else {
+      req = call("POST", "/threads/" + id + "/reply", { text: text });
+    }
     $("send").disabled = true;
-    call("POST", "/threads/" + openId + "/reply", { text: text }).then(function (j) {
-      $("reply").value = "";
+    req.then(function (j) {
+      if (openId !== id) return;
+      if ($("reply").value.trim() === text) $("reply").value = "";
+      pending = pending.filter(function (p) { return sent.indexOf(p) < 0; });
+      drawPending();
       $("threadErr").textContent = "";
       renderThread(j);
-    }).catch(function (e) { $("threadErr").textContent = e.message; })
-      .finally(function () { $("send").disabled = false; });
+      window.scrollTo(0, document.body.scrollHeight);
+    }).catch(function (e) { if (openId === id) $("threadErr").textContent = e.message; })
+      .finally(function () { busy.send = false; $("send").disabled = false; });
   }
   $("login").addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -687,10 +948,21 @@ form { display:flex; flex-direction:column; gap:10px; max-width:360px; margin:40
     }).catch(function (e) { $("loginErr").textContent = e.message; });
   });
   $("send").addEventListener("click", send);
+  $("pick").addEventListener("click", function () { $("file").click(); });
+  $("file").addEventListener("change", function () { addFiles($("file").files); $("file").value = ""; });
+  $("reply").addEventListener("paste", function (ev) {
+    var items = ev.clipboardData ? ev.clipboardData.files : null;
+    if (items && items.length) { ev.preventDefault(); addFiles(items); }
+  });
   $("reply").addEventListener("keydown", function (ev) {
     if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); send(); }
   });
-  $("back").addEventListener("click", loadThreads);
+  $("back").addEventListener("click", function () {
+    show("list");
+    shown = { thread: null, ids: {} };
+    clearPending();
+    loadThreads();
+  });
   $("out").addEventListener("click", function () {
     call("POST", "/logout").finally(function () { show("login"); });
   });
@@ -705,10 +977,11 @@ form { display:flex; flex-direction:column; gap:10px; max-width:360px; margin:40
       .finally(function () { $("sum").disabled = false; });
   });
   setInterval(function () {
-    if (document.visibilityState !== "visible") return;
-    if (!$("list").classList.contains("hidden")) loadThreads();
-    else if (openId != null) call("GET", "/threads/" + openId).then(renderThread).catch(function () {});
-  }, 30000);
+    if (document.visibilityState === "visible" && openId != null) refreshThread();
+  }, 4000);
+  setInterval(function () {
+    if (document.visibilityState === "visible" && !$("list").classList.contains("hidden")) loadThreads(true);
+  }, 10000);
   loadThreads();
 })();
 </script>

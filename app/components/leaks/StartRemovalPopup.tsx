@@ -28,11 +28,11 @@ const REDUCED = "(prefers-reduced-motion: reduce)";
 export const popupTitle = (brand: string) => `Start removal with ${brand}`;
 export const contactLabel = (brand: string) => `Contact ${brand}`;
 
-const part = (creatorId: string, name: "video" | "poster" | "captions") =>
-  `/admin/leaks/offer-video/${name}?account_id=${encodeURIComponent(creatorId)}`;
+const part = (scopeAccountId: string | null, name: "video" | "poster" | "captions") =>
+  `/admin/leaks/offer-video/${name}${scopeAccountId ? `?account_id=${encodeURIComponent(scopeAccountId)}` : ""}`;
 
-function Player({ creatorId, video, scenes, offer }: {
-  creatorId: string; video: OfferVideo | null; scenes: Scenes; offer: RemovalOffer;
+function Player({ scopeAccountId, video, scenes, offer }: {
+  scopeAccountId: string | null; video: OfferVideo | null; scenes: Scenes; offer: RemovalOffer;
 }) {
   const [state, dispatch] = useReducer(playerReducer, PLAYER_START);
   const phone = useMediaQuery(PHONE);
@@ -55,8 +55,8 @@ function Player({ creatorId, video, scenes, offer }: {
       <div className="relative overflow-hidden rounded-[8px] bg-black">
         <video
           className="block aspect-video w-full"
-          src={part(creatorId, "video")}
-          poster={view.poster ? part(creatorId, "poster") : undefined}
+          src={part(scopeAccountId, "video")}
+          poster={view.poster ? part(scopeAccountId, "poster") : undefined}
           playsInline
           preload="metadata"
           controls
@@ -64,7 +64,7 @@ function Player({ creatorId, video, scenes, offer }: {
           onTimeUpdate={sync}
           onSeeked={sync}
         >
-          <track ref={track} kind="captions" default src={part(creatorId, "captions")} srcLang="en" label="English" />
+          <track ref={track} kind="captions" default src={part(scopeAccountId, "captions")} srcLang="en" label="English" />
         </video>
         {view.overlay && video.cues && !phone && (
           <PopupOverlay cues={video.cues} scenes={scenes} offer={offer} t={state.t} phone={false} reduced={reduced} />
@@ -97,14 +97,15 @@ function Results({ read }: { read: OfferRead }) {
   );
 }
 
-export function StartRemovalPopup({ creatorId, offer, onClose }: {
+export function StartRemovalPopup({ creatorId, scopeAccountId, offer, onClose }: {
   creatorId: string;
+  scopeAccountId: string | null;
   offer: RemovalOffer;
   onClose: () => void;
 }) {
   const read = useQuery<OfferRead>({
-    queryKey: ["leak-tracker", "offer", creatorId],
-    queryFn: () => relay.get<OfferRead>(`/admin/leaks/watches/${creatorId}/offer`, { accountId: creatorId }),
+    queryKey: ["leak-tracker", "offer", creatorId, scopeAccountId],
+    queryFn: () => relay.get<OfferRead>(`/admin/leaks/watches/${creatorId}/offer`, { accountId: scopeAccountId }),
     gcTime: 0,
     staleTime: 0,
     retry: false,
@@ -126,7 +127,7 @@ export function StartRemovalPopup({ creatorId, offer, onClose }: {
     <IfModal title={popupTitle(shown.brand)} width={720} size="editor" onClose={onClose} footer={contact}>
       {read.data ? (
         <>
-          <Player creatorId={creatorId} video={read.data.video} scenes={read.data.scenes} offer={read.data.offer} />
+          <Player scopeAccountId={scopeAccountId} video={read.data.video} scenes={read.data.scenes} offer={read.data.offer} />
           <Results read={read.data} />
         </>
       ) : read.isPending ? (

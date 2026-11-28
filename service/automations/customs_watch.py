@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
+import platforms
 # No of_client/automation_executor import: this only reads our transactions and writes fans.customs_owed_at; an OF/nickname path once erased the marker.
 from automation_registry import register
 from db.engine import get_session
@@ -78,6 +79,8 @@ def order_floor(payload: dict | None) -> int:
 
 @register("customs_watch")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
+    if refused := platforms.lack_refusal(account_id, platforms.Lack.TIP_LEDGER):
+        return {"status": "skipped", "reason": refused}
     payload = payload or {}
     lookback_h = int(payload.get("lookback_hours") or _DEFAULT_LOOKBACK_H)
     limit = int(payload.get("limit") or _DEFAULT_LIMIT)

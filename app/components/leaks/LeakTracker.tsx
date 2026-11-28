@@ -169,6 +169,7 @@ export function LeakTracker() {
           <LeakCreator
             key={`${accountId ?? "all"}:${shown.id}`}
             creatorId={shown.id}
+            scopeAccountId={accountId}
             name={shown.nickname || shown.id}
             canWrite={data.can_write}
             brand={data.brand}

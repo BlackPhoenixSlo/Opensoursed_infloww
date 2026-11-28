@@ -13,8 +13,9 @@ import {
 import { dayLabel, viewerZone, when } from "./leakView";
 import { StartRemovalPopup } from "./StartRemovalPopup";
 
-export function RemovalArea({ creatorId, removal, offer }: {
+export function RemovalArea({ creatorId, scopeAccountId, removal, offer }: {
   creatorId: string;
+  scopeAccountId: string | null;
   removal: Removal | null;
   offer: RemovalOffer | null;
 }) {
@@ -23,10 +24,10 @@ export function RemovalArea({ creatorId, removal, offer }: {
   const [open, setOpen] = useState(false);
   const snooze = useMutation({
     mutationFn: () => relay.post<{ offer_snoozed_until: string }>(
-      `/admin/leaks/watches/${creatorId}/offer-snooze`, { snoozed: true }, { accountId: creatorId }),
+      `/admin/leaks/watches/${creatorId}/offer-snooze`, { snoozed: true }, { accountId: scopeAccountId }),
     onSuccess: (r) => {
       setUntil(r.offer_snoozed_until);
-      void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId] });
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId, scopeAccountId] });
     },
   });
   if (!removal || removal.view === "hidden") return null;
@@ -50,7 +51,7 @@ export function RemovalArea({ creatorId, removal, offer }: {
             <IfButton variant="link" disabled={snooze.isPending} onClick={() => snooze.mutate()}>{NOT_NOW}</IfButton>
           </div>
           {snooze.error && <p role="alert" className="mt-2 text-[14px] text-err">{snooze.error.message}</p>}
-          {open && <StartRemovalPopup creatorId={creatorId} offer={offer} onClose={() => setOpen(false)} />}
+          {open && <StartRemovalPopup creatorId={creatorId} scopeAccountId={scopeAccountId} offer={offer} onClose={() => setOpen(false)} />}
         </IfCard>
       )}
     </section>

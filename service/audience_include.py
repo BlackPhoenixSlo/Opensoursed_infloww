@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 import of_paging
 from audiences import resolve_window_hours
 from db.engine import get_session
+import platforms
 from db.models import (
     AccountAiConfig, Fan, List as ListModel, ListMember, Message,
 )
@@ -227,8 +228,8 @@ async def _audience_universe_ids(account_id: str) -> set[int]:
 _crawl_list_ids_blocking = of_paging.list_member_ids
 
 
-def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
-    current, truncated = of_paging.list_member_ids(client, of_list_id)
+def _build_autofence_blocking(client, of_list_id, target: set[int], *, list_page: int | None) -> dict:
+    current, truncated = of_paging.list_member_ids(client, of_list_id, list_page=list_page)
     if truncated:
         raise AudienceHalt("fence_crawl_truncated",
                            f"list {of_list_id} member crawl incomplete (backstop or repeated page)")
@@ -254,7 +255,7 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
             log.warning("autofence remove failed list=%s uid=%s (%s)",
                         of_list_id, uid, str(e).splitlines()[0][:80])
     effective = target - unaddable
-    after, truncated = of_paging.list_member_ids(client, of_list_id)
+    after, truncated = of_paging.list_member_ids(client, of_list_id, list_page=list_page)
     if truncated:
         raise AudienceHalt("fence_verify_truncated",
                            f"list {of_list_id} verify crawl incomplete (backstop or repeated page)")
@@ -347,7 +348,8 @@ async def ensure_autofence(
         # Scheduled OF sends reference the stored AUTOFENCE ID in excludedLists.
         if of_lid is None:
             of_lid = await asyncio.to_thread(_find_or_create_fence_blocking, c)
-        built = await asyncio.to_thread(_build_autofence_blocking, c, of_lid, target)
+        built = await asyncio.to_thread(_build_autofence_blocking, c, of_lid, target,
+                                        list_page=platforms.for_account(account_id).list_page)
     except AudienceHalt as e:
         await _persist_fence_state(account_id, of_list_id=of_lid, healthy=False,
                                    reason=e.reason)

@@ -1,4 +1,4 @@
-import { FANSLY_MIRROR_SECTIONS, type FanslyMirrorSection } from "@/lib/fansly-mirror-pages";
+import { FANSLY_MIRROR_BUILT, FANSLY_MIRROR_SECTIONS, type FanslyMirrorSection } from "@/lib/fansly-mirror-pages";
 import { FANSLY_NAV, findNavLink, isGroup, visibleLinks, type NavFilter } from "@/lib/nav";
 
 type Table = Record<string, FanslyMirrorSection>;
@@ -9,14 +9,13 @@ export type FanslyRoute =
   | { kind: "mirror"; key: string; label: string; title: string; src: string }
   | null;
 
-const BUILT: ReadonlySet<string> = new Set(["scheduled", "lists", "notifications", "earning-statistics"]);
 const REDIRECTS: Readonly<Record<string, string>> = { "statistics/earnings": "/fansly-manager/earning-statistics" };
 
 export function fanslyRouteOf(section: string, path: readonly string[], creator: string | null, table: Table = FANSLY_MIRROR_SECTIONS): FanslyRoute {
   const href = `/fansly-manager/${section}`;
   const label = findNavLink(href)?.label;
   if (!label) return null;
-  if (path.length === 0 && BUILT.has(section)) return { kind: "built", href, label };
+  if (path.length === 0 && FANSLY_MIRROR_BUILT.has(href)) return { kind: "built", href, label };
   const at = `${section}/${path.join("/")}`;
   if (Object.hasOwn(REDIRECTS, at)) return { kind: "redirect", to: withCreator(REDIRECTS[at], creator) };
   const s = Object.hasOwn(table, section) ? table[section] : undefined;

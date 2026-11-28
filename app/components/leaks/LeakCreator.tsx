@@ -28,15 +28,16 @@ type LeakWatchRead = LeakPage & {
 
 const EMPTY: IdentityStart = { username: "", verified: false, display_name: "" };
 
-export function LeakCreator({ creatorId, name, canWrite, brand, row, onDeleted }: {
+export function LeakCreator({ creatorId, scopeAccountId, name, canWrite, brand, row, onDeleted }: {
   creatorId: string;
+  scopeAccountId: string | null;
   name: string;
   canWrite: boolean;
   brand: string | null;
   row?: LeakRosterRow;
   onDeleted: () => void;
 }) {
-  const watch = useLeakPages<LeakWatchRead>(["leak-tracker", "watch", creatorId], `/admin/leaks/watches/${creatorId}`, creatorId);
+  const watch = useLeakPages<LeakWatchRead>(["leak-tracker", "watch", creatorId, scopeAccountId], `/admin/leaks/watches/${creatorId}`, scopeAccountId);
   const [editing, setEditing] = useState(false);
 
   if (watch.isPending) return <TableSkeleton rows={3} />;
@@ -53,6 +54,7 @@ export function LeakCreator({ creatorId, name, canWrite, brand, row, onDeleted }
         <IdentityForm
           key={String(w.tracked)}
           creatorId={creatorId}
+          scopeAccountId={scopeAccountId}
           tracked={w.tracked}
           start={(w.tracked ? w.identity : w.suggested) ?? EMPTY}
           brand={brand}
@@ -81,17 +83,17 @@ export function LeakCreator({ creatorId, name, canWrite, brand, row, onDeleted }
               ))}
             </dl>
           )}
-          <RemovalArea creatorId={creatorId} removal={w.removal} offer={w.offer} />
+          <RemovalArea creatorId={creatorId} scopeAccountId={scopeAccountId} removal={w.removal} offer={w.offer} />
           {!w.synced && (
             <p role="status" className="mt-1 text-[14px] text-muted">
               Saved. It reaches {brand || "the removal service"} on the next sync.
             </p>
           )}
-          <TrackingSwitch creatorId={creatorId} on={w.identity.on} paused={row ? pausedLabel(row, now, tz) : null} canWrite={canWrite} />
+          <TrackingSwitch creatorId={creatorId} scopeAccountId={scopeAccountId} on={w.identity.on} paused={row ? pausedLabel(row, now, tz) : null} canWrite={canWrite} />
           {canWrite && (
             <div>
               <IfButton variant="link" className="mt-2" onClick={() => setEditing(true)}>Edit identity</IfButton>
-              <DeleteWatch creatorId={creatorId} name={name} brand={brand} onDeleted={onDeleted} />
+              <DeleteWatch creatorId={creatorId} scopeAccountId={scopeAccountId} name={name} brand={brand} onDeleted={onDeleted} />
             </div>
           )}
           {w.lanes && <LeakCoverageSection lanes={w.lanes} />}

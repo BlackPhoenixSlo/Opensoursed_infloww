@@ -3,7 +3,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ArrowUp, ChevronDown, ChevronLeft, ChevronRight, History, MousePointerClick, X } from "lucide-react";
+import { ArrowUp, ChevronDown, ChevronLeft, ChevronRight, History, LifeBuoy, MousePointerClick, X } from "lucide-react";
 
 import { IfMark } from "@/components/auth/SiteLook";
 
@@ -41,7 +41,9 @@ import { FocusLine } from "./FocusLine";
 import { canOpenChats, commandLinks, confirmation, openablePages, prepass, type PrepassHit } from "./prepass";
 import { ThreadList } from "./ThreadList";
 import { SupportButton, SupportPanel } from "./SupportPanel";
-import { NO_SUPPORT, SUPPORT_POLL_MS, supportStatusOf, type SupportStatus } from "./supportReducer";
+import {
+  initialSupportEntry, NO_SUPPORT, SUPPORT_POLL_MS, supportEntryReducer, supportStatusOf, type SupportStatus,
+} from "./supportReducer";
 import { UltraPanel, UltraToggle, useUltraMode } from "@/components/ultra/UltraPanel";
 import {
   initialLauncherState, launcherDockReducer, launcherSpot, parseLauncherDock,
@@ -543,7 +545,7 @@ export function AssistantPanel({
   const [ultra, setUltra] = useUltraMode(isUser);
   const [draft, setDraft] = useState("");
   const [listOpen, setListOpen] = useState(false);
-  const [supportOpen, setSupportOpen] = useState(false);
+  const [supportEntry, supportTo] = useReducer(supportEntryReducer, initialSupportEntry);
   const listRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const doOn = doRun.phase !== "off";
@@ -566,13 +568,14 @@ export function AssistantPanel({
   }, [shown]);
 
   const supportButton = support.configured
-    ? <SupportButton unread={support.unread > 0} onClick={() => setSupportOpen(true)} />
+    ? <SupportButton unread={support.unread > 0} onClick={() => supportTo({ type: "open" })} />
     : null;
 
-  if (supportOpen && support.configured) {
+  if (supportEntry.open && support.configured) {
     return (
       <SupportPanel frame={v.frame} column={column} composerPad={v.composerPad} inputText={v.inputText}
-        unread={support.unread} onBack={() => setSupportOpen(false)} onClose={onClose} onRead={markSupportRead} />
+        unread={support.unread} draft={supportEntry.draft} onEntry={supportTo}
+        onBack={() => supportTo({ type: "close" })} onClose={onClose} onRead={markSupportRead} />
     );
   }
 
@@ -595,6 +598,7 @@ export function AssistantPanel({
   };
   const offersDo = (body: string) => !!answer && answer.findPaths(body, openPages).some((h) => flowForHref(h.href) !== null);
 
+  const lastTurnId = shown.length > 0 ? shown[shown.length - 1].id : null;
   const renderTurn = (t: Turn) => (
     <div key={t.id} className="flex flex-col gap-2">
       <div className="self-end max-w-[85%] rounded-2xl rounded-br-md bg-fg text-panel px-3.5 py-2 text-[13px] whitespace-pre-wrap break-words">
@@ -623,6 +627,16 @@ export function AssistantPanel({
           title="Opens the page and fills it in for you — saved OFF"
         >
           <MousePointerClick className="h-4 w-4" aria-hidden />Do it for me
+        </button>
+      )}
+      {support.configured && t.id === lastTurnId && t.answer !== null && (
+        <button
+          type="button"
+          onClick={() => supportTo({ type: "contact", question: t.question })}
+          className="self-start flex h-8 items-center gap-1.5 rounded-full border border-border-light bg-panel px-3 text-[13px] font-medium text-fg hover:border-muted"
+          title="Message a real person on the team — your question is copied in, nothing is sent until you press send"
+        >
+          <LifeBuoy className="h-4 w-4" aria-hidden />Contact support
         </button>
       )}
     </div>

@@ -55,6 +55,13 @@ def send_outcome(msg_id, exc: BaseException | None, readback_id) -> tuple[str, s
     return (SENT, None) if readback_id else (UNCONFIRMED, None)
 
 
+def paid_kwargs(ppv: dict) -> dict:
+    locked = [int(m) for m in ppv.get("media") or []]
+    previews = [int(m) for m in ppv.get("previews") or []]
+    return {"price": int(ppv["price_cents"]) / 100, "media_files": list(dict.fromkeys(locked + previews)),
+            "previews": previews}
+
+
 async def send_priced(client: Any, *, row_id: int, account_id: str, fan_id: int, text: str,
                       ppv: dict, over_message_id: int | None = None, send_purpose: str,
                       min_gap_s: float, before_write=None) -> Sent | send_ops.Reconciled:
@@ -83,10 +90,8 @@ async def send_priced(client: Any, *, row_id: int, account_id: str, fan_id: int,
             return send_ops.RECONCILED
         log.warning("full_ai_ppv_already_attempted account=%s fan=%s row=%s", account_id, fan_id, row_id)
         return Sent(UNCONFIRMED, None, None)
-    cents = int(ppv["price_cents"])
-    locked = [int(m) for m in ppv.get("media") or []]
-    previews = [int(m) for m in ppv.get("previews") or []]
-    media = list(dict.fromkeys(locked + previews))
+    paid = paid_kwargs(ppv)
+    cents, media, previews = int(ppv["price_cents"]), paid["media_files"], paid["previews"]
     result, exc, landed, attempted = None, None, True, False
     since = datetime.utcnow()
 

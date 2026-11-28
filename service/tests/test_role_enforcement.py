@@ -15,6 +15,7 @@ from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
+import accounts as account_registry  # noqa: E402
 import auth  # noqa: E402
 import agency_context as agency_ctx  # noqa: E402
 import employees  # noqa: E402
@@ -26,6 +27,7 @@ from db.models import Action, AiDecision, ChatterAccountAccess, Message, SavedRe
 from sqlalchemy import delete, event, func, select, text  # noqa: E402
 
 IDS = fx.seed_two_agencies()
+account_registry.upsert_account(IDS["creator_a"], nickname="creator_a")
 NAV = Path(__file__).resolve().parents[2] / "app" / "lib" / "nav.ts"
 
 
@@ -1549,7 +1551,7 @@ def _statistics_family(paths: list[str], also: tuple[str, ...] = ()) -> None:
 
         def _granted(fake):
             for path in paths:
-                r = CHATTER_A.get(path)
+                r = CHATTER_A.get(path, headers={"X-Account-Id": IDS["creator_a"]})
                 assert r.status_code == 200, f"{path}: {r.status_code} {r.text}"
             assert len(fake.calls) == len(paths), fake.calls
         _with_fake_of(_granted)

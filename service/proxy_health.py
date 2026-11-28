@@ -369,6 +369,60 @@ def probe_all() -> int:
     return n
 
 
+REBALANCE_INTERVAL_ENV = "PROXY_REBALANCE_INTERVAL_S"
+REBALANCE_INTERVAL_S = 600.0
+REBALANCE_TIERS_ENV = "PROXY_REBALANCE_TIERS"
+
+
+def rebalance_interval_s() -> float:
+    raw = (os.environ.get(REBALANCE_INTERVAL_ENV) or "").strip()
+    try:
+        v = float(raw) if raw else REBALANCE_INTERVAL_S
+    except ValueError:
+        return REBALANCE_INTERVAL_S
+    return 0.0 if v <= 0 else max(v, REBALANCE_INTERVAL_S)
+
+
+def rebalance_tiers() -> tuple[int, ...]:
+    raw = (os.environ.get(REBALANCE_TIERS_ENV) or "").strip()
+    try:
+        return tuple(int(x) for x in raw.split(",") if x.strip()) if raw else (0,)
+    except ValueError:
+        return (0,)
+
+
+def _failed_over_since(t: float) -> bool:
+    with _lock:
+        return any((st.get("failed_over_at") or 0) >= t for st in _state.values())
+
+
+def rebalance(since: float) -> tuple[str, str, str] | None:
+    if _failed_over_since(since):
+        return None
+    moved = proxies.rebalance_step(bad=unusable_labels(bad_reasons()), due=_due_labels(), geo=last_geo,
+                                   verify=verify_pick, deactivated=account_health.write_gate_snapshot(),
+                                   tiers=rebalance_tiers())
+    if moved:
+        log.info("proxy rebalance: moved %s %s -> %s", *moved)
+    return moved
+
+
+async def rebalance_loop() -> None:
+    period = rebalance_interval_s()
+    if not period:
+        return
+    log.info("proxy rebalance every %.0fs", period)
+    since = _now()
+    while True:
+        await asyncio.sleep(period)
+        start = _now()
+        try:
+            await asyncio.to_thread(rebalance, since)
+        except Exception:
+            log.warning("proxy rebalance pass failed", exc_info=True)
+        since = start
+
+
 def interval_s() -> float:
     try:
         v = float(os.environ.get(INTERVAL_ENV) or 0)

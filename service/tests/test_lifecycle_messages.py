@@ -23,7 +23,7 @@ import fans as fans_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account, AutomationRule, Blacklist, Fan, LifecycleMessageClaim, Message,
-    ScheduledJob, SkipList, SubscriberSnapshot, Transaction, VaultItem,
+    ScheduledJob, SkipList, SubscriberCrawl, SubscriberSnapshot, Transaction, VaultItem,
 )
 import automation_executor as executor  # noqa: E402
 import automations.lifecycle_messages as lm  # noqa: E402
@@ -217,6 +217,9 @@ async def _enable(aid: str, kind: str, *, hours_ago: float = 0, **extra) -> None
 
 async def _age_crawl(aid: str, minutes: float = 30) -> None:
     async with get_session() as s:
+        crawl = await s.get(SubscriberCrawl, aid)
+        if crawl is not None:
+            crawl.crawled_at -= timedelta(minutes=minutes)
         for r in (await s.execute(select(SubscriberSnapshot).where(
                 SubscriberSnapshot.account_id == aid))).scalars():
             r.seen_at = r.seen_at - timedelta(minutes=minutes)

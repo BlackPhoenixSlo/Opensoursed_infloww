@@ -17,7 +17,7 @@ from db.of_writer import immediate_session
 from route_wire import parse_utc, wire as _wire
 from s4s_common import (OPEN, VERBS, Refuse, _json_object, _owner_context, daily_full, next_status,
                         partner_refusal, request_refusal)
-from s4s_media import snapshot
+from s4s_media import partner_media_refusal, snapshot
 
 
 router = APIRouter(prefix="/admin/s4s", tags=["s4s"])
@@ -348,6 +348,10 @@ async def _transition(raw_id: str, verb: str) -> dict[str, Any]:
         if isinstance(new, Refuse):
             raise HTTPException(status_code=new.status, detail=new.detail)
         assert r is not None and party is not None
+        if verb == "accept":
+            for poster in (r.to_account_id, r.from_account_id):
+                if reason := partner_media_refusal(r, poster):
+                    raise HTTPException(status_code=501, detail=reason)
         values: dict[str, Any] = {"status": new}
         if verb in ("accept", "decline"):
             values["answered_at"] = now

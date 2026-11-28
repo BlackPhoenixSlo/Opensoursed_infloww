@@ -31,25 +31,27 @@ import time
 import urllib.parse
 import urllib.request
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import websockets
 
-from blank import TARGET_END, _is_web, blank_web_pages
+from audit import audit, read_jsonl
+from policy import SAFE_METHODS, waf_allowed
+from store import (gate_alive, is_stale, known_identities, log_event, ports_path, read_beat,
+                   read_json, read_ports, session_dir, write_json)
+from blank import TARGET_END, WORKER_TYPES, _is_web, blank_web_pages
 from record import CDP, browser_ws_url
 
 DEFAULT_ROOT = Path.home() / "Downloads" / "fansly-live-capture"
 API_ORIGIN = "https://apiv3.fansly.com"
 REFUSED_PORT = 9222
 SELFTEST_SESSION_PREFIX = "selftest-"
-SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 BEAT_EVERY = 0.5
 STALE_AFTER = 2.0
 WATCH_POLL = 0.25
 WATCHDOG_WAIT = 30.0
 BLANK_EXIT_WAIT = 90.0
-WORKER_TYPES = frozenset({"worker", "service_worker", "shared_worker"})
 WEB_TYPES = frozenset({"page", "iframe"}) | WORKER_TYPES
 
 OK = '{"success":true}'
@@ -135,18 +137,6 @@ class Verdict:
     status: int = 200
 
 
-@dataclass
-class AuditResult:
-    passed: bool
-    failures: list = field(default_factory=list)
-    warnings: list = field(default_factory=list)
-    counts: dict = field(default_factory=dict)
-
-    def as_dict(self) -> dict:
-        return {"passed": self.passed, "failures": self.failures,
-                "warnings": self.warnings, "counts": self.counts}
-
-
 def _origin(url: str) -> str:
     s = urllib.parse.urlsplit(url)
     return f"{s.scheme}://{s.netloc}".lower()
@@ -160,10 +150,6 @@ def on_open_reply(method: str, url: str, api_origin: str):
         return None
     make, provenance = hit
     return make(), provenance
-
-
-def _is_waf_host(host: str) -> bool:
-    return host == "awswaf.com" or host.endswith(".awswaf.com")
 
 
 def decide(method: str, url: str, resource_type: str, halted: bool, api_origin: str) -> Verdict:
@@ -181,7 +167,7 @@ def decide(method: str, url: str, resource_type: str, halted: bool, api_origin: 
         if s.scheme == "https" and (host, s.path) in TELEMETRY:
             return Verdict("fulfill", "telemetry", body="", provenance="telemetry", decision="faked",
                            status=204)
-        if _is_waf_host(host):
+        if waf_allowed(m, _origin(url), s.path):
             return Verdict("continue", "waf", decision="waf")
     return Verdict("fail", f"write {m}", halt=True, decision="halted")
 
@@ -207,10 +193,6 @@ def redact_path(path: str, identities) -> str:
         else:
             segs.append(seg)
     return "/".join(segs)
-
-
-def is_stale(beat, now: float, max_age: float) -> bool:
-    return beat is None or now - beat > max_age
 
 
 def selftest_binds(selftest, browser_id: str):
@@ -242,6 +224,8 @@ def request_line(ts: float, session: str, target_type: str, request: dict,
         if web else [],
         "resource_type": resource_type, "decision": verdict.decision, "reason": verdict.reason,
     }
+    if verdict.decision == "waf":
+        line["origin"] = _origin(request["url"])
     if verdict.provenance:
         line["provenance"] = verdict.provenance
     return line
@@ -254,8 +238,14 @@ def unread_from_groups(body: dict):
     data = resp.get("data") if isinstance(resp, dict) else None
     if not isinstance(data, list):
         return None
-    return {str(g.get("groupId")): int(g.get("unreadCount") or 0)
-            for g in data if isinstance(g, dict) and g.get("groupId")}
+    counts = {}
+    for group in data:
+        if not isinstance(group, dict) or not group.get("groupId"):
+            continue
+        count = group.get("unreadCount")
+        if type(count) is int and count >= 0 or isinstance(count, str) and re.fullmatch(r"[0-9]{1,15}", count):
+            counts[str(group["groupId"])] = int(count)
+    return counts
 
 
 def _identity(role: str, acct: dict) -> dict:
@@ -285,153 +275,6 @@ def value_shape(v):
     if v is None:
         return "null"
     return {bool: "bool", int: "int", float: "float", str: "str"}.get(type(v), type(v).__name__)
-
-
-def read_jsonl(path: Path) -> list[dict]:
-    out = []
-    if path.exists():
-        for ln in path.read_text().splitlines():
-            try:
-                out.append(json.loads(ln))
-            except ValueError:
-                continue
-    return out
-
-
-def _next_saved_page(session: Path, after: float):
-    pages = session.parent.parent / "pages"
-    best = None
-    if pages.is_dir():
-        for meta in pages.rglob("*.meta.json"):
-            try:
-                m = json.loads(meta.read_text())
-            except ValueError:
-                continue
-            if m.get("session") != session.name:
-                continue
-            t = float(m.get("saved_at") or meta.stat().st_mtime)
-            if t > after and (best is None or t < best[0]):
-                best = (t, str(meta.relative_to(pages))[: -len(".meta.json")])
-    return best[1] if best else None
-
-
-def audit(session: Path, now: float) -> AuditResult:
-    failures, warnings = [], []
-    counts = Counter()
-    stopped = False
-    unverified: dict[str, float] = {}
-    for ln in read_jsonl(session / "gate.jsonl"):
-        ev = ln.get("event")
-        if ev:
-            counts[f"event_{ev}"] += 1
-            stopped = stopped or ev == "stopped"
-            continue
-        d = ln.get("decision", "")
-        counts[d] += 1
-        if d == "continued" and str(ln.get("method", "")).upper() not in SAFE_METHODS:
-            counts["continued_writes"] += 1
-        if d == "faked" and ln.get("provenance") == "unverified":
-            p = ln.get("path", "")
-            unverified[p] = min(unverified.get(p, ln.get("ts", 0)), ln.get("ts", 0))
-    counts.setdefault("continued_writes", 0)
-    counts.setdefault("waf", 0)
-    if counts["continued_writes"]:
-        failures.append(f"{counts['continued_writes']} continued request(s) outside GET/HEAD/OPTIONS")
-    if counts["event_ws_frame_sent"]:
-        failures.append(f"{counts['event_ws_frame_sent']} socket frame(s) sent after arming")
-    if counts["event_ws_created"]:
-        failures.append(f"{counts['event_ws_created']} socket(s) created after arming")
-    if counts["event_ws_handshake"]:
-        failures.append(f"{counts['event_ws_handshake']} socket handshake(s) completed after arming")
-    if counts["event_blank_unconfirmed"]:
-        failures.append(f"{counts['event_blank_unconfirmed']} blank(s) left a target without a confirmed crash")
-    if (session / "HALT").exists() or counts["event_halt"]:
-        failures.append("session halted")
-    if (session / "WATCHDOG_TRIP").exists():
-        failures.append("watchdog tripped")
-    if not stopped:
-        failures.append("no stopped event: session was not closed by gate.py stop")
-    obs = read_jsonl(session / "unread.jsonl")
-    counts["groups_observations"] = len(obs)
-    if len(obs) < 2:
-        failures.append(f"{len(obs)} /messaging/groups observation(s); need at least 2")
-    else:
-        first, last, seen = {}, {}, {}
-        for o in obs:
-            for g, n in (o.get("groups") or {}).items():
-                first.setdefault(g, n)
-                last[g] = n
-                seen[g] = seen.get(g, 0) + 1
-        both = {g for g, k in seen.items() if k >= 2}
-        dropped = sum(1 for g in both if last[g] < first[g])
-        rose = sum(1 for g in both if last[g] > first[g])
-        counts["groups_compared"] = len(both)
-        if not both:
-            failures.append("no thread was seen in two /messaging/groups observations")
-        if dropped:
-            failures.append(f"unread count dropped in {dropped} group(s)")
-        if rose:
-            warnings.append(f"unread count rose in {rose} group(s) (fan activity)")
-    for path, ts in sorted(unverified.items()):
-        page = _next_saved_page(session, ts)
-        where = f"check the screenshot of page {page}" if page else "no page was saved after it"
-        warnings.append(f"unverified fake {path} fired; {where}")
-    return AuditResult(not failures, failures, warnings, dict(counts))
-
-
-def ports_path(root: Path, port: int) -> Path:
-    return root / "ports" / f"{port}.json"
-
-
-def session_dir(root: Path, session: str) -> Path:
-    return root / "sessions" / session
-
-
-def read_json(path: Path):
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-
-
-def write_json(path: Path, obj) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(obj, indent=None))
-    os.replace(tmp, path)
-
-
-def read_ports(root: Path, port: int):
-    return read_json(ports_path(root, port))
-
-
-def read_beat(path: Path):
-    b = read_json(path)
-    return (b.get("ts"), b) if isinstance(b, dict) else (None, {})
-
-
-def known_identities(root: Path) -> list:
-    out = []
-    for f in (root / "sessions").glob("*/identities.json"):
-        data = read_json(f)
-        if isinstance(data, list):
-            out.extend(i for i in data if isinstance(i, dict))
-    return out
-
-
-def gate_alive(sdir: Path) -> bool:
-    try:
-        fd = os.open(sdir / "gate.lock", os.O_RDONLY)
-    except OSError:
-        return False
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return False
-    except BlockingIOError:
-        return True
-    finally:
-        os.close(fd)
 
 
 def _is_fansly(url: str) -> bool:
@@ -852,11 +695,6 @@ async def _blank(port: int) -> tuple[int, list]:
         await conn.ws.close()
 
 
-def log_event(sdir: Path, session: str, name: str, **kw) -> None:
-    with (sdir / "gate.jsonl").open("a") as f:
-        f.write(json.dumps({"ts": round(time.time(), 3), "session": session, "event": name, **kw}) + "\n")
-
-
 async def do_stop(port: int, root: Path) -> tuple[str | None, int, list]:
     ports = read_ports(root, port)
     n, unconfirmed = await _blank(port)
@@ -865,6 +703,7 @@ async def do_stop(port: int, root: Path) -> tuple[str | None, int, list]:
     sdir = session_dir(root, ports["session"])
     if unconfirmed:
         log_event(sdir, ports["session"], "blank_unconfirmed", targets=unconfirmed, by="stop")
+        return ports["session"], n, unconfirmed
     (sdir / "STOP").write_text("stop\n")
     end = time.time() + (5.0 if gate_alive(sdir) else 0.0)
     while True:
@@ -896,7 +735,7 @@ def cmd_audit(args, root: Path) -> int:
 def _unconfirmed_refusal(unconfirmed: list) -> int:
     if not unconfirmed:
         return 0
-    print(f"REFUSED: blanked {len(unconfirmed)} target(s) without a confirmed renderer crash: {unconfirmed}",
+    print(f"REFUSED: {len(unconfirmed)} target(s) without confirmed quiescence: {unconfirmed}",
           file=sys.stderr)
     return 3
 
@@ -941,11 +780,14 @@ def main(argv=None) -> int:
         return _unconfirmed_refusal(unconfirmed) or 0
     if args.cmd == "stop":
         session, n, unconfirmed = asyncio.run(do_stop(args.port, root))
+        if unconfirmed:
+            print("stop refused; interception retained if armed", file=sys.stderr)
+            return _unconfirmed_refusal(unconfirmed)
         if session is None:
             print(f"no gate session on :{args.port}; blanked {n} web tab(s)")
-            return _unconfirmed_refusal(unconfirmed) or 1
+            return 1
         print(f"stopped session {session}; blanked {n} web tab(s)")
-        return _unconfirmed_refusal(unconfirmed) or 0
+        return 0
     if args.cmd == "selftest":
         from selftest import selftest
         return asyncio.run(selftest(args.port, root))

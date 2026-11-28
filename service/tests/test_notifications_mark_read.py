@@ -105,6 +105,9 @@ def _shim(rows: list[dict], fail: bool = False, ignored: bool = False) -> tuple[
         sent.append((method, path, json_body))
         if method == "GET" and path == "/notifications":
             return {"notifications": [dict(r) for r in rows]}
+        if method == "GET" and path == "/notifications/unack":
+            unread = [r["type"] for r in rows if not r["acknowledgedAt"]]
+            return [{"type": t, "total": unread.count(t)} for t in sorted(set(unread))]
         if fail:
             raise FanslyAPIError("400 for https://apiv3.fansly.com/api/v1/notifications/ack")
         if not ignored:
@@ -127,7 +130,7 @@ def case_fansly_ack_ignored_keeps_the_count():
     shim, sent = _shim(_ROWS, ignored=True)
     got = shim.notifications_read()
     assert got["counters"]["all"] == 2, got
-    assert sent[-1][:2] == ("GET", "/notifications"), sent
+    assert sent[-1][:2] == ("GET", "/notifications/unack"), sent
 
 
 def case_fansly_shim_nothing_unread_sends_nothing():

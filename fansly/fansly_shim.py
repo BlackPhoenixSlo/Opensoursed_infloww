@@ -23,6 +23,10 @@ from fansly_vault import VaultMixin
 log = logging.getLogger("of-relay.fansly.shim")
 
 
+class ListGone(LookupError):
+    pass
+
+
 def _guard_outbound(text):
     # Same floor every OFClient send passes: an automation on a Fansly account can't dodge the sensitive-word guard
     try:
@@ -48,6 +52,10 @@ class FanslyUnsupported(FanslyAPIError):
     def __init__(self, message: str, *, reason: str | None = None) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+class FanslyPriceRefused(FanslyAPIError):
+    reason = "platform_lacks:message_price"
 
 
 class FanslyBlocked(FanslyAPIError):
@@ -156,14 +164,14 @@ def check_sendable(*, media_files: Any = None, price: Any = 0,
         return
     # Fansly prices the media, not the message: a text-only PPV would go out free
     if not vault_ids:
-        raise FanslyAPIError(
+        raise FanslyPriceRefused(
             "A Fansly PPV price rides on the attached media, so a paid "
             "send needs at least one vault attachment."
         )
     # Every attachment free on a paid send: fan pays nothing, composer reports a sale (reachable via OF's preview counter)
     wanted = {str(v) for v in vault_ids}
     if len(({str(p) for p in (previews or [])} & wanted)) >= len(wanted):
-        raise FanslyAPIError(
+        raise FanslyPriceRefused(
             "Every attachment is marked as a free preview, so a paid send "
             "would deliver all of it for nothing. Leave at least one "
             "attachment locked, or send it free."
@@ -448,6 +456,16 @@ def _note_overlays(account: dict) -> dict:
     return {"displayName": nickname, "notice": note}
 
 
+ONLINE_WINDOW_MS = 5 * 60_000
+
+
+def is_online(account: dict) -> bool:
+    seen = account.get("lastSeenAt")
+    if not isinstance(seen, int) or isinstance(seen, bool) or seen <= 0:
+        return False
+    return time.time() * 1000 - seen < ONLINE_WINDOW_MS
+
+
 def of_user(account: dict) -> dict:
     return {
         "id": str(account.get("id") or ""),
@@ -455,7 +473,7 @@ def of_user(account: dict) -> dict:
         "username": account.get("username") or "",
         "avatar": _avatar_url(account),
         "isVerified": bool(account.get("flags", 0) & 16) or None,
-        "isOnline": account.get("statusId") == 1 or None,
+        "isOnline": is_online(account) or None,
         **_note_overlays(account),
     }
 
@@ -754,7 +772,7 @@ class PurchaseFeed(TypedDict):
 class FanslyShimClient(VaultMixin, FanslyClient):
     SEND_REFUSALS = {"tagged_users": "platform_lacks:tagged_users",
                      "locked_text": "platform_lacks:locked_text"}
-    platform_list_page = 50
+    LIST_PAGE = 50
 
     @classmethod
     def send_refusal(cls, asked: Mapping[str, Any]) -> str | None:
@@ -1242,7 +1260,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         7001: "tip",
         2007: "purchases", 2008: "purchases",
         32007: "purchases", 45012: "purchases",
-        3002: "subscribed", 3003: "subscribed",
+        3002: "subscribed", 3003: "followed",
         15006: "subscribed", 15016: "subscribed",
         1002: "favorited", 2002: "favorited", 5003: "favorited",
         1004: "commented", 1005: "commented",
@@ -1364,29 +1382,24 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         return {"list": page, "hasMore": offset + len(page) < len(items)}
 
     def notifications_count(self, **_ignored: Any) -> dict:
-        try:
-            rows = self._notification_rows()
-        except FanslyAPIError:
-            log.warning("notifications_count: fetch failed", exc_info=True)
-            rows = []
+        totals = self._request("GET", "/notifications/unack")
+        if not isinstance(totals, list) or not all(
+                isinstance(t, dict) and _exact_int(t.get("type")) is not None
+                and type(t.get("total")) is int and t["total"] >= 0 for t in totals):
+            raise FanslyAPIError("GET /notifications/unack: expected [{type, total}]")
         buckets = {"subscribes": 0, "tips": 0, "comments": 0, "mentions": 0,
                    "hearts": 0, "gifts": 0, "all": 0}
         by_of_type = {"subscribed": "subscribes", "tip": "tips",
                       "commented": "comments", "favorited": "hearts"}
-        for row in rows:
-            if not isinstance(row, dict) or row.get("acknowledgedAt"):
-                continue
-            code = _exact_int(row.get("type"))
-            if code is None:
-                continue
-            buckets["all"] += 1
-            key = by_of_type.get(self._NOTIF_TYPE_MAP.get(code, ""))
+        for t in totals:
+            buckets["all"] += t["total"]
+            key = by_of_type.get(self._NOTIF_TYPE_MAP.get(_exact_int(t["type"]), ""))
             if key:
-                buckets[key] += 1
+                buckets[key] += t["total"]
         return buckets
 
     def notifications_read(self, **_ignored: Any) -> dict:
-        # Body is bundle-derived, not live-captured: re-read the feed after the ack so an ignored ack leaves the badge up
+        # Body is bundle-derived, not live-captured: re-read the unread totals after the ack so an ignored ack leaves the badge up
         rows = [r for r in self._notification_rows() if isinstance(r, dict)]
         newest = str(rows[0].get("id") or "") if rows else ""
         if not (newest and any(not r.get("acknowledgedAt") for r in rows)):
@@ -1414,21 +1427,6 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         am_by_id, bundle_by_id = _media_indexes(resp)
         return of_post(posts[0],
                        media=_resolve_attachments(posts[0], am_by_id, bundle_by_id))
-
-
-    def payout_balances(self, **_ignored: Any) -> dict:
-        wallets = self._request("GET", "/payments/wallets") or []
-        total = 0.0
-        for w in wallets if isinstance(wallets, list) else []:
-            try:
-                total += float(w.get("balance") or 0)
-            except (TypeError, ValueError):
-                pass
-        return {"total": total, "wallets": wallets if isinstance(wallets, list) else []}
-
-    def payout_requests(self, *, limit: int = 10, offset: int = 0,
-                        **_ignored: Any) -> dict:
-        return {"list": [], "hasMore": False}
 
 
     def _subscribers_payload(self, *, before: str | None = None) -> dict:
@@ -1463,7 +1461,9 @@ class FanslyShimClient(VaultMixin, FanslyClient):
 
     def _roster(self, type: str, online: bool) -> tuple[list[dict], bool]:
         payload = self._subscribers_payload()
-        rows = [r for r in (payload.get("subscriptions") or []) if isinstance(r, dict)]
+        subscriptions = payload.get("subscriptions")
+        valid_rows = isinstance(subscriptions, list) and all(isinstance(r, dict) for r in subscriptions)
+        rows = subscriptions if valid_rows else []
         want = str(type or "active").lower()
         status = self._SUB_ROSTERS.get(want)
         odd = any(r.get("status") not in self._SUB_ROSTERS.values() for r in rows)
@@ -1471,8 +1471,8 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                 or (status is None and r.get("status") in self._SUB_ROSTERS.values())]
         total = (payload.get("stats") or {}).get("totalActive")
         ids = {str(sid) for r in rows if _subscriber_id(sid := r.get("subscriberId"))}
-        complete = (want == "active" and not odd and isinstance(total, int) and not isinstance(total, bool)
-                    and len(ids) == total)
+        complete = (want == "active" and valid_rows and not odd and isinstance(total, int) and not isinstance(total, bool)
+                    and len(ids) == len(rows) == total)
         users: dict = {}
         if ids:
             try:
@@ -1481,6 +1481,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                 log.warning("subscribers: profile hydration failed", exc_info=True)
         fans = [self._of_subscriber(r, users) for r in rows]
         if online:
+            complete = complete and ids <= users.keys()
             fans = [f for f in fans if f.get("isOnline")]
         return fans, not complete
 
@@ -1637,12 +1638,6 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         if partial:
             return {"success": True, "partial": True, "acked_fan_ids": acked_fans}
         return {"success": True}
-
-    def transactions(self, *, limit: int = 20, offset: int = 0,
-                     type: str | None = None, start: str | None = None,
-                     end: str | None = None, **_ignored: Any) -> dict:
-        return {"list": [], "hasMore": False}
-
 
     @property
     def _known_group_ids(self) -> set[str]:
@@ -1805,6 +1800,9 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         return {"success": True, "id": str(pid) if pid else None,
                 "scheduled": bool(body["scheduledFor"])}
 
+    create_post.platform_blocked_branches = {
+        "media": "media files, a media folder, preview media or a price: the wall-post grant shape is uncaptured"}
+
     def delete_post(self, post_id: str | int, **_ignored: Any) -> dict:
         # On a scheduled post this 422s (code 99): use cancel_scheduled
         self._request("POST", f"/post/{post_id}/delete")
@@ -1866,21 +1864,22 @@ class FanslyShimClient(VaultMixin, FanslyClient):
     def list_users_in(self, list_id: str | int, limit: int = 50, offset: int = 0,
                       query: str | None = None) -> dict:
         lid = str(list_id)
-        if not lid.isdigit() or limit != self.platform_list_page or offset or query is not None:
+        if not lid.isdigit() or limit != self.LIST_PAGE or offset or query is not None:
             raise FanslyUnsupported(f"list_users_in({list_id!r}, limit={limit}, offset={offset}, query={query!r}): "
                                     "only one 50-row first page of a created list was observed",
                                     reason="platform_lacks:list_users_in")
         lists = self._request("GET", "/lists/account", params={"itemId": ""})
-        if not isinstance(lists, list):
+        if not isinstance(lists, list) or not all(
+                isinstance(r, dict) and isinstance(r.get("id"), str) and r["id"] for r in lists):
             raise FanslyAPIError(f"GET /lists/account answered {lists!r}, not the account's lists")
-        if lid not in {str(r.get("id")) for r in lists if isinstance(r, dict)}:
-            raise FanslyUnsupported(f"list {lid} is not on Fansly", reason="platform_lacks:list_users_in:unknown_list")
+        if lid not in {r["id"] for r in lists}:
+            raise ListGone(f"list {lid} is not on Fansly")
         rows = self._request("GET", "/lists/itemsnew", params={"listId": lid, "limit": "50", "sortMode": "3"})
         if not isinstance(rows, list) or not all(
                 isinstance(r, dict) and r.get("type") == 1 and isinstance(r.get("id"), str) and r["id"].isdigit()
                 for r in rows):
             raise FanslyAPIError(f"GET /lists/itemsnew for list {lid} answered a row that is not a member")
-        return {"list": [{"id": r["id"]} for r in rows], "hasMore": len(rows) >= self.platform_list_page}
+        return {"list": [{"id": r["id"]} for r in rows], "hasMore": len(rows) >= self.LIST_PAGE}
 
     def rename_list(self, list_id: str | int, label: str) -> dict:
         lid = str(list_id)
@@ -1937,9 +1936,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
 
     @platform_unsupported(
         "Fansly reports subscriber TOTALS only, with no per-day series; "
-        "synthesising one would be invented analytics",
-        returns={"subscribers": 0, "subscribes": [], "earnings": [],
-                 "total": 0, "delta": 0})
+        "synthesising one would be invented analytics")
     def subscribers_chart(self, *_a: Any, **_k: Any) -> dict: ...
 
 
@@ -2085,11 +2082,10 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                       returns={"success": False, "skipped": "not-wired"})
     def like_post(self, *_a: Any, **_k: Any) -> dict: ...
 
-    @platform_unsupported("Fansly has no server-side message template store", returns=None)
+    @platform_unsupported("Fansly has no server-side message template store")
     def message_templates(self, *_a: Any, **_k: Any) -> None: ...
 
-    @platform_unsupported("Fansly has no OnlyFans settings object; the follow-rule mirror waits for a paid-subscribe capture",
-                          returns=None)
+    @platform_unsupported("Fansly has no OnlyFans settings object; the follow-rule mirror waits for a paid-subscribe capture")
     def my_settings(self, *_a: Any, **_k: Any) -> None: ...
 
     def _group_for_send(self, chat_id: str | int) -> str:
@@ -2162,8 +2158,11 @@ UNBUILT: dict[str, tuple[str, str]] = {
     "set_subscription_discount": (_UNSUPPORTED, "Fansly has no per-fan subscription discount"),
     "delete_chat": (_UNSUPPORTED, "no capture or bundle note names a Fansly chat delete"),
     "chat_media": (_BLOCKED, "chat media gallery not captured"),
+    "transactions": (_BLOCKED, "Fansly per-sale feed unproven; the earnings capture holds aggregates only"),
+    "payout_balances": (_BLOCKED, "Fansly wallet balance unit and shape unproven; no non-zero wallet seen"),
+    "earnings_chart": (_BLOCKED, "Fansly earnings aggregates captured; category map and paging unproven; no Fansly caller"),
     **dict.fromkeys(("bookmarks_all", "campaign_claimers", "campaigns_chart", "campaigns_stats", "chargebacks",
-                     "chargebacks_chart", "chargebacks_ratio", "earnings_chart", "fans_activity", "mass_message_buyers",
+                     "chargebacks_chart", "chargebacks_ratio", "fans_activity", "mass_message_buyers",
                      "messages_chart", "my_profile_stats", "my_start_date", "my_stats_overview", "my_stats_top_posts",
                      "notification_settings", "offer_claims", "payout_invoice", "payouts_chart", "promotions_chart",
                      "promotions_stats", "qr_views", "referral_payouts", "referrals", "referrals_balance",
@@ -2194,7 +2193,8 @@ UNBUILT: dict[str, tuple[str, str]] = {
     **dict.fromkeys(("block_stream_viewer", "reset_stream_key", "schedule_stream", "streams_feed",
                      "unblock_stream_viewer", "user_streams"), _STREAMS),
     **dict.fromkeys(("create_bundle", "delete_bundle", "edit_bundle", "subscription_bundles", "update_subscription"), _SUBS),
-    **dict.fromkeys(("earning_stats", "payout_check_receive", "request_payout", "update_withdrawal_period"), _PAYOUTS),
+    **dict.fromkeys(("earning_stats", "payout_check_receive", "payout_requests", "request_payout",
+                     "update_withdrawal_period"), _PAYOUTS),
     **dict.fromkeys(("edit_queued_message", "queued_message", "scheduled_messages"), _QUEUE),
     **dict.fromkeys(("performers_search", "user_photos", "user_videos", "following"), _FANS),
     **dict.fromkeys(("unpin_all_messages",), _NO_PIN),

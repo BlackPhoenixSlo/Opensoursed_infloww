@@ -51,6 +51,8 @@ from pathlib import Path
 import websockets
 
 import gate
+import store
+from audit import read_jsonl
 from mirror import FANSLY_ORIGIN, fill, load_plan, url_matches
 
 CAPTURE_PORT = 9231
@@ -72,7 +74,7 @@ def guard(port, verb: str, root: Path, now: float):
         return "PORT is not set: drive.py needs an explicit PORT", None
     if port == gate.REFUSED_PORT:
         return f"PORT {gate.REFUSED_PORT} is the unrelated Chrome; never touched", None
-    ports = gate.read_ports(root, port)
+    ports = store.read_ports(root, port)
     if ports is None:
         if port == CAPTURE_PORT:
             return f"no armed gate on :{port}, the creator capture port: every verb needs gate.py run", None
@@ -82,14 +84,14 @@ def guard(port, verb: str, root: Path, now: float):
     if verb not in SESSION_VERBS:
         return (f"{verb} is refused while a gate session is open on :{port}; "
                 f"only {', '.join(sorted(SESSION_VERBS))}"), None
-    sdir = gate.session_dir(root, str(ports.get("session")))
+    sdir = store.session_dir(root, str(ports.get("session")))
     if (sdir / "WATCHDOG_TRIP").exists():
         why = "the watchdog tripped"
     elif (sdir / "HALT").exists():
         why = "the session halted"
     elif not ports.get("armed"):
         why = "the session is not armed yet"
-    elif gate.is_stale(gate.read_beat(sdir / "heartbeat")[0], now, gate.STALE_AFTER):
+    elif store.is_stale(store.read_beat(sdir / "heartbeat")[0], now, gate.STALE_AFTER):
         why = "the gate heartbeat is stale"
     else:
         return None, ports
@@ -188,8 +190,11 @@ def stage_save(root: Path, entry_id: str, html: str, png: bytes, meta: dict) -> 
     base = root / "pages" / entry_id
     base.parent.mkdir(parents=True, exist_ok=True)
     staged = []
-    for ext, data in ((".html", html.encode()), (".png", png),
-                      (".meta.json", json.dumps(meta, ensure_ascii=False).encode())):
+    html_bytes = html.encode()
+    saved = {**meta, "sha256": {"file": hashlib.sha256(html_bytes).hexdigest(),
+                               "png": hashlib.sha256(png).hexdigest()}}
+    for ext, data in ((".html", html_bytes), (".png", png),
+                      (".meta.json", json.dumps(saved, ensure_ascii=False).encode())):
         final = base.with_name(base.name + ext)
         tmp = final.with_name(f".{final.name}.{os.getpid()}.tmp")
         tmp.write_bytes(data)
@@ -317,7 +322,7 @@ def _plan_entry(entry_id: str, root: Path):
     entry = {e["id"]: e for e in load_plan()}.get(entry_id)
     if entry is None:
         return None
-    creator = next((i for i in gate.known_identities(root) if i.get("role") == "creator"), {})
+    creator = next((i for i in store.known_identities(root) if i.get("role") == "creator"), {})
     return {**entry, "url": fill(entry["url"], {"username": creator.get("username")} if creator else {})}
 
 
@@ -330,9 +335,9 @@ def cmd_skip(a, root: Path, session: str) -> int:
     if not a.reason.strip() or not any(t.strip() for t in a.tried):
         return _refuse("skip needs a --reason and the --tried selectors")
     path = root / "skipped.json"
-    rows = [r for r in (gate.read_json(path) or []) if r.get("id") != a.id]
+    rows = [r for r in (store.read_json(path) or []) if r.get("id") != a.id]
     rows.append({"id": a.id, "reason": a.reason, "tried": a.tried, "session": session, "ts": time.time()})
-    gate.write_json(path, rows)
+    store.write_json(path, rows)
     print(f"skipped {a.id}")
     return 0
 
@@ -387,9 +392,9 @@ async def cmd_save(ws, a, root: Path, session: str) -> int:
     entry = _plan_entry(a.id, root)
     if entry and "{username}" in entry["url"]:
         return _refuse("the creator username is not read yet; open a page so /account/me is seen")
-    sdir = gate.session_dir(root, session)
+    sdir = store.session_dir(root, session)
     tab_url = await evaluate(ws, 50, "location.href")
-    last_nav = gate.read_json(sdir / "last_nav.json")
+    last_nav = store.read_json(sdir / "last_nav.json")
     if r := save_allowed(entry, tab_url, last_nav):
         return _refuse(f"save {a.id}: {r}")
     if r := save_args_refusal(entry, a):
@@ -457,7 +462,7 @@ def _keep(root: Path, rows: list, have: set, url: str, data: bytes, session: str
 async def cmd_assets(ws, root: Path, session: str) -> int:
     tree = (await call(ws, 60, "Page.getResourceTree"))["frameTree"]
     path = root / "assets.json"
-    rows = gate.read_json(path) or []
+    rows = store.read_json(path) or []
     have = {r.get("url") for r in rows}
     start, failed = len(rows), 0
     for fr in _frames(tree):
@@ -488,7 +493,7 @@ async def cmd_assets(ws, root: Path, session: str) -> int:
                 print(f"assets: failed {font}: {e}", file=sys.stderr)
                 continue
             _keep(root, rows, have, font, data, session)
-    gate.write_json(path, rows)
+    store.write_json(path, rows)
     print(f"assets: {len(rows) - start} new, {len(rows)} total, {failed} failed")
     return 0
 
@@ -530,8 +535,8 @@ async def main() -> int:
 
     if cmd == "nav" and arg.startswith("/"):
         arg = FANSLY_ORIGIN + arg
-    if ports and cmd == "nav" and (r := nav_refusal(arg, gate.read_jsonl(
-            gate.session_dir(root, session) / "unread.jsonl"))):
+    if ports and cmd == "nav" and (r := nav_refusal(arg, read_jsonl(
+            store.session_dir(root, session) / "unread.jsonl"))):
         return _refuse(r)
 
     async with websockets.connect(tgt["webSocketDebuggerUrl"],
@@ -544,7 +549,7 @@ async def main() -> int:
             await asyncio.sleep(3.0)
             final = await settled_href(ws)
             if ports:
-                gate.write_json(gate.session_dir(root, session) / "last_nav.json",
+                store.write_json(store.session_dir(root, session) / "last_nav.json",
                                 {"url": arg, "final_url": final, "ts": time.time()})
             print(final)
 

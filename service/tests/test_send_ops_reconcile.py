@@ -84,7 +84,7 @@ def restored(peek_until: datetime | None = NOW + timedelta(hours=23), http: Peek
                  (_ts(SINCE), _ts(RESTORED), peek_until and _ts(peek_until)))
         with patch.object(ax, "_make_client", lambda account: client(http or PeekHttp())):
             yield
-        _db_exec("UPDATE cell_meta SET reconcile_since=NULL, restored_at=NULL, peek_until=NULL")
+        _db_exec("UPDATE cell_meta SET reconcile_since=NULL, restored_at=NULL, peek_until=NULL, gap_confirmed_by=NULL, gap_confirmed_at=NULL")
 
 
 def _db_exec(sql: str, args: tuple = ()) -> None:
@@ -102,6 +102,8 @@ def _send(fan: int, kind: str = KIND, anchor: str | None = None) -> tuple[str, l
         send_ops.automated_sync(AID, kind, fan, anchor or f"a-{next(IDS)}", wire)
     except send_ops.SendRefused as e:
         return e.detail["error"], sent
+    except send_ops.send_tripwire.CellHeld as e:
+        return e.hold.why, sent
     return "sent", sent
 
 
@@ -165,6 +167,18 @@ def case_no_read_marking_get_ever():
     assert len(_peeks(http, fan)) == 2, http.gets
 
 
+def case_page_limit_leaves_fan_unreconciled():
+    fan = next(FANS)
+    lost = _msg(SINCE + timedelta(minutes=1))
+    recent = [_msg(RESTORED + timedelta(minutes=1)) for _ in range(250)]
+    http = PeekHttp({fan: [*reversed(recent), lost]})
+    with restored(http=http):
+        got = _send(fan)
+        peeked = _db("SELECT 1 FROM reconcile_peeks WHERE account=? AND target=?", (AID, str(fan)))
+    assert got == ("peek_failed", []) and peeked == [], (got, peeked)
+    assert len(_peeks(http, fan)) == 5
+
+
 def case_after_window_or_manual_or_queue_kind_no_peek():
     fan = next(FANS)
     http = PeekHttp({fan: [_msg(SINCE + timedelta(minutes=30))]})
@@ -172,8 +186,24 @@ def case_after_window_or_manual_or_queue_kind_no_peek():
         late = _send(fan)
     with restored(http=http):
         manual = _send(fan, "composer")
+        manual_queue = _send(fan, "manual_mass_send")
         queue = _send(fan, "mass_job")
-    assert (late[0], manual[0], queue[0]) == ("sent", "sent", "sent") and http.gets == [], (late, manual, queue)
+        direct_op = send_ops.op_id("onlyfans", AID, "mass_job", str(fan), "direct", 0)
+        try:
+            send_ops.begin("onlyfans", AID, direct_op, "mass_job", str(fan), send_ops.digest({}))
+        except send_ops.send_tripwire.CellHeld as e:
+            assert e.hold.why == "restore_gap_unconfirmed"
+        else:
+            raise AssertionError("direct queue claim accepted during the restore gap")
+        assert not _db("SELECT 1 FROM send_ops WHERE op_id=?", (direct_op,))
+        _db_exec("UPDATE cell_meta SET peek_until=?", (_ts(NOW - timedelta(seconds=1)),))
+        expired = _send(fan, "mass_job")
+        assert restore_reconcile.confirm_gap("test-owner")
+        confirmed = _send(fan, "mass_job")
+    assert (late[0], manual[0], queue[0], expired[0], confirmed[0]) == (
+        "sent", "sent", "restore_gap_unconfirmed", "restore_gap_unconfirmed", "sent")
+    assert manual_queue[0] == "sent"
+    assert not queue[1] and not expired[1] and not http.gets
 
 
 def case_peek_failure_refuses_that_fan_only_and_retries():
@@ -260,6 +290,52 @@ def case_native_queue_lists_items_missing_from_the_db():
         unknown = restore_reconcile.native_queue_unknown(AID, client(http))
     assert [i["id"] for i in unknown] == list(range(missing, missing + 55)), [i["id"] for i in unknown][:3]
     assert [q["offset"] for p, q in http.gets if p == "/messages/queue"] == ["0", "50"], http.gets
+
+
+async def case_held_mass_job_has_no_list_writes_or_run_mint():
+    class Lists:
+        def __init__(self):
+            self.writes = []
+
+        def get_lists(self, **_):
+            return {"list": [], "hasMore": False}
+
+        def create_list(self, name):
+            self.writes.append(name)
+            return {"id": 777, "name": name}
+
+        def list_users_in(self, *_, **__):
+            return {"list": [], "hasMore": False}
+
+        def add_user_to_list(self, list_id, user_id):
+            self.writes.append((list_id, user_id))
+
+        def send_mass_message(self, **_):
+            raise AssertionError("held mass job reached the send")
+
+    from db.engine import get_session
+    from db.models import Account
+    async with get_session() as s:
+        if await s.get(Account, AID) is None:
+            s.add(Account(id=AID, nickname=AID))
+    wire = Lists()
+    _db_exec("CREATE TABLE gap_mass_mints (id INTEGER)")
+    _db_exec("CREATE TRIGGER gap_mass_mint AFTER INSERT ON mass_runs "
+             "BEGIN INSERT INTO gap_mass_mints VALUES (NEW.id); END")
+    try:
+        with restored(), patch.object(ax, "_CELLS", True), patch.object(ax, "_make_client", lambda _: wire):
+            job = await ax.enqueue_job(AID, "send_mass_message", payload={
+                "text": "list broadcast", "user_lists": ["123"], "excluded_users": [next(FANS)],
+                "exclude_replied_hours": 0, "exclude_inbound_hours": 0,
+            })
+            result = await ax.run_once(AID, "send_mass_message")
+            assert (result.get("reason"), wire.writes, _db("SELECT id FROM gap_mass_mints")) == (
+                "cell_held", [], []), (result, wire.writes, _db("SELECT id FROM gap_mass_mints"))
+            assert _db("SELECT status FROM scheduled_jobs WHERE id=?", (job,)) == [("pending",)]
+            _db_exec("DELETE FROM scheduled_jobs WHERE id=?", (job,))
+    finally:
+        _db_exec("DROP TRIGGER gap_mass_mint")
+        _db_exec("DROP TABLE gap_mass_mints")
 
 
 if __name__ == "__main__":

@@ -1,41 +1,36 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isFont, makeAssets } from "./fansly-mirror/assets.mjs";
-import { codePoint, cssNormalize, cssTokens, hoverRules } from "./fansly-mirror/css.mjs";
+import { makeAssets } from "./fansly-mirror/assets.mjs";
+import { hoverRules } from "./fansly-mirror/css.mjs";
 import { iconHides } from "./fansly-mirror/icons.mjs";
 import { THEME_MARKER, OPENER_FORM, addChrome, addWires, chartPlaceholders, isBoot, siblingWires, stateWires, tagHooks } from "./fansly-mirror/wire.mjs";
 import { menuWires, openDropdowns } from "./fansly-mirror/menus.mjs";
 import { dropNotCaptured } from "./fansly-mirror/not-captured.mjs";
-import { STATIC_URL, baseOf, needlesOf, pathOfUrl, peopleOf, textKinds } from "./fansly-mirror/kinds.mjs";
+import { STATIC_URL, baseOf, needlesOf, pathOfUrl, peopleOf } from "./fansly-mirror/kinds.mjs";
 import { install, printSummary } from "./fansly-mirror/output.mjs";
-import { CUSTOM_ELEMENT, MONEY, PROSE_ATTRS, clearFields, dropIds, esc, fakeEmails, fakeMoney, fanslyPath, makeSwap, ruleOf, scrubText, words } from "./fansly-mirror/scrub.mjs";
+import { MONEY, PROSE_ATTRS, clearFields, dropIds, esc, fakeMoney, hasCredential, scrubIdentity, fanslyPath, makeSwap, ruleOf, scrubText } from "./fansly-mirror/scrub.mjs";
+
+import { parse } from "./fansly-mirror/dom.mjs";
+import { HTML_NS, SVG_NS, SAFE_NAME, URL_ATTR, GEOMETRY, attrKinds, elementKinds, isReadableAttr, isStyle, cssAnalyze, cssKinds } from "./fansly-mirror/markup-policy.mjs";
+import { attributeTextKinds, guard, isBadEncoding, selfTest } from "./fansly-mirror/guard.mjs";
+
+const BLANK_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MANAGER = "/fansly-manager";
-const BLANK_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
-
 const SECTIONS = ["home", "profile", "vault", "messages", "creator", "statistics", "tracking-links", "subscriptions", "bookmarks", "settings", "scheduled", "lists", "notifications"];
 const SECTION_INDEX = { statistics: "overview", settings: "account" };
 const BUILT_PATHS = new Set(["/fansly-manager/scheduled", "/fansly-manager/lists", "/fansly-manager/notifications", "/fansly-manager/earning-statistics"]);
-const STRUCTURAL_KINDS = ["fansly-host", "remote", "sink", "data-uri", "email", "ipv4", "ipv6", "digit-run", "handle", "amount", "script", "handler", "dead-node", "ng-reflect", "comment", "attribute", "entity", "css-content"];
-
 const fail = (msg) => {
   console.error(`fansly-mirror: ${msg}`);
   process.exit(1);
 };
-
-let JSDOM, VirtualConsole;
-try {
-  ({ JSDOM, VirtualConsole } = createRequire(path.join(REPO, "app/package.json"))("jsdom"));
-} catch {
-  fail("jsdom is not installed; run pnpm install in app/");
-}
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -56,11 +51,8 @@ const OLD = `${OUT}.old`;
 const LIST = path.join(LIB, "fansly-mirror-pages.ts");
 const BUILD_TS = path.join(LIB, "fansly-mirror-build.ts");
 
-const cssUnescape = (v) => v.replace(/\\(?:([0-9a-f]{1,6})[ \t\n\r\f]?|(\r\n|[\n\r\f])|([\s\S]))/gi, (_, hex, nl, ch) => (hex ? codePoint(parseInt(hex, 16)) : nl ? "" : ch));
 const sentence = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 const labelOf = (slug) => sentence(slug.replace(/[-/]+/g, " "));
-const SAFE_NAME = /^[\w-][\w.-]*$/;
-
 const SNOWFLAKE = /^\d{15,20}$/;
 const PROFILE_SUBS = new Set(["media", "media/pictures", "followers", "following"]);
 const OWN_SECTIONS = new Set(["scheduled", "lists", "bookmarks", "subscriptions"]);
@@ -112,282 +104,7 @@ const titleOf = (section, sub) => {
   return sub ? `${labelOf(section)}: ${labelOf(sub)}` : labelOf(section);
 };
 
-const HTML_NS = "http://www.w3.org/1999/xhtml";
-const SVG_NS = "http://www.w3.org/2000/svg";
-const XLINK_NS = "http://www.w3.org/1999/xlink";
-const HTML_ELEMENTS = words("html head body title style meta link div span p a h1 h2 h3 h4 h5 h6 ul ol li dl dt dd img button form input label select option optgroup textarea fieldset legend section article header footer nav main aside figure figcaption table thead tbody tfoot tr td th caption colgroup col strong em b i u s small sub sup br hr pre code blockquote q cite abbr time mark kbd samp var del ins wbr details summary dialog progress meter output canvas");
-const SVG_ELEMENTS = words("svg g defs symbol use path circle ellipse line polyline polygon rect text tspan title desc linearGradient radialGradient stop clipPath mask pattern marker filter feGaussianBlur feOffset feColorMatrix feFlood feComposite feMerge feMergeNode feBlend feDropShadow image animate animateTransform");
-const VOID = words("area base br col embed hr img input link meta source track wbr basefont bgsound frame keygen param");
-const THIRD_PARTY = /intercom|awswaf|aws-waf|googletagmanager|\bgtm\b|gm-style|google-map|live-video|live-player/i;
-const SMIL_SAFE = words("opacity fill fill-opacity stroke stroke-opacity stroke-width stroke-dasharray stroke-dashoffset r rx ry cx cy x y width height offset stop-color stop-opacity");
-
-const GLOBAL_ATTRS = words("class id title lang dir role tabindex hidden style translate draggable spellcheck contenteditable slot part inert autocapitalize enterkeyhint inputmode");
-const NG_PREFIX = /^_ng(?:content|host)-[a-z]+-c\d{1,10}(?!\d)/;
-const NG_ATTR = new RegExp(`${NG_PREFIX.source}$`);
-const PATTERN_ATTR = /^(?:aria-[a-z-]+|data-[a-z0-9._-]+)$/;
-const HTML_ATTRS = {
-  meta: "charset name content",
-  link: "rel href",
-  a: "href target",
-  img: "src alt width height loading decoding",
-  input: "type name value placeholder checked disabled readonly maxlength minlength min max step autocomplete required size multiple",
-  button: "type name value disabled",
-  form: "method novalidate autocomplete name",
-  label: "for",
-  select: "name multiple disabled size required autocomplete",
-  option: "value selected disabled label",
-  optgroup: "label disabled",
-  textarea: "name rows cols placeholder disabled readonly maxlength minlength required wrap autocomplete",
-  fieldset: "disabled name",
-  td: "colspan rowspan headers",
-  th: "colspan rowspan headers scope abbr",
-  col: "span",
-  colgroup: "span",
-  ol: "start reversed type",
-  li: "value",
-  time: "datetime",
-  del: "datetime",
-  ins: "datetime",
-  details: "open",
-  dialog: "open",
-  progress: "value max",
-  meter: "value min max low high optimum",
-  canvas: "width height",
-  output: "for name",
-  style: "media",
-};
-const SVG_ATTRS = words("fill fill-opacity fill-rule stroke stroke-width stroke-linecap stroke-linejoin stroke-miterlimit stroke-dasharray stroke-dashoffset stroke-opacity opacity clip-path clip-rule mask filter color display visibility transform transform-origin x y x1 y1 x2 y2 cx cy r rx ry fx fy fr width height offset stop-color stop-opacity gradientUnits gradientTransform patternUnits patternContentUnits patternTransform spreadMethod font-size font-family font-weight font-style text-anchor dominant-baseline alignment-baseline letter-spacing dx dy rotate textLength lengthAdjust vector-effect shape-rendering paint-order marker-start marker-mid marker-end markerWidth markerHeight markerUnits refX refY orient maskUnits maskContentUnits clipPathUnits preserveAspectRatio pathLength focusable overflow version");
-const FE = "in in2 result stdDeviation values type operator k1 k2 k3 k4 mode flood-color flood-opacity color-interpolation-filters";
-const SMIL = "attributeName attributeType type from to by values dur begin end repeatCount repeatDur calcMode keyTimes keySplines additive accumulate";
-const SVG_ELEMENT_ATTRS = {
-  svg: "viewBox xmlns xmlns:xlink",
-  symbol: "viewBox",
-  marker: "viewBox",
-  pattern: "viewBox",
-  path: "d",
-  polygon: "points",
-  polyline: "points",
-  use: "href xlink:href",
-  image: "href xlink:href",
-  filter: "filterUnits primitiveUnits color-interpolation-filters",
-  animate: SMIL,
-  animateTransform: SMIL,
-};
-const attrMap = (o) => new Map(Object.entries(o).map(([tag, names]) => [tag, words(names)]));
-const HTML_ATTR_MAP = attrMap(HTML_ATTRS);
-const SVG_ATTR_MAP = attrMap({ ...SVG_ELEMENT_ATTRS, fe: FE });
-const NO_ATTRS = new Set();
-const elementAttrs = (el) => (el.namespaceURI === SVG_NS ? SVG_ATTR_MAP.get(/^fe[A-Z]/.test(el.localName) ? "fe" : el.localName) : HTML_ATTR_MAP.get(el.localName)) || NO_ATTRS;
-const CSS_ATTRS = words("style fill stroke clip-path mask filter marker-start marker-mid marker-end");
-const SMIL_VALUES = words("from to by values");
-const isCssValueAttr = (el, name) => name !== "style" && (CSS_ATTRS.has(name) || (el.namespaceURI === SVG_NS && SMIL_VALUES.has(name)));
-const URL_ATTR = /^(?:href|xlink:href|src|action|formaction|data|poster|background|srcset|imagesrcset|ping|cite|longdesc|usemap|manifest|codebase|archive|lowsrc|dynsrc|xml:base|itemtype|profile|icon)$/i;
-const FRAGMENT = /^#[\w.:-]*$/;
-const MANAGER_HREF = /^\/fansly-manager(?:\/[a-z0-9-]+)*$/;
-const GEOMETRY = (el, name) => /^(?:viewBox|transform|gradientTransform|patternTransform)$/.test(name) || (name === "d" && el.localName === "path") || (name === "points" && /^poly(?:gon|line)$/.test(el.localName));
-const NON_TEXT_ATTRS = words("class style xmlns xmlns:xlink width height x y cx cy r fill stroke");
-const isNameAttr = (el, name) => GLOBAL_ATTRS.has(name) || PATTERN_ATTR.test(name) || NG_ATTR.test(name) || (el.namespaceURI === SVG_NS && SVG_ATTRS.has(name)) || elementAttrs(el).has(name);
-const isReadableAttr = (name) => !NG_ATTR.test(name) && !URL_ATTR.test(name) && !NON_TEXT_ATTRS.has(name.toLowerCase());
-
-const isAsset = (v, ctx) => ctx.assets?.has(v) === true;
-
-function assetSet(root, build) {
-  const set = new Set();
-  if (!build || !SAFE_NAME.test(build)) return set;
-  const walk = (d, rel) => {
-    for (const e of fs.existsSync(d) ? fs.readdirSync(d, { withFileTypes: true }) : []) {
-      if (!SAFE_NAME.test(e.name)) continue;
-      if (e.isDirectory()) walk(path.join(d, e.name), `${rel}${e.name}/`);
-      else if (e.isFile()) set.add(`${STATIC_URL}/${build}/${rel}${e.name}`);
-    }
-  };
-  walk(path.join(root, "static", build), "");
-  return set;
-}
-
-function sinkKind(value) {
-  const v = value.replace(/[\t\n\r]/g, "").replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, "");
-  if (/^data:/i.test(v)) return "data-uri";
-  if (/^(?:javascript|vbscript):/i.test(v)) return "handler";
-  if (/^(?:[a-z][a-z0-9+.-]*:|[\\/]{2})/i.test(v)) return "remote";
-  return "sink";
-}
-
-function schemeKinds(v, kinds) {
-  for (const [, scheme] of v.matchAll(/(?<![\w+.-])([a-z][a-z0-9+.-]*):/gi)) {
-    const s = scheme.toLowerCase();
-    kinds.add(s === "javascript" ? "handler" : s === "data" ? "data-uri" : "remote");
-  }
-}
-
-const CSS_COMMENT = /\/\*[\s\S]*?\*\//g;
-
-function cssSegments(raw) {
-  const text = cssNormalize(raw);
-  const { tokens, bad } = cssTokens(text);
-  const segments = [];
-  const comments = [];
-  let depth = 0;
-  let nest = 0;
-  let broken = bad;
-  let seg = [];
-  let start = 0;
-  const end = (prelude, stop) => {
-    segments.push({ prelude, toks: seg.filter((t) => t.type !== "ws"), start, end: stop });
-    seg = [];
-  };
-  for (const t of tokens) {
-    if (t.type === "comment") comments.push(t);
-    else if (nest === 0 && (t.type === "{" || t.type === ";" || t.type === "}")) {
-      end(t.type === "{", t.type === "}" ? t.start : t.end);
-      start = t.end;
-      if (t.type === "{") depth++;
-      else if (t.type === "}" && --depth < 0) broken = true;
-    } else {
-      if (t.type === "(" || t.type === "[" || t.type === "function") nest++;
-      else if ((t.type === ")" || t.type === "]") && --nest < 0) broken = true;
-      seg.push(t);
-    }
-  }
-  end(false, text.length);
-  return { text, segments, comments, broken: broken || depth !== 0 || nest !== 0 };
-}
-
-const TEXT_PROPS = words("content quotes");
-const NAME_PROPS = words("font-family font font-feature-settings font-variation-settings grid-template-areas grid-template grid");
-const NAME_FUNCS = words("format tech local");
-const TRANSPARENT_FUNCS = words("var env attr counter counters symbols");
-const CONTENT_FUNCS = words("attr counter counters");
-const ICON_TEXT = /^[\u{e000}-\u{f8ff}\u{f0000}-\u{10ffff}]*$/u;
-const FAMILY_VAR = /^--(?:[\w-]*-)?family(?:-[\w-]*)?$/;
-const FONT_NAME = /^[^/:\\]+$/;
-const FONT_FILE = /\.[a-z\d]{2,5}$/i;
-
-function valueKinds(toks, prop, ctx) {
-  const kinds = new Set();
-  const fetched = (v) => {
-    if (!FRAGMENT.test(v) && !isAsset(v, ctx)) kinds.add(sinkKind(v));
-  };
-  const stack = [];
-  for (const t of toks) {
-    if (t.type === "function") {
-      stack.push(t.value.toLowerCase());
-      if (TEXT_PROPS.has(prop) && CONTENT_FUNCS.has(stack.at(-1))) kinds.add("css-content");
-    } else if (t.type === "(" || t.type === "[") stack.push("(");
-    else if (t.type === ")" || t.type === "]") stack.pop();
-    else if (t.type === "url") fetched(t.value);
-    else if (t.type === "string") {
-      const fn = stack.findLast((f) => f !== "(" && !TRANSPARENT_FUNCS.has(f));
-      const nameVar = prop.startsWith("--") && ((FAMILY_VAR.test(prop) && FONT_NAME.test(t.value) && !FONT_FILE.test(t.value)) || ICON_TEXT.test(t.value));
-      if (fn ? !NAME_FUNCS.has(fn) : !TEXT_PROPS.has(prop) && !NAME_PROPS.has(prop) && !nameVar) fetched(t.value);
-      else if (!fn && TEXT_PROPS.has(prop) && !ICON_TEXT.test(t.value)) kinds.add("css-content");
-    }
-  }
-  return kinds;
-}
-
-function declKinds(toks, ctx) {
-  if (!toks.length) return new Set();
-  if (toks[0].type === "at") {
-    const at = toks[0].value.toLowerCase();
-    if (at === "import") return new Set(["sink"]);
-    if (at === "charset") return new Set(toks.length === 2 && toks[1].type === "string" && toks[1].value.toLowerCase() === "utf-8" ? [] : ["encoding"]);
-    return valueKinds(toks.slice(1), "@", ctx);
-  }
-  const prop = toks[0].type === "ident" && toks[1]?.type === ":" ? toks[0].value.toLowerCase() : "";
-  return valueKinds(prop ? toks.slice(2) : toks, prop, ctx);
-}
-
-function cssAnalyze(raw, ctx) {
-  const { text, segments, comments, broken } = cssSegments(raw);
-  const kinds = new Set(broken ? ["sink"] : []);
-  const cuts = comments.map((t) => [t.start, t.end, " "]);
-  let fatal = broken;
-  for (const s of segments) {
-    if (s.prelude) {
-      if (s.toks[0]?.type === "at" && s.toks[0].value.toLowerCase() === "import") {
-        kinds.add("sink");
-        fatal = true;
-      }
-      continue;
-    }
-    const k = declKinds(s.toks, ctx);
-    for (const x of k) kinds.add(x);
-    if (k.size) cuts.push([s.start, s.end, ""]);
-  }
-  return { text, kinds, cuts, fatal };
-}
-
-function cssExempt(raw) {
-  const { text, segments } = cssSegments(raw);
-  const blanks = [];
-  for (const { prelude, toks } of segments) {
-    for (const t of toks) {
-      const ng = t.type === "ident" && text.slice(t.start, t.end).match(NG_PREFIX);
-      if (ng) blanks.push({ start: t.start, end: t.start + ng[0].length });
-    }
-    const important = toks.length === 5 && toks[3].value === "!" && toks[4].type === "ident" && toks[4].value.toLowerCase() === "important";
-    if (!prelude && toks[0]?.type === "ident" && toks[0].value.toLowerCase() === "z-index" && toks[1]?.type === ":" && toks[2]?.type === "number" && (toks.length === 3 || important)) blanks.push(toks[2]);
-  }
-  let out = text;
-  for (const t of blanks.sort((a, b) => b.start - a.start)) out = out.slice(0, t.start) + out.slice(t.end);
-  return out;
-}
-
-function cssKinds(text, ctx, kinds) {
-  for (const k of cssAnalyze(text, ctx).kinds) kinds.add(k);
-  for (const t of new Set([text, text.replace(CSS_COMMENT, "")])) {
-    const u = cssUnescape(t).normalize("NFKC");
-    if (/@import\b/i.test(u)) kinds.add("sink");
-    if (u.replace(/\\/g, "/").includes("//")) kinds.add("remote");
-    for (const m of u.matchAll(/"([^"]*)"|'([^']*)'/g)) schemeKinds(m[1] ?? m[2], kinds);
-    for (const [, chunk, end] of u.matchAll(/([^{};]*)([{};]|$)/g)) {
-      const colon = chunk.indexOf(":");
-      if (end !== "{" && colon >= 0) schemeKinds(chunk.slice(colon + 1), kinds);
-    }
-  }
-}
-
-const cssTextViews = (css) => [cssExempt(css), cssExempt(cssUnescape(css))];
-
-function elementKinds(el, kinds, ctx) {
-  const tag = el.localName;
-  if (tag === "script") return kinds.add("script");
-  const ok = el.namespaceURI === HTML_NS ? HTML_ELEMENTS.has(tag) || CUSTOM_ELEMENT.test(tag) : el.namespaceURI === SVG_NS && SVG_ELEMENTS.has(tag);
-  const names = el.getAttributeNames();
-  const attr = (n) => el.getAttribute(n);
-  if (
-    !ok ||
-    THIRD_PARTY.test(`${attr("id") || ""} ${attr("class") || ""}`) ||
-    (tag === "link" && !(names.join() === "rel,href" && attr("rel") === "stylesheet" && attr("href").endsWith(".css") && isAsset(attr("href"), ctx))) ||
-    (tag === "meta" && !names.every((n) => n === "charset" || (attr("name") === "viewport" && (n === "name" || n === "content")))) ||
-    (tag === "animate" && !SMIL_SAFE.has(attr("attributeName"))) ||
-    (tag === "animateTransform" && attr("attributeName") !== "transform")
-  )
-    kinds.add("dead-node");
-  if (tag === "meta" && el.namespaceURI === HTML_NS && el.hasAttribute("charset") && attr("charset").toLowerCase() !== "utf-8") kinds.add("encoding");
-}
-
-function attrKinds(el, name, value, ctx, kinds) {
-  if (/^on/i.test(name) || /^srcdoc$/i.test(name)) return kinds.add("handler");
-  if (/^ng-reflect-/i.test(name)) return kinds.add("ng-reflect");
-  if (!isNameAttr(el, name)) return kinds.add(URL_ATTR.test(name) ? sinkKind(value) : "attribute");
-  if (name === "href" || name === "xlink:href" || name === "src") {
-    const tag = el.localName;
-    const ok = tag === "a" ? FRAGMENT.test(value) || MANAGER_HREF.test(value) : tag === "use" ? FRAGMENT.test(value) : isAsset(value, ctx);
-    if (!ok) kinds.add(sinkKind(value));
-  } else if (name === "target") {
-    if (value !== "_top") kinds.add("attribute");
-  } else if (name === "xmlns" || name === "xmlns:xlink") {
-    if (value !== (name === "xmlns" ? SVG_NS : XLINK_NS)) kinds.add("attribute");
-  } else if (name === "style") cssKinds(value, ctx, kinds);
-  else if (isCssValueAttr(el, name)) cssKinds(`${name}:${value}`, ctx, kinds);
-}
-
-const isStyle = (el) => el.localName === "style" && el.namespaceURI === HTML_NS;
 const isMedia = (el, name) => (el.localName === "img" && name === "src") || (el.localName === "image" && /^(?:xlink:)?href$/.test(name));
-const parse = (raw, opts = {}) => new JSDOM(raw, { virtualConsole: new VirtualConsole(), ...opts });
-
 function cssScrub(raw, ctx) {
   const { text, cuts, fatal } = cssAnalyze(raw, ctx);
   if (fatal) return null;
@@ -405,15 +122,17 @@ function cssScrub(raw, ctx) {
 
 function scrubAttr(el, attr, ctx, rule) {
   const { name } = attr;
+  if (hasCredential(attr.value)) return void el.removeAttributeNode(attr);
   const kept = URL_ATTR.test(name) || GEOMETRY(el, name) ? attr.value : dropIds(name, attr.value);
   if (!kept && attr.value) return void el.removeAttributeNode(attr);
-  const swapped = () => fakeEmails(ctx.swap(kept));
+  const swapped = () => scrubIdentity(kept, ctx.swap);
   const value = URL_ATTR.test(name) ? kept
     : PROSE_ATTRS.has(name) ? scrubText(kept, rule, ctx, el, name)
     : isReadableAttr(name) ? swapped().replace(MONEY, fakeMoney)
     : swapped();
   const kinds = new Set();
   attrKinds(el, name, value, ctx, kinds);
+  if (name !== "style") attributeTextKinds(el, name, value, ctx, kinds);
   if (!kinds.size) {
     if (value !== attr.value) attr.value = value;
     return;
@@ -479,150 +198,6 @@ function buildPage(dom, ctx, base, wires, page) {
   const canvases = chartPlaceholders(doc);
   addChrome(doc);
   return { html: dom.serialize(), canvases };
-}
-
-const ENTITY = /&(?!(?:amp|lt|gt|quot|nbsp);)/;
-const startTagOf = (el) => {
-  const html = el.cloneNode(false).outerHTML;
-  const close = `</${el.localName}>`;
-  return el.namespaceURI === HTML_NS && VOID.has(el.localName) ? html : html.endsWith(close) ? html.slice(0, -close.length) : html;
-};
-
-function markupKinds(raw, ctx, needles, xml = false) {
-  const kinds = new Set();
-  let dom;
-  try {
-    dom = parse(raw, xml ? { contentType: "image/svg+xml" } : { includeNodeLocations: true });
-  } catch {
-    kinds.add("attribute");
-    return kinds;
-  }
-  const doc = dom.window.document;
-  const covered = new Uint8Array(raw.length + 1);
-  const where = (n) => (xml ? null : dom.nodeLocation(n));
-  const mark = (loc) => loc && covered.fill(1, loc.startOffset, loc.endOffset);
-  const styles = [];
-  const text = (v, opts = {}) => textKinds(v, kinds, { build: ctx.build, needles, people: ctx.people, ...opts });
-  const joined = [];
-  let boots = 0;
-  const visit = (node) => {
-    for (const n of node.childNodes) {
-      if (n.nodeType === n.ELEMENT_NODE) visitElement(n);
-      else if (n.nodeType === n.TEXT_NODE || n.nodeType === n.CDATA_SECTION_NODE) {
-        if (node.localName !== "style") {
-          text(n.data, { readable: true });
-          joined.push(n.data);
-        }
-      } else if (n.nodeType === n.COMMENT_NODE) {
-        kinds.add("comment");
-        mark(where(n));
-      } else if (n.nodeType === n.DOCUMENT_TYPE_NODE) {
-        mark(where(n));
-        text(`${n.name} ${n.publicId} ${n.systemId}`);
-      } else kinds.add("dead-node");
-    }
-  };
-  const visitElement = (el) => {
-    if (!isBoot(el) || boots++) elementKinds(el, kinds, ctx);
-    const loc = where(el);
-    if (loc?.startTag) {
-      mark(loc.startTag);
-      if (raw.slice(loc.startTag.startOffset, loc.startTag.endOffset) !== startTagOf(el)) kinds.add("attribute");
-    }
-    if (loc?.endTag) mark(loc.endTag);
-    for (const { name, value } of el.attributes) {
-      attrKinds(el, name, value, ctx, kinds);
-      text(name, { numeric: !NG_ATTR.test(name) });
-      if ((name === "xmlns" && value === SVG_NS) || (name === "xmlns:xlink" && value === XLINK_NS)) continue;
-      for (const v of CSS_ATTRS.has(name) ? cssTextViews(value) : [value]) text(v, { numeric: !GEOMETRY(el, name), readable: isReadableAttr(name) });
-    }
-    if (isStyle(el)) {
-      const css = el.textContent;
-      cssKinds(css, ctx, kinds);
-      for (const v of cssTextViews(css)) text(v);
-      if (loc?.startTag) {
-        const range = { startOffset: loc.startTag.endOffset, endOffset: loc.endTag?.startOffset ?? raw.length };
-        mark(range);
-        styles.push(range);
-      }
-    }
-    visit(el);
-  };
-  visit(doc);
-  if (xml) {
-    if (/<!DOCTYPE|<!ENTITY/i.test(raw)) kinds.add("entity");
-    const decl = raw.match(/^<\?xml\b[^>]*?\bencoding\s*=\s*["']([^"']*)/i);
-    if (decl && decl[1].toLowerCase() !== "utf-8") kinds.add("encoding");
-  } else
-    for (const m of raw.matchAll(/<[a-zA-Z/!?]/g))
-      if (!covered[m.index]) {
-        kinds.add("dead-node");
-        break;
-      }
-  let outside = raw;
-  for (const r of styles.reverse()) outside = outside.slice(0, r.startOffset) + outside.slice(r.endOffset);
-  if (ENTITY.test(outside)) kinds.add("entity");
-  text(joined.join(""), { readable: true });
-  return kinds;
-}
-
-function scan(raw, type, ctx, needles) {
-  if (type === "markup" || type === "svg") return markupKinds(raw, ctx, needles, type === "svg");
-  const kinds = new Set();
-  if (type === "css") {
-    cssKinds(raw, ctx, kinds);
-    for (const v of cssTextViews(raw)) textKinds(v, kinds, { build: ctx.build, needles, people: ctx.people });
-  } else textKinds(raw, kinds, { build: ctx.build, needles, people: ctx.people, readable: true });
-  return kinds;
-}
-
-const isBadEncoding = (buf) => {
-  const s = buf.toString("utf8");
-  return s.charCodeAt(0) === 0xfeff || !Buffer.from(s, "utf8").equals(buf) || /[\0-\x08\x0b\x0c\x0e-\x1f]/.test(s);
-};
-
-const be16 = (buf) => Buffer.from(buf.subarray(0, buf.length & ~1)).swap16().toString("utf16le");
-const fontViews = (buf) => [buf.toString("latin1"), be16(buf), be16(buf.subarray(1))].map((v) => v.toLowerCase());
-
-function guard(root, build, extra, needles = [], people = null) {
-  const ctx = { root, build, assets: assetSet(root, build), people };
-  const leaks = [];
-  const pathKinds = new Set();
-  const walk = (d) => {
-    for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      const p = path.join(d, e.name);
-      const rel = path.relative(root, p).split(path.sep).join("/");
-      const own = scan(`/fansly-mirror/${rel}`, "path", ctx, needles);
-      if (!SAFE_NAME.test(e.name)) own.add("path-name");
-      for (const k of own) pathKinds.add(k);
-      const where = own.size ? "an output path" : rel;
-      const type = e.name.endsWith(".html") ? "markup" : e.name.endsWith(".svg") ? "svg" : e.name.endsWith(".css") ? "css" : null;
-      if (e.isDirectory()) walk(p);
-      else if (!e.isFile()) leaks.push(`${where}: special-file`);
-      else {
-        const buf = fs.readFileSync(p);
-        const built = build && rel.startsWith(`static/${build}/`);
-        if (type && isBadEncoding(buf)) leaks.push(`${where}: encoding`);
-        else if (type) for (const k of scan(buf.toString("utf8"), type, ctx, needles)) leaks.push(`${where}: ${k}`);
-        else if (built && isFont(e.name, buf)) {
-          if (fontViews(buf).some((v) => needles.some((n) => v.includes(n)))) leaks.push(`${where}: identity`);
-        } else if (rel !== "NOTICE.md" && !(built && rel === `static/${build}/oi-blank.png` && buf.equals(BLANK_PNG))) leaks.push(`${where}: file-type`);
-      }
-    }
-  };
-  walk(root);
-  for (const { where, text } of extra) for (const k of scan(text, "text", ctx, needles)) leaks.push(`${where}: ${k}`);
-  for (const k of pathKinds) leaks.push(`an output path: ${k}`);
-  return leaks;
-}
-
-const PLANTED = `<!DOCTYPE html><html><head><meta charset="latin1"><title>t</title><style>.a::after{content:"abc"}</style></head><body><p onclick="x">fansly.com https://example.org/x leak@example.com 192.0.2.1 2001:db8::1 900000000001 @someone $987.65 plantedneedle &period;</p><script></script><object></object><div ng-reflect-x="y" title='z'></div><a href="/elsewhere">x</a><img src="data:image/png;base64,AAAA"><!-- c --></body></html>`;
-
-function selfTest() {
-  const got = scan(PLANTED, "markup", { root: os.tmpdir(), build: null }, ["plantedneedle"]);
-  if (isBadEncoding(Buffer.from(PLANTED)) || !isBadEncoding(Buffer.from(`\ufeff${PLANTED}`))) got.delete("encoding");
-  const missed = [...STRUCTURAL_KINDS, "identity", "encoding"].filter((k) => !got.has(k));
-  if (missed.length) fail(`self-test: the leak guard missed ${missed.join(", ")} on the planted page`);
 }
 
 function readTable(text) {
@@ -701,6 +276,8 @@ export interface FanslyMirrorSection {
   pages: Record<string, string>;
 }
 
+export const FANSLY_MIRROR_BUILT: ReadonlySet<string> = new Set(${JSON.stringify([...BUILT_PATHS])});
+
 export const FANSLY_MIRROR_SECTIONS: Record<string, FanslyMirrorSection> = {
 ${body}};
 `;
@@ -748,7 +325,7 @@ function check() {
   const leaks = guard(OUT, buildTs.match(BUILD_RE)?.[1], [
     { where: path.basename(LIST), text: list },
     { where: path.basename(BUILD_TS), text: buildTs },
-  ]);
+  ], BLANK_PNG);
   const problems = leaks.length ? leaks : [...treeProblems(OUT, list, buildTs, { siblings: true }), ...generatedProblems(OUT, list, buildTs)];
   if (problems.length) fail(`check failed (${problems.length}):\n  ${problems.join("\n  ")}`);
   console.log(`fansly-mirror --check: ${readTable(list).reduce((n, s) => n + s.subs.length, 0)} pages match the table; no leak found`);
@@ -798,7 +375,15 @@ function main() {
     const file = typeof f === "string" ? path.resolve(root, f) : null;
     return file && file.startsWith(root + path.sep) && fs.statSync(file, { throwIfNoEntry: false })?.isFile() ? file : null;
   };
-  if (!entries.some((e) => fileIn(e.file) && fs.readFileSync(fileIn(e.file), "utf8").toLowerCase().includes(username))) fail("creator username appears in no captured document");
+  const readAudited = (entry, file) => {
+    const buf = fs.readFileSync(file);
+    if (createHash("sha256").update(buf).digest("hex") !== entry.sha256?.file) fail(`entry ${entry.id}: capture digest mismatch`);
+    return buf;
+  };
+  if (!entries.some((entry) => {
+    const file = fileIn(entry.file);
+    return file && readAudited(entry, file).toString("utf8").toLowerCase().includes(username);
+  })) fail("creator username appears in no captured document");
   const docs = [];
   for (const e of entries) {
     if (e.kind === "state") continue;
@@ -842,7 +427,7 @@ function main() {
   const parsed = [];
   const unreadable = [];
   for (const { entry, key, file } of docs) {
-    const buf = fs.readFileSync(file);
+    const buf = readAudited(entry, file);
     if (isBadEncoding(buf)) unreadable.push(`pages/${fileOf(pages.get(key).section, pages.get(key).sub)}: encoding`);
     else {
       const dom = parse(buf.toString("utf8"));
@@ -878,7 +463,7 @@ function main() {
   fs.mkdirSync(path.join(STAGE, "static", build), { recursive: true });
   fs.writeFileSync(path.join(STAGE, "static", build, "oi-blank.png"), BLANK_PNG);
   const blank = `${STATIC_URL}/${build}/oi-blank.png`;
-  const ctx = { username, pages, aliases, root: STAGE, build, blank, assets: new Set([blank]), swap, unwired: new Set() };
+  const ctx = { username, pages, aliases, root: STAGE, build, blank, assets: new Set([blank]), swap, needles, people: peopleRe, unwired: new Set() };
   const { rewriteDoc, stats } = makeAssets({
     capture: root,
     list: manifest.assets,
@@ -940,6 +525,7 @@ function main() {
       { where: path.basename(LIST), text: list },
       { where: path.basename(BUILD_TS), text: buildTs },
     ],
+    BLANK_PNG,
     needles,
     peopleRe,
   );
@@ -954,7 +540,7 @@ function main() {
 }
 
 try {
-  selfTest();
+  selfTest(fail);
   if (CHECK) check();
   else main();
 } catch (e) {

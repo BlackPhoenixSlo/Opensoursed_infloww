@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, update
@@ -24,7 +25,7 @@ from db.engine import get_session
 from db.models import Blacklist, Fan, PriorityMassRecipient, PriorityMassRun, ScheduledJob
 from of_client import OFSessionRetired
 from side_effect_gate import (
-    PLATFORM_LACKS_PREFIX, is_live_check_name, live_check, live_check_targets, send_refusal,
+    is_live_check_name, live_check, live_check_ungranted, send_refusal,
 )
 
 log = logging.getLogger("of-relay.automation.priority_mass")
@@ -155,32 +156,31 @@ async def exclusions(account_id: str, fan_ids: list[int], *, priced: bool,
 
 
 
-def _platform_refusal(platform: platforms.Platform, run: PriorityMassRun, gated: bool) -> str | None:
+def _platform_refusal(platform: platforms.Platform, run: PriorityMassRun) -> str | None:
     from audiences import audience_refusal
     aud = json.loads(run.audience_json or "{}")
     cotag = bool(platform.backend and media_cotag.would_cotag(run.account_id, _ids(run.media_json)))
-    ungranted = gated and not live_check_targets(run.account_id, KIND)
     return (audience_refusal(run.account_id, aud.get("user_lists"), aud.get("excluded_user_lists"))
             or send_refusal(platform, {"locked_text": bool(run.locked_text and run.price_cents > 0)},
                             would_cotag=cotag)
-            or (f"{PLATFORM_LACKS_PREFIX}{KIND}" if ungranted else None))
+            or live_check_ungranted(run.account_id, KIND))
 
 
-def _grant_refusal(account_id: str, fan_ids) -> str | None:
-    return live_check(account_id, KIND, frozenset(str(f) for f in fan_ids))
+def _recipient_refusal(account_id: str, fan_ids: Iterable[int]) -> str | None:
+    return live_check(account_id, KIND, frozenset(map(str, fan_ids)))
 
 
 async def _persisted_refusal(run: PriorityMassRun) -> str | None:
     async with get_session() as s:
         persisted = (await s.execute(select(PriorityMassRecipient.fan_id).where(
             PriorityMassRecipient.run_id == run.id))).scalars().all()
-    return _grant_refusal(run.account_id, persisted)
+    return _recipient_refusal(run.account_id, persisted)
 
 
 async def refusal(run: PriorityMassRun) -> str | None:
     platform = platforms.for_account(run.account_id)
     gated = is_live_check_name(platform, KIND)
-    if reason := _platform_refusal(platform, run, gated):
+    if reason := _platform_refusal(platform, run):
         return reason
     return await _persisted_refusal(run) if gated and run.status == RUNNING else None
 
@@ -191,7 +191,7 @@ async def _freeze(run: PriorityMassRun, gated: bool) -> dict:
     client = await asyncio.to_thread(ax._make_client, run.account_id)
     try:
         ids = await asyncio.to_thread(
-            roster_audience_blocking, client,
+            roster_audience_blocking, client, account_id=run.account_id,
             user_lists=list(aud.get("user_lists") or []),
             excluded_user_lists=list(aud.get("excluded_user_lists") or []))
     except AudienceRefusal as e:
@@ -205,7 +205,7 @@ async def _freeze(run: PriorityMassRun, gated: bool) -> dict:
                             media=_ids(run.media_json))
     eligible = sorted(f for f in ids if f not in excl)
     claimed = eligible[:MAX_RECIPIENTS]
-    if gated and (reason := _grant_refusal(run.account_id, claimed)):
+    if gated and (reason := _recipient_refusal(run.account_id, claimed)):
         await _set_status(run.id, ERROR, error=reason, only_from=(RESOLVING,))
         return {"status": "skipped", "reason": reason}
     now = datetime.utcnow()
@@ -245,6 +245,7 @@ async def _defer(run_id: int, fan_id: int) -> None:
 async def _leg(run: PriorityMassRun, gated: bool) -> dict:
     aid, rid = run.account_id, run.id
     if gated and (reason := await _persisted_refusal(run)):
+        await _set_status(rid, ERROR, error=reason, only_from=(RUNNING,))
         return {"status": "skipped", "reason": reason}
     async with get_session() as s:
         # A claim this leg did not make was left by a crash mid-send: unknown, never resent (OF may have created it).
@@ -415,8 +416,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         return {"status": "skipped", "reason": "no_run"}
     platform = platforms.for_account(account_id)
     gated = is_live_check_name(platform, KIND)
-    if row.status in LIVE and (reason := _platform_refusal(platform, row, gated)):
+    if row.status in LIVE and (reason := _platform_refusal(platform, row)):
         log.info("priority_mass refused run=%s account=%s (%s)", rid, account_id, reason)
+        await _set_status(rid, ERROR, error=reason, only_from=LIVE)
         return {"status": "skipped", "reason": reason}
     stats: dict = {"run_id": rid}
     if row.status == RESOLVING:

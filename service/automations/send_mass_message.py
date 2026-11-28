@@ -256,7 +256,8 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if not is_list_audience and p.excluded_user_lists and p.recipients:
         from audiences import AudienceUnknown, drop_exclude_list_members
         try:
-            kept = await drop_exclude_list_members(client, p.recipients, p.excluded_user_lists)
+            kept = await drop_exclude_list_members(client, p.recipients, p.excluded_user_lists,
+                                                   account_id=account_id)
         except AudienceUnknown:
             log.warning("send_mass_message: exclude list(s) %s unreadable — skipping "
                         "explicit send account=%s", p.excluded_user_lists, account_id)

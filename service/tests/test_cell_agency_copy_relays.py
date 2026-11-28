@@ -123,6 +123,12 @@ def case_copy_over_two_relays() -> None:
         assert st == 200, (st, raw[:300])
         emp = json.loads(raw)["id"]
         _wait(lambda: _q(db["s02"], "SELECT 1 FROM employees WHERE id = ?", (emp,)))
+        with contextlib.closing(sqlite3.connect(db["s01"], timeout=30)) as c, c:
+            c.executemany("INSERT INTO user_llm_keys (user_id, provider, api_key, updated_at) VALUES (?, ?, ?,"
+                          " '2026-11-28')", [(owner, "deepseek", "sk-ds"), (owner, "leak_tracker", "lt-key")])
+        _wait(lambda: _q(db["s02"], "SELECT provider FROM user_llm_keys") == [("deepseek",)])
+        assert _q(db["s02"], "SELECT 1 FROM user_llm_keys WHERE provider = 'leak_tracker'") == []
+        assert _q(db["s01"], "SELECT api_key FROM user_llm_keys WHERE provider = 'leak_tracker'") == [("lt-key",)]
 
         st, _h, raw = _ask(ctl, "GET", "/fleet/agency-copy?since=0.0&hold=0", {"Authorization": f"Bearer {KEY}"})
         assert st == 200, (st, raw[:300])

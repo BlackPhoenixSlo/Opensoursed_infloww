@@ -24,6 +24,7 @@ from . import _voice
 from . import _openers
 from attribution import write_outbound_attribution
 from automation_registry import register
+from side_effect_gate import burst_refusal, burst_run_reason
 from db.engine import get_session
 from db.models import (
     AccountAiConfig, AutomationRule, Blacklist, Fan, FanProfile, FunnelState,
@@ -1074,7 +1075,7 @@ async def _load_run_config(account_id: str, payload: dict, knobs: _PayloadKnobs,
 
 TurnKind = Literal["sent", "dry_run", "cooldown", "locked", "closing_cut", "closing_preview",
                    "graduated", "generate_failed", "empty", "echo", "banned", "send_failed",
-                   "no_id", "sticker_failed", "no_anchor"]
+                   "no_id", "sticker_failed", "no_anchor", "refused"]
 
 
 @dataclass
@@ -1088,6 +1089,7 @@ class TurnOutcome:
     skipped_cooldown: int = 0
     skipped_banned: int = 0
     errors: int = 0
+    refused: str | None = None
 
 
 def _fold(tally: Counter, skips: Counter, out: TurnOutcome) -> None:
@@ -1403,6 +1405,9 @@ async def _turn(cfg: _RunConfig, c: _Candidate, fan_row: Fan | None,
     account_id, fan_id = cfg.account_id, c.fan_id
     t = _Turn(cfg, c, client, profile, now, TurnOutcome(),
               fan_row or Fan(account_id=str(account_id), fan_id=fan_id))
+    if reason := burst_refusal(account_id, fan_id):
+        t.out.kind, t.out.refused = "refused", reason
+        return t.out
     # Another automation messaged this fan recently → rest it (W3 cooldown).
     if await ax.fan_on_cooldown(account_id, fan_id):
         t.out.kind, t.out.skipped_cooldown = "cooldown", 1
@@ -1542,6 +1547,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     tally: Counter[str] = Counter()
     cap_hit = cfg.llm_capped
     key_error = None
+    refused = None
     for c in candidates:
         if tally["replies_sent"] >= cfg.max_replies:
             log.info("welcome_chatter_for_info batch capped account=%s cap=%d (rest next tick)",
@@ -1561,6 +1567,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
             raise
         _fold(tally, skips, out)
+        refused = out.refused or refused
 
     return {
         "candidates": len(candidates),
@@ -1578,4 +1585,5 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "dry_run": cfg.dry_run,
         "model": cfg.model,
         **({"key_error": key_error} if key_error else {}),
+        **burst_run_reason(refused, tally["replies_sent"] + tally["stickers_sent"]),
     }

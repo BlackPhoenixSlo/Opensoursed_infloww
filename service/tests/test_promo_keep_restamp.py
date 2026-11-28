@@ -100,4 +100,68 @@ def case_rv_r1_restamp_reports_unlimited_trials():
     assert "name='capped'" not in out, out
 
 
-_harness.run(case_refuses_empty_env, case_dry_run_then_apply, case_rv_r1_restamp_reports_unlimited_trials)
+OWN_HOST = "box-c"
+
+
+def _seed_owned():
+    async def seed():
+        async with get_session() as s:
+            for aid in ("ow111", "ow222"):
+                s.add(Account(id=aid))
+                await s.flush()
+                s.add(PromoCampaign(account_id=aid, of_promo_id=7, name=aid, discount_percent=100,
+                                    price_cents=0, subscribe_counts=0, subscribe_days=3, message="",
+                                    promo_type="all", status="active", subscriber_count=0,
+                                    auto_reactivate=True, reactivate_count=0, created_at=datetime.utcnow(),
+                                    keep_host_id=None, recreates_left=None))
+    asyncio.run(seed())
+
+
+async def _owned_stamps() -> dict[str, str | None]:
+    async with get_session() as s:
+        return {r.name: r.keep_host_id for r in (await s.execute(
+            PromoCampaign.__table__.select().where(PromoCampaign.account_id.like("ow%")))).all()}
+
+
+def case_owned_only_refuses_without_accounts():
+    _seed_owned()
+    os.environ["PROMO_CREATE_HOST_ID"] = OWN_HOST
+    os.environ.pop("OI_ACCOUNTS", None)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        code, out = _main("--apply", "--owned-only")
+    assert code == 2 and "OI_ACCOUNTS" in err.getvalue() and out == "", (code, out, err.getvalue())
+    assert asyncio.run(_owned_stamps()) == {"ow111": None, "ow222": None}
+
+
+def case_owned_only_stamps_owned_leaves_rest():
+    os.environ["PROMO_CREATE_HOST_ID"] = OWN_HOST
+    os.environ["OI_ACCOUNTS"] = "onlyfans:ow111,fansly:ow222"
+    try:
+        code, out = _main("--owned-only")
+        assert code == 0 and out.rstrip().endswith("1 Kept campaign(s)"), out
+        assert out.count("name='ow111'") == 2 and "ow222" not in out and "rs-" not in out, out
+        code, out = _main()
+        assert "name='ow222'" in out and "name='other'" in out and "rs-trial" in out, \
+            "flag off ignores OI_ACCOUNTS: " + out
+        code, out = _main("--apply", "--owned-only")
+        assert code == 0 and out.rstrip().endswith("stamped 1 Kept campaign(s)"), out
+        assert asyncio.run(_owned_stamps()) == {"ow111": OWN_HOST, "ow222": None}
+    finally:
+        os.environ.pop("OI_ACCOUNTS", None)
+
+
+def case_owned_only_half_without_onlyfans_is_noop():
+    os.environ["PROMO_CREATE_HOST_ID"] = OWN_HOST
+    os.environ["OI_ACCOUNTS"] = "fansly:ow222"
+    try:
+        code, out = _main("--apply", "--owned-only")
+        assert code == 0 and out.strip() == "stamped 0 Kept campaign(s)", out
+        assert asyncio.run(_owned_stamps()) == {"ow111": OWN_HOST, "ow222": None}
+    finally:
+        os.environ.pop("OI_ACCOUNTS", None)
+
+
+_harness.run(case_refuses_empty_env, case_dry_run_then_apply, case_rv_r1_restamp_reports_unlimited_trials,
+             case_owned_only_refuses_without_accounts, case_owned_only_stamps_owned_leaves_rest,
+             case_owned_only_half_without_onlyfans_is_noop)

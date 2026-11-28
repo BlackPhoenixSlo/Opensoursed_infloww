@@ -136,7 +136,7 @@ def one_shot_family() -> tuple[str, ...]:
 
 def outcome(kind: RunKind, guard_status: str | None, err: str | None = None, *,
             once: bool = False, wrote: WriteState = "none",
-            plugin_reason: object = None) -> tuple[str, str, str | None]:
+            plugin_reason: object = None, plugin_status: object = None) -> tuple[str, str, str | None]:
     match kind:
         case "ok" | "words_blocked":
             if guard_status == "skipped":
@@ -146,7 +146,8 @@ def outcome(kind: RunKind, guard_status: str | None, err: str | None = None, *,
                 return "skipped", "done", plugin_reason
             if plugin_reason == "fan_held":
                 return "skipped", "done", "fan_held"
-            return (guard_status if guard_status is not None else "ok"), "done", err
+            status = guard_status if guard_status is not None else "ok"
+            return ("partial" if status == "ok" and plugin_status == "partial" else status), "done", err
         case "cancelled" | "exception":
             if not once:
                 return "error", JOB_RETRY, err

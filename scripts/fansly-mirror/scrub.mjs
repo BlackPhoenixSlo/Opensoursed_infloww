@@ -1,11 +1,20 @@
+import { decodedViews } from "./dom.mjs";
+import { CUSTOM_ELEMENT, words } from "./markup-policy.mjs";
+
 export const PLACEHOLDER = { username: "yourmodel", name: "Your Model", email: "model@example.com", fan: "fan1", fanName: "Fan 1" };
 export const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-export const words = (s) => new Set(s.split(" "));
 const flexRe = (s) => esc(s).replace(/ /g, "\\s+");
 const squash = (s) => s.replace(/\s+/g, " ");
-export const CUSTOM_ELEMENT = /^[a-z][a-z0-9._]*-[a-z0-9._-]*$/;
-export const EMAIL = /[\w.%+-]+@[a-z][\w-]*(?:\.[\w-]+)*\.[a-z]{2,}/gi;
+export const EMAIL = /[\w.%+-]+@[a-z0-9][\w-]*(?:\.[\w-]+)*\.[a-z]{2,}/gi;
 export const MONEY = /\$\s?\d[\d,]*(?:\.\d+)?/g;
+
+const CREDENTIAL = /\beyJ[\w-]+\.[\w-]+\.[\w-]+|\bbearer\s+[\w.+/=-]+|(?<![\w-])[a-f0-9]{32,}(?![\w-])/i;
+const BASE64 = /(?<![\w-])[A-Za-z0-9+/_-]{40,}={0,2}(?![\w-])/g;
+export const hasCredential = (value, opaque = true) => decodedViews(value).some((v) => {
+  const plain = v.normalize("NFKC").replace(/[\p{Cf}\u00ad]/gu, "");
+  return CREDENTIAL.test(plain) || (opaque && [...plain.matchAll(BASE64)].some(([token]) =>
+    /[A-Z]/.test(token) && /[a-z]/.test(token) && /[0-9+=]/.test(token)));
+});
 
 const FANSLY_HOST = /^(?:www\.)?fansly\.com$/i;
 export function fanslyPath(v, base) {
@@ -103,8 +112,9 @@ const SHORT_TEXT_CLASSES = new Set([...SHORT_TEXT_TAILS.keys()].map((t) => t.spl
 const shortTextRule = (parent, t) => {
   if (![...(parent.classList || [])].some((c) => SHORT_TEXT_CLASSES.has(c))) return;
   const keep = SHORT_TEXT_TAILS.get(textKey(elementPath(parent)));
-  return keep && !keep.includes(t) ? "list" : undefined;
+  return keep ? (keep.includes(t) ? "ui" : "list") : undefined;
 };
+const SHORT_UI_TEXT = new Set(["Tracking Links", "Creator Dashboard"]);
 const isLongText = (t) => t.length >= 20 || t.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length >= 3;
 const elementPath = (el) => {
   const parts = [];
@@ -199,6 +209,14 @@ export const isFakeDigits = (d) => /^0+$/.test(d) || FAKE_DIGITS.startsWith(d);
 const fakeNumbers = (s) => s.split(/(\bFan \d+\b)/).map((part, i) => (i % 2 ? part : part.replace(NUMBER, (m, date) => (date || m.startsWith("$") ? m : fakeDigits(m))))).join("");
 export const fakeEmails = (s) => s.replace(EMAIL, () => PLACEHOLDER.email);
 
+export function scrubIdentity(raw, swap) {
+  for (const view of decodedViews(raw)) {
+    const safe = fakeEmails(swap(view));
+    if (safe !== view) return safe;
+  }
+  return raw;
+}
+
 const ID_RUN = /(?<![\d.])\d{6,}(?!\d|\.\d)/;
 const COLOUR = /#(?:[\da-f]{8}|[\da-f]{6}|[\da-f]{3,4})(?![\w-])|\b(?:rgba?|hsla?)\((?:\s*[+-]?\d{1,3}(?!\d)(?:\.\d+)?(?:%|deg|turn|rad)?\s*[,/]?)*\)/gi;
 const STATIC_REF = /url\("\/fansly-mirror\/static\/[\w./-]*"\)/g;
@@ -218,11 +236,15 @@ export function clearFields(el) {
 }
 
 export function scrubText(raw, given, ctx, parent, attr) {
-  const v = ctx.swap(raw);
+  if (hasCredential(raw)) return "";
+  const v = scrubIdentity(raw, ctx.swap);
   const t = v.trim();
   if (!t) return v;
   let rule = given;
-  if (!rule && isLongText(raw.replace(EMAIL, "").trim())) {
+  const candidate = t.replace(EMAIL, "").trim();
+  const shortName = /^\p{Lu}\p{Ll}+ \p{Lu}\p{Ll}+$/u.test(candidate) && !PLACEHOLDER_TEXT.test(candidate) && !SHORT_UI_TEXT.has(candidate);
+  if (!rule && !attr && shortName) rule = shortTextRule(parent, t);
+  if (!rule && ((candidate && isLongText(raw.replace(EMAIL, "").trim())) || shortName)) {
     const where = `${elementPath(parent)}${attr ? `@${attr}` : ""}`;
     rule = TEXT_TAILS.get(textKey(where, attr)) || (!attr && parent.localName === "xd-localization-string" ? "ui" : undefined);
     if (!rule) ctx.unreviewed.add(where);

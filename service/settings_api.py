@@ -19,7 +19,9 @@ import leak_tracker
 from permissions import (
     _role, data_scope, denied_actions, denied_cards, enforced, granted_pages, narrowest_scope, opt_in_granted,
 )
-from settings_schema import CHATTING_PAGES, FLAGS, TABS, parse_blob
+from settings_schema import (
+    CHATTING_PAGES, FLAGS, TABS, version_rows, versions, applied_blob, blob_at, parse_blob, read_blob,
+)
 
 router = APIRouter(prefix="/admin/settings", tags=["settings"])
 
@@ -36,52 +38,12 @@ def _require_tab(tab: str) -> None:
         raise HTTPException(status_code=404, detail=f"unknown settings tab {tab!r}")
 
 
-def _loads(raw: str | None) -> dict[str, Any]:
-    try:
-        loaded = json.loads(raw) if raw else {}
-    except Exception:
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
-
-
-async def read_blob(s, user_id: str, tab: str) -> dict[str, Any]:
-    if tab in VERSIONED_SETTINGS_TABS:
-        return blob_at(await _versions(s, user_id, tab), datetime.utcnow())
-    row = await s.get(UserSetting, (user_id, tab))
-    return _loads(row.config_json if row is not None else None)
-
-
-async def _version_rows(s, user_id: str, tab: str) -> list[SettingsVersion]:
-    return list((await s.execute(
-        select(SettingsVersion).where(SettingsVersion.user_id == user_id, SettingsVersion.tab == tab)
-        .order_by(SettingsVersion.effective_from, SettingsVersion.id)
-    )).scalars().all())
-
-
-async def _versions(s, user_id: str, tab: str) -> list[tuple[datetime, dict[str, Any]]]:
-    out: list[tuple[datetime, dict[str, Any]]] = []
-    for row in await _version_rows(s, user_id, tab):
-        if out and out[-1][0] == row.effective_from:
-            out.pop()
-        out.append((row.effective_from, _loads(row.config_json)))
-    return out
-
-
-def blob_at(versions: list[tuple[datetime, dict[str, Any]]], ts: datetime) -> dict[str, Any]:
-    found: dict[str, Any] = {}
-    for at, blob in versions:
-        if at > ts:
-            break
-        found = blob
-    return found
-
-
 async def applied_versions(s, agency_user_id: str, tab: str) -> list[tuple[datetime, dict[str, Any]]]:
-    return [(at, parse_blob(tab, blob)[0]) for at, blob in await _versions(s, agency_user_id, tab)]
+    return [(at, parse_blob(tab, blob)[0]) for at, blob in await versions(s, agency_user_id, tab)]
 
 
 async def _history(s, user_id: str, tab: str) -> list[dict[str, Any]]:
-    rows = await _version_rows(s, user_id, tab)
+    rows = await version_rows(s, user_id, tab)
     now = datetime.utcnow()
     current = next((r.id for r in reversed(rows) if r.effective_from <= now), None)
     return [{
@@ -239,11 +201,6 @@ async def write_blob(s, user_id: str, tab: str, blob: dict[str, Any]) -> None:
     )
 
 
-async def applied_blob(s, agency_user_id: str, tab: str) -> dict[str, Any]:
-    blob, _ = parse_blob(tab, await read_blob(s, agency_user_id, tab))
-    return blob
-
-
 async def translation_allowed(s, contexts: list[AgencyContext]) -> bool:
     for ctx in contexts:
         messaging = await applied_blob(s, ctx.agency_user_id, "messaging")
@@ -275,7 +232,7 @@ async def _applied_in(s, ctx: AgencyContext) -> dict[str, Any]:
             "denied_cards": sorted(denied_cards(ctx, roles)),
         },
         "flags": {name: flags.get(name) is True for name in FLAGS}
-        | {"leak_tracker": leak_tracker.page_on(ctx, flags, roles)},
+        | {leak_tracker.FLAG: leak_tracker.page_on(ctx, flags, roles)},
         "reports": {"creator_cols": reports.get("creator_cols")},
     }
 
@@ -297,7 +254,7 @@ def _merged(parts: list[dict[str, Any]]) -> dict[str, Any]:
             "denied_actions": sorted({k for p in parts for k in p["permissions"]["denied_actions"]}),
             "denied_cards": sorted({k for p in parts for k in p["permissions"]["denied_cards"]}),
         },
-        "flags": {name: all(p["flags"][name] for p in parts) for name in FLAGS} | {"leak_tracker": False},
+        "flags": {name: all(p["flags"][name] for p in parts) for name in FLAGS} | {leak_tracker.FLAG: False},
         "reports": parts[0]["reports"],
     }
 

@@ -1339,6 +1339,14 @@ class FollowPingState(Base):
     ping_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
+class SubscriberCrawl(Base):
+    __tablename__ = "subscriber_crawl"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True)
+    crawled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class SubscriberSnapshot(Base):
     __tablename__ = "subscriber_snapshot"
 

@@ -13,6 +13,7 @@ from automation_registry import register
 from automations._pools import has_media_source, pick_media, pick_text
 from db.engine import get_session
 from db.models import Post
+from side_effect_gate import branch_refusal
 
 log = logging.getLogger("of-relay.automation.auto_posts")
 
@@ -41,6 +42,12 @@ def _to_cents(price: object) -> int:
         return 0
 
 
+def _has_media(p: object) -> bool:
+    if not isinstance(p, dict):
+        return False
+    return has_media_source(p) or _to_cents(p.get("price")) > 0 or bool(p.get("media_claims"))
+
+
 @register("auto_posts")
 # Not fan-scoped and no LLM spend, so no fan lease or account_spend_lock.
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
@@ -50,6 +57,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     posts = payload.get("posts") or []
     if not isinstance(posts, list) or not posts:
         return {"status": "skipped", "reason": "no_posts"}
+    if any(map(_has_media, posts)) and (reason := branch_refusal(account_id, "create_post", "media")):
+        return {"status": "skipped", "reason": reason}
 
     if payload.get("dry_run"):
         plan = [

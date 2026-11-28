@@ -251,6 +251,7 @@ def _mass_runs(a: _Cell, b: _Cell, auth: dict) -> None:
     assert st == 404, ("resume run 2 at A is B's", st, raw[:300])
     _not_owner(*_ask(a.port, "POST", "/admin/priority-mass/runs/1/cancel", {**auth, "X-Account-Id": NOVA_B})[::2],
                "cancel naming B at A")
+    _not_owner(*_ask(a.port, "GET", f"/admin/chats/recent?account_id={NOVA_B}", auth)[::2], "signed-in GET naming B by query at A")
     st, _h, raw = _ask(a.port, "POST", "/admin/priority-mass/runs/1/cancel", {**auth, "X-Account-Id": NOVA_A})
     assert st == 200 and json.loads(raw)["status"] == "cancelled" and json.loads(raw)["account_id"] == NOVA_A, \
         ("cancel A's run 1", st, raw[:300])

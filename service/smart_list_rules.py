@@ -265,11 +265,22 @@ UNKNOWN_FIELD = f"{PLATFORM_LACKS_PREFIX}rules:unknown_field"
 RULE_REFUSALS = frozenset({*_ANY_LACK_REASONS.values(), UNKNOWN_FIELD})
 
 
+def _is_active_rule(rule: dict) -> bool:
+    return (rule.get("field") == "status" and rule.get("op") == "=="
+            and str(rule.get("value") or "").lower() == "active")
+
+
+def requires_active_subscription(rules_obj: dict) -> bool:
+    rules = rules_obj.get("rules") or []
+    combine = all if str(rules_obj.get("match") or "all").lower() == "any" else any
+    return bool(rules) and combine(_is_active_rule(rule) for rule in rules)
+
+
 def _rule_refusal(lacks: frozenset[Lack], rule: dict) -> str | None:
     field = rule.get("field")
     if field in _CHAT_FIELDS:
         return None
-    if field == "status" and rule.get("op") == "==" and str(rule.get("value") or "").lower() == "active":
+    if _is_active_rule(rule):
         return None
     if field in _RULE_LACKS:
         return lack_reason(_RULE_LACKS[field]) if _RULE_LACKS[field] in lacks else None

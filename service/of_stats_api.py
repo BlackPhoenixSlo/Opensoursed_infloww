@@ -320,16 +320,17 @@ async def admin_stats_referrals(
     zone, not the report zone, so `by_day` and the window's edges can sit a
     few hours off the ledger's days. Scoped like the stats reads (the
     caller's Creators, 403 on a foreign id), then narrowed to Creators with a
-    session; Fansly has no referral program, so its Creators are skipped. A
-    Creator whose read fails, runs past the budget, is still reading another
-    window, or is deactivated (it gets no OF call) is listed in `unavailable`
+    session. A Creator whose Platform lacks referrals (Fansly), or whose read
+    fails, runs past the budget, is still reading another window, or is
+    deactivated (the first and last get no OF call) is listed in `unavailable`
     rather than failing the rest. Rows `{account_id, total_cents, by_day:
     [{day, cents}]}`; OF's amounts are dollars."""
     scoped, _ = _stats_scope_ids(account_id)
     metas = account_registry.list_accounts()
     live = {m["id"] for m in metas if m.get("has_session")}
-    ids = [a for a in (scoped if scoped is not None else [m["id"] for m in metas])
-           if a in live and platforms.Lack.REFERRALS not in platforms.for_account(a).lacks]
+    ids = [a for a in (scoped if scoped is not None else [m["id"] for m in metas]) if a in live]
+    lacking = [a for a in ids if platforms.Lack.REFERRALS in platforms.for_account(a).lacks]
+    ids = [a for a in ids if a not in lacking]
     off = await account_health.deactivated_ids()
     start, end = f"{from_} 00:00:00", f"{to} 23:59:59"
 
@@ -355,7 +356,7 @@ async def admin_stats_referrals(
     tasks = {asyncio.create_task(one(a)): a for a in ids if a not in off}
     done, late = await asyncio.wait(set(tasks), timeout=_REFERRALS_BUDGET_S) if tasks else (set(), set())
     rows: list[dict[str, Any]] = []
-    unavailable: list[str] = [a for a in ids if a in off]
+    unavailable: list[str] = [*lacking, *(a for a in ids if a in off)]
     for t, aid in tasks.items():
         if t in late:
             _referrals_running.add(t)

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
+
 import _harness
 
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import contextlib  # noqa: E402
+import contextvars  # noqa: E402
 import sqlite3  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
@@ -122,6 +125,7 @@ def _gap():
 
 def case_gap_messages_are_unattributed():
     with _gap():
+        _db("UPDATE cell_meta SET peek_until=?", (_ts(NOW + timedelta(hours=1)),))
         _message(81001, 7001, SINCE - timedelta(minutes=1))
         _message(81001, 7002, SINCE + timedelta(minutes=1))
         _message(81002, 7003, RESTORED - timedelta(minutes=1))
@@ -133,6 +137,7 @@ def case_gap_messages_are_unattributed():
             body = asyncio.run(restore_reconcile.restore_gap(account_id=AID))
     assert [(m["message_id"], m["attribution"]) for m in body["messages"]] == [
         (7002, "unattributed"), (7003, "unattributed")], body
+    assert body["gap"]["queue_held"] is True
     assert body["gap"]["reconcile_since"] == _ts(SINCE) and body["gap"]["restored_at"] == _ts(RESTORED), body
 
 
@@ -153,7 +158,7 @@ def case_gap_overlapping_shift_held_until_owner_confirms():
         rows = _sheet(owner)
         held = (rows[str(inside)]["restore_held"], rows[str(outside)]["restore_held"])
         user = SimpleNamespace(id=IDS["agency_a_owner"], username="agency_a_owner", is_admin=True)
-        with patch.object(auth, "get_request_user", lambda: user):
+        with patch.object(auth, "get_request_user", lambda: user), patch.dict(os.environ, {"OI_ACCOUNTS": ACCOUNTS}):
             first = asyncio.run(restore_reconcile.restore_gap_confirm())
             second = asyncio.run(restore_reconcile.restore_gap_confirm())
         after = _sheet(owner)[str(inside)]["restore_held"]
@@ -173,6 +178,28 @@ def case_confirm_needs_a_signed_in_owner():
         else:
             raise AssertionError("anonymous confirm accepted")
         assert _db("SELECT gap_confirmed_at FROM cell_meta")[0][0] is None
+
+
+
+def case_confirm_refuses_signed_in_user_without_creator_grants():
+    from fastapi import HTTPException
+    user = SimpleNamespace(id="unrelated", username="unrelated", is_admin=False, account_ids=frozenset())
+    with _gap(), patch.object(auth, "_request_user", contextvars.ContextVar("test_owner", default=user)), patch.dict(
+            os.environ, {"OI_ACCOUNTS": f"onlyfans:{AID}"}):
+        try:
+            asyncio.run(restore_reconcile.restore_gap_confirm())
+        except HTTPException as e:
+            assert e.status_code == 403, e
+        else:
+            raise AssertionError("user without creator grants confirmed restore")
+        assert _db("SELECT gap_confirmed_at FROM cell_meta")[0][0] is None
+
+def case_confirm_allows_owner_with_grants_for_every_cell_creator():
+    user = SimpleNamespace(id="owner", username="owner", is_admin=False, account_ids=frozenset({AID, FID}))
+    with _gap(), patch.object(auth, "_request_user", contextvars.ContextVar("test_owner", default=user)), patch.dict(
+            os.environ, {"OI_ACCOUNTS": ACCOUNTS}):
+        assert asyncio.run(restore_reconcile.restore_gap_confirm()) == {"confirmed": True}
+        assert _db("SELECT gap_confirmed_by FROM cell_meta")[0][0] == "user:owner:owner"
 
 
 if __name__ == "__main__":

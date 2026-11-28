@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import urllib.parse
 from html.parser import HTMLParser
 from pathlib import Path
 
-from gate import SELFTEST_SESSION_PREFIX, read_json, write_json
+from gate import SELFTEST_SESSION_PREFIX
+from store import read_json, write_json
 
 PLAN_PATH = Path(__file__).resolve().parent / "mirror_plan.json"
 FANSLY_ORIGIN = "https://fansly.com"
@@ -196,6 +198,7 @@ def build_manifest(root: Path, plan: list, audits: dict) -> dict:
     passed = {sid for sid, a in audits.items() if a.get("passed") is True}
     entries, unaudited, not_in_plan, savers = [], [], [], set()
     pages = root / "pages"
+    audited_routes = set()
     for meta_path in sorted(pages.rglob("*.meta.json")) if pages.is_dir() else ():
         m = read_json(meta_path)
         if not isinstance(m, dict):
@@ -209,14 +212,24 @@ def build_manifest(root: Path, plan: list, audits: dict) -> dict:
             not_in_plan.append(pid)
             continue
         files = {k: f"pages/{pid}{ext}" for k, ext in (("file", ".html"), ("meta", ".meta.json"), ("png", ".png"))}
-        if not all(_inside(root, f) for f in files.values()) or not (root / files["file"]).exists():
+        if not all(_inside(root, f) for f in files.values()):
             continue
+        try:
+            html = (root / files["file"]).read_bytes()
+            digests = {"file": hashlib.sha256(html).hexdigest(),
+                       "png": hashlib.sha256((root / files["png"]).read_bytes()).hexdigest()}
+        except OSError:
+            continue
+        if m.get("sha256") != digests:
+            continue
+        if by_id[pid]["kind"] == "page" and (pid == "creator" or pid.startswith("settings/")):
+            audited_routes.update(same_origin_paths(html.decode(errors="replace")))
         entries.append({
             "id": pid, "kind": by_id[pid]["kind"],
             **{k: m.get(k) for k in ("url", "final_url", "state", "opener", "settled_selector", "reset",
                                      "bundle_hash", "theme", "session")},
             **{k: int(m.get(k) or 0) for k in ("canvases", "shadow_roots", "iframes")},
-            **files})
+            **files, "sha256": digests})
     captured = {e["id"] for e in entries}
     skipped = []
     for s in read_json(root / "skipped.json") or []:
@@ -240,11 +253,9 @@ def build_manifest(root: Path, plan: list, audits: dict) -> dict:
                 covered_urls.add(urllib.parse.urlsplit(u).path.rstrip("/") or "/")
     templates = [fill(e["url"], values) for e in plan if e.get("kind") == "page"]
     uncovered = set()
-    for e in entries:
-        if e["kind"] == "page" and (e["id"] == "creator" or e["id"].startswith("settings/")):
-            for path in same_origin_paths((root / e["file"]).read_text(errors="replace")):
-                if not (path in covered_urls or _out_route(path) or any(path_matches(t, path) for t in templates)):
-                    uncovered.add(path)
+    for path in audited_routes:
+        if not (path in covered_urls or _out_route(path) or any(path_matches(t, path) for t in templates)):
+            uncovered.add(path)
     roles = {i["role"] for i in identities if i["username"] and i["accountId"]}
     complete = bool(entries) and not missing and not uncovered and roles == {"creator", "fan"}
     sessions = sorted(s for s in set(audits) | savers if s and not s.startswith(SELFTEST_SESSION_PREFIX))

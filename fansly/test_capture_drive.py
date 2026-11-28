@@ -260,7 +260,8 @@ def save_roundtrip(fails):
     kept = asyncio.run(drive.finish_save(root, meta["id"], "<html>1</html>", b"png", meta, closer(True)))
     check(kept is True and files() == ["state-menu.html", "state-menu.meta.json", "state-menu.png"],
           f"closed State kept, no temp files: {files()}", fails)
-    check(json.loads((pages / "state-menu.meta.json").read_text()) == meta, "meta written as built", fails)
+    got = json.loads((pages / "state-menu.meta.json").read_text())
+    check(got.pop("sha256", None) is not None and got == meta, "meta keeps source fields and digests", fails)
     check((pages / "state-menu.png").read_bytes() == b"png", "png kept", fails)
     n = len(calls)
     page_meta = {**meta, "reset": None, "session": "s2"}

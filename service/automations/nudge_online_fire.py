@@ -12,8 +12,10 @@ from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
 from db.models import Fan, Message, NudgeState
+from job_queue import current_job_id
+from side_effect_gate import live_check_fan
 from ._common import bool_knob, send_dropping_bad_media
-from .nudge_online import _compose_messages, _gate_skip_reason, _load_nudge_config
+from .nudge_online import KIND, _compose_messages, _gate_skip_reason, _load_nudge_config
 
 log = logging.getLogger("of-relay.automation.nudge_online_fire")
 
@@ -23,12 +25,13 @@ async def _get_state(account_id: str, fan_id: int) -> NudgeState | None:
         return await s.get(NudgeState, (str(account_id), int(fan_id)))
 
 
-async def _clear_pending(account_id: str, fan_id: int) -> None:
+async def _clear_pending(account_id: str, fan_id: int, *, job_id: int | None = None) -> None:
+    only = () if job_id is None else (NudgeState.pending_job_id == job_id,)
     async with get_session() as s:
         await s.execute(
             update(NudgeState)
             .where(NudgeState.account_id == str(account_id),
-                   NudgeState.fan_id == int(fan_id))
+                   NudgeState.fan_id == int(fan_id), *only)
             .values(pending_job_id=None, updated_at=datetime.utcnow())
         )
 
@@ -89,6 +92,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if not cfg.get("enabled", True):
         await _clear_pending(account_id, fan_id)
         return {"sent": 0, "skipped": "disabled"}
+
+    if reason := live_check_fan(account_id, KIND, fan_id):
+        if (job_id := current_job_id()) is not None:
+            await _clear_pending(account_id, fan_id, job_id=job_id)
+        return {"sent": 0, "reason": reason}
 
     # A fire queued before the rule went OFF must not send.
     if (not payload.get("test_force")

@@ -130,4 +130,41 @@ def case_refusal_counts_as_not_sent():
         assert not _may_have_sent(refusal) and send_ops.refusal_reason(refusal) == reason
 
 
+def case_file_store_placement_lifts_the_permit_check():
+    import json
+    import tempfile
+    import time
+    keys = ("OI_CELL_MAP", "OI_CELL_SEND_PERMIT", "OI_CELL_INSTANCE")
+    saved = {k: os.environ.get(k) for k in keys}
+    fresh = {"box": "b1", "until": time.time() + 60}
+    lapsed = {"box": "b1", "until": time.time() - 1}
+    rows = [("file", None, False), ("file", lapsed, False), ("etcd", None, True), ("absent", None, True),
+            ("unreadable", None, True), ("missing", None, True), ("list", None, True), ("etcd", fresh, False),
+            ("absent", fresh, False)]
+    failures = []
+    with tempfile.TemporaryDirectory() as t:
+        placement, permit = Path(t, "placement.json"), Path(t, "send_permit")
+        os.environ.update(OI_CELL_MAP=str(placement), OI_CELL_SEND_PERMIT=str(permit), OI_CELL_INSTANCE="b1:2")
+        try:
+            for store, doc, want in rows:
+                placement.unlink(missing_ok=True)
+                permit.unlink(missing_ok=True)
+                if store == "unreadable":
+                    placement.write_text("{not json")
+                elif store == "list":
+                    placement.write_text('["store", "file"]')
+                elif store != "missing":
+                    placement.write_text(json.dumps({"schema": 1, **({"store": store} if store != "absent" else {})}))
+                if doc is not None:
+                    permit.write_text(json.dumps(doc))
+                if send_ops.paused() is not want:
+                    failures.append((store, doc, want))
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+    assert not failures, failures
+
+
 _harness.run()

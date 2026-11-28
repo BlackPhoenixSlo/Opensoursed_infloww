@@ -20,7 +20,7 @@ from relay_host import (
     resolve_account_id as _resolve_account_id,
 )
 
-from side_effect_gate import refuse_if_platform_lacks
+from side_effect_gate import raise_if_refused, refuse_if_platform_lacks
 
 log = logging.getLogger("of-relay")
 
@@ -251,6 +251,9 @@ async def of_send_or_schedule_mass(
         refuse_if_platform_lacks(aid, "schedule_mass_message", "scheduled mass message")
     else:
         refuse_if_platform_lacks(aid, "send_mass_message", "mass message")
+    if body.expired_over_days:
+        from automations.lifecycle_messages import EXPIRED, lifecycle_refusal
+        raise_if_refused(lifecycle_refusal(aid, EXPIRED), "'Expired over' filter")
     claim = None
     if anchor := send_ops.anchor(request):
         import accounts
@@ -340,7 +343,7 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
         _kept = len(set(body.user_ids))
         try:
             body.user_ids = await drop_exclude_list_members(
-                _get_client(), body.user_ids, body.excluded_user_lists)
+                _get_client(), body.user_ids, body.excluded_user_lists, account_id=_aid)
         except AudienceUnknown as e:
             raise HTTPException(422, str(e))
         _listed_out = _kept - len(set(body.user_ids))

@@ -233,7 +233,17 @@ pct}` (`proxies_admin_api._health_view`, both lists);
 with `down`, so open tabs refetch both lists. The relay log carries `proxy <label> is DOWN
 (confirmed by probe)`, `<n> Creator(s) moved to healthy pool proxies`, `nobody moved (no
 pool proxy answers)`, `proxy_probe label=<label> ok=<bool>` (every probe), `is back up
-(recheck)`.
+(recheck)`, `proxy rebalance: moved <account> <from> -> <to>`.
+
+Unknown country: a proxy no probe has traced yet (an idle one) counts as same-country for a failover
+or a binding; once its probe traces another country it is passed over while a same or unknown one is
+left in its tier. Rebalance (ADR 0078; `proxy_health.rebalance_loop`, its own loop, independent of the
+probe pass): every `PROXY_REBALANCE_INTERVAL_S` (default 600 s, floor 600 s, `0` turns it off), when no
+proxy is down or failover-due and no failover ran since the last pass, at most ONE Creator moves, the
+last bound one on the most-loaded pool proxy of a tier (2+ active Creators by egress IP, deactivated
+ones not counted), onto an idle proxy of the same tier and country (or unknown) that answers a probe
+(at most 2 probed). A tier with any herd-guarded proxy is left alone; tiers never mix.
+`PROXY_REBALANCE_TIERS` (comma list, default `0`) picks the tiers.
 
 Refusals: `health.refusals = {window_s, refused, calls, pct}` counts every `_proxy_retry`
 attempt and probe through the proxy over the last `PROXY_FLAP_WINDOW_S` seconds (default

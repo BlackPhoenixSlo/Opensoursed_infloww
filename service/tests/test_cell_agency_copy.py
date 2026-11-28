@@ -234,6 +234,39 @@ def _seeded_control(name: str) -> str:
     return ctl
 
 
+def _keys(path: str) -> list:
+    with contextlib.closing(_db(path)) as db:
+        return db.execute("SELECT provider, api_key FROM user_llm_keys ORDER BY provider").fetchall()
+
+
+def case_tracker_key_stays_on_control() -> None:
+    from unittest.mock import patch
+
+    ctl = _seeded_control("ctl-llm-keys")
+    with contextlib.closing(_db(ctl)) as db:
+        db.executemany("INSERT INTO user_llm_keys (user_id, provider, api_key, updated_at) VALUES ('u1', ?, ?,"
+                       " '2026-01-01')", [("deepseek", "sk-ds"), ("typesafe", "ts-key"), ("leak_tracker", "lt-key")])
+    llm = [("deepseek", "sk-ds"), ("typesafe", "ts-key")]
+    for fmt, doc in (("f1", lambda: _doc(ctl)), ("f2", lambda: _doc2(ac.read_snapshot(ctl)))):
+        cell = _fresh(f"cell-llm-keys-{fmt}", "data")
+        assert ac.apply(cell, doc())["applied"]
+        assert _keys(cell) == llm, (fmt, _keys(cell))
+
+    old = _fresh("cell-llm-keys-old", "data")
+    with patch.dict(ac.CONTROL_ONLY_ROWS, {}, clear=True):
+        ac.apply(old, _doc2(ac.read_snapshot(ctl)))
+    assert ("leak_tracker", "lt-key") in _keys(old)
+    with contextlib.closing(_db(ctl)) as db:
+        db.execute("UPDATE employees SET display_name = 'Anna' WHERE id = 7")
+    snap = ac.read_snapshot(ctl)
+    res = ac.apply(old, _doc2(snap, ac.meta_at(old)["section_sha"]))
+    assert res["root_ok"] and "user_llm_keys" in res["changed"], res
+    assert _keys(old) == llm and ("leak_tracker", "lt-key") in _keys(ctl)
+    assert ac.confirm(old, _doc2(snap, snap["shas2"])), "filtered copy left a root mismatch"
+    assert ac.apply(old, _doc2(snap), repair=True)["root_ok"]
+    assert not ac.meta_at(old)["repair_needed"] and _keys(old) == llm
+
+
 _TEXT = {"recent_events": "[]", "family_names": "[]", "pets": "[]", "tags": "[]", "custom_fields": "{}"}
 
 

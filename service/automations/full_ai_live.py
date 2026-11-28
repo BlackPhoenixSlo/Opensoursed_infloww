@@ -58,6 +58,7 @@ import run_decide
 import run_slot
 import send_ops
 from env_knob import env_float
+from side_effect_gate import burst_refusal
 from attribution import write_outbound_attribution
 from automations import (
     _info_jev, cat_stickers, full_ai_chat, full_ai_look, full_ai_owned, full_ai_owner_io, full_ai_photo,
@@ -331,6 +332,7 @@ class _Run:
     taken: bool = False                   # the reserve found another run's row: send nothing, write nothing
     lost: Exception | None = None  # an interruption after a bubble lands is raised after recording
     landed: int = 0                       # bubbles on OF (the job's finally rests the Fan when > 0)
+    refused: str | None = None
 
 
 class _Draining(Exception):
@@ -450,7 +452,8 @@ async def _after_burst(aid: str, fan: int, at: tuple[datetime, int], client, lan
 
 
 def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
-        loaded: dict | None = None, config: dict | None = None) -> full_ai_turn.TurnIO:
+        loaded: dict | None = None, config: dict | None = None, *,
+        typos: dict) -> full_ai_turn.TurnIO:
     config = config or {}
     aid, fan = str(account_id), int(fan_id)
     at = (anchor.created_at, int(anchor.message_id))
@@ -462,11 +465,14 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
             row["reply_json"]["parts"].append(gif)
         reply, landed, unknown, stop = row["reply_json"], 0, False, None
         ppv = next((part for part in reply["parts"] if "ppv" in part), None)
+        if ppv is not None and (refused := burst_refusal(aid, fan, [full_ai_ppv.paid_kwargs(ppv["ppv"])])):
+            stop, state.refused = ("platform", refused, reply["parts"].index(ppv)), refused
+            reply["typo_state"] = dict(typos)
         ppv_reconciled = False
         wpm = await load_typing_wpm(aid) if config.get("typing_sign") else None
         frame = bool(config.get("typing_notification")) and await load_typing_indicator(aid)
 
-        for i, part in enumerate(reply["parts"]):
+        for i, part in enumerate(reply["parts"] if stop is None else ()):
             sender = BUBBLE_SENDERS.get(_kind(part))
             if sender is None:
                 stop = ("sender", f"{_kind(part)}_unbuilt", i)
@@ -782,6 +788,8 @@ async def _run(account_id: str, payload: dict) -> dict:
     except ValueError:
         log.warning("full_ai_live_stood_down account=%s fan=%s check=config reason=unreadable", aid, fan)
         return {"skipped": "bad_config"}
+    if refused := burst_refusal(aid, fan):
+        return {"reason": refused}
     ttl = int(max(900, full_ai_turn.turn_bound_s(cfg) + 600))
     if await ax.fan_on_cooldown(aid, fan):
         return await _busy(aid, payload)
@@ -805,7 +813,7 @@ async def _run(account_id: str, payload: dict) -> dict:
             log.info("full_ai_live_stood_down account=%s fan=%s check=%s reason=%s", aid, fan, *why)
             return {"skipped": "%s:%s" % why}   # the pre-look: no Router / Writer call, no row
         res = await full_ai_turn.run_turn(facts, _io(aid, fan, anchor, client, state,
-                                                     dict(facts.fan_info), facts.config))
+                                                     dict(facts.fan_info), facts.config, typos=facts.typo_state))
         if state.taken:
             return {"skipped": "taken"}
         log.info("full_ai_turn account=%s fan=%s mode=live route=%s status=%s", aid, fan,
@@ -813,7 +821,8 @@ async def _run(account_id: str, payload: dict) -> dict:
         if state.lost is not None:
             raise state.lost
         return {"row_id": res.row_id, "route": res.decision.route, "row_status": res.status,
-                "sent": sum("message_id" in p for p in res.parts)}
+                "sent": sum("message_id" in p for p in res.parts),
+                **({"reason": state.refused} if state.refused else {})}
     except _Draining:
         log.info("full_ai_live_draining account=%s fan=%s: re-queued", aid, fan)
         await _queue(aid, payload, datetime.utcnow() + timedelta(seconds=BUSY_RETRY_S))

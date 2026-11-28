@@ -481,7 +481,8 @@ def case_the_llm_key_writes_refuse_the_tracker_provider():
 
 def case_the_key_overview_never_lists_the_tracker_key():
     uid = _MANAGED["agency"]
-    asyncio.run(tenant_keys.set_keys(uid, {"leak_tracker": TRACKER_KEY}, known=tenant_keys.NON_LLM_PROVIDERS))
+    non_llm = (*tenant_keys.NON_LLM_PROVIDERS, "unknown_provider")
+    asyncio.run(tenant_keys.set_keys(uid, {"leak_tracker": TRACKER_KEY, "unknown_provider": "fixture"}, known=non_llm))
     try:
         assert asyncio.run(tenant_keys.get_key(uid, "leak_tracker")) == TRACKER_KEY
         assert "leak_tracker" not in asyncio.run(tenant_keys.status(uid))
@@ -498,7 +499,7 @@ def case_the_key_overview_never_lists_the_tracker_key():
         mine = own.get("/admin/my-llm-keys")
         assert "leak_tracker" not in mine.json()["providers"] and TRACKER_KEY not in mine.text
     finally:
-        asyncio.run(tenant_keys.set_keys(uid, {"leak_tracker": ""}, known=tenant_keys.NON_LLM_PROVIDERS))
+        asyncio.run(tenant_keys.set_keys(uid, {"leak_tracker": "", "unknown_provider": ""}, known=non_llm))
 
 
 def case_key_status_roster_ranks_agencies_with_a_live_model_first():

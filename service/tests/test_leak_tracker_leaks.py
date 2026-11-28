@@ -102,6 +102,22 @@ def case_all_asks_only_for_the_session_watches_and_none_for_an_empty_set():
     assert ROWAN_W not in json.dumps(scoped) and SECOND not in json.dumps(scoped)
 
 
+def case_all_queries_only_watches_with_a_successful_push():
+    _connect()
+    with _tracker() as t, _live({}):
+        t.answer = DOWN
+        assert _enrol({**MIA, "username": "rowanash"}, account=SECOND).json() == {"synced": False}
+        assert _all()["leaks"] is None
+        assert not _gets(t)
+        t.answer = PUT_CREATED
+        assert _enrol().json() == {"synced": True}
+        _rewatch(CREATOR, MIA_W)
+        t.routes["/v1/leaks"] = _at(LEAKS)
+        assert _all()["leaks"] == _as_account(LEAKS, CREATOR)
+        (url,) = _gets(t)
+        assert httpx.URL(url).params.get_list("watch_id") == [MIA_W]
+
+
 def case_all_serves_the_last_good_copy_when_the_service_is_down():
     _connect(TEAM_LEADER)
     with _tracker() as t, _live({}):
@@ -112,6 +128,9 @@ def case_all_serves_the_last_good_copy_when_the_service_is_down():
         fresh = _all()
         t.routes["/v1/leaks"] = {**_at(LEAKS), "status": 503, "response": {"error": "unavailable"}}
         stale = _all()
+        t.routes["/v1/leaks"] = {**_at(LEAKS), "status": 429, "response": {"error": "busy"}}
+        assert _all() == stale
+        t.routes["/v1/leaks"] = DOWN
         scoped = _all(SCOPED)
     assert none == {"leaks": None, "next_cursor": None, "stale": False, "fetched_at": None}, none
     assert stale == {**fresh, "stale": True}, stale
@@ -146,6 +165,11 @@ def case_all_with_a_refused_key_reads_key_invalid_and_a_bad_answer_is_502():
     for label, answer, status in [
         ("401", {**_at(LEAKS), "status": 401, "response": ERR_401["response"]}, 409),
         ("422", {**_at(LEAKS), "status": 422, "response": {"error": "invalid", "field": "watch_id"}}, 502),
+        ("all malformed", {**_at(LEAKS), "response": {"leaks": [{}], "next_cursor": None}}, 502),
+        ("invalid URL", {**_at(LEAKS), "response": {
+            "leaks": [{**LEAKS["response"]["leaks"][0], "url": "https://["}], "next_cursor": None}}, 502),
+        ("invalid pill", {**_at(LEAKS), "response": {
+            "leaks": [{**LEAKS["response"]["leaks"][0], "pill": []}], "next_cursor": None}}, 502),
         ("no list", {**_at(LEAKS), "response": {"leaks": {}, "next_cursor": None}}, 502),
         ("cursor a number", {**_at(LEAKS), "response": {"leaks": [], "next_cursor": 7}}, 502),
     ]:
@@ -207,8 +231,24 @@ def case_the_drill_in_of_an_untracked_or_unsynced_creator_makes_no_leak_call():
         assert _enrol().json() == {"synced": False}
         unsynced = _drill().json()
         assert t.calls and all(c.method == "PUT" for c in t.calls), _gets(t)
-    for body in (untracked, unsynced):
-        assert (body["leaks"], body["next_cursor"], body["stale"], body["fetched_at"]) == ([], None, False, None), body
+    for body, expected in ((untracked, []), (unsynced, None)):
+        assert (body["leaks"], body["next_cursor"], body["stale"], body["fetched_at"]) == (expected, None, False, None), body
+
+
+def case_failed_edit_keeps_the_existing_leaks_readable_and_retries_same_day():
+    import asyncio
+
+    _connect()
+    with _tracker() as t, _live({}):
+        _enrol_two(t)
+        t.routes[MIA_LEAKS] = CREATOR_LEAKS
+        t.answer = DOWN
+        assert _enrol({**MIA, "display_name": "Edited"}).json() == {"synced": False}
+        drill = _drill().json()
+        assert drill["leaks"] and drill["synced"] is False
+        t.answer = PUT_CREATED
+        asyncio.run(leak_tracker.sync_watches())
+        assert _drill().json()["synced"] is True
 
 
 def case_each_leak_keeps_its_own_events_even_when_an_id_repeats():

@@ -11,7 +11,7 @@ import { diffLine, type FullAiConfigSlots } from "./fullAiConfigEdit";
 import { canStart, type DoOutcome, type DoRun } from "./doRunReducer";
 import { editPlanText, resultHeadline, resultLines, type EditResult, type MassEditSlots } from "./massEdit";
 
-export const CARD = "rounded-xl border border-border bg-bg-elev-1 [[data-look=messenger]_&]:bg-white [html[data-theme=light]_&]:bg-white px-6 py-[17px] leading-5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]";
+export const CARD = "rounded-xl border border-border bg-bg-elev-1 [html[data-theme=light]_&]:bg-white px-6 py-[17px] leading-5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]";
 
 const BUBBLE_ME = "self-end max-w-[85%] rounded-2xl rounded-br-md bg-fg text-panel px-3.5 py-2 text-[13px] whitespace-pre-wrap break-words";
 const BUBBLE_BOT = "self-start max-w-[92%] rounded-2xl rounded-bl-md bg-bg-elev-1 px-3.5 py-2 text-[13px] leading-relaxed break-words";

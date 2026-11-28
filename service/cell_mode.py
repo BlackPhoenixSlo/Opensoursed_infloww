@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from starlette.requests import HTTPConnection, Request
 
-CELL_PROTO = 1
+CELL_PROTO = 2
 
 
 def _refuse(msg: str) -> None:

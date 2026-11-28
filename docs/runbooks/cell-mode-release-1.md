@@ -25,7 +25,7 @@ Demo done = both waves + post-cut green + the real-path check + the relocation. 
 - **The laptop never talks to OnlyFans and never sends.** Test sends happen in the app, by you, to the sandbox Fan you confirm that day. No Fan id is written in this file.
 - **Every block that reaches box A starts with `need_owner go`.** It stops unless the owner's "go" is typed at the prompt.
 - **No AE deploys from D-3 on.** The `CELL-MODE` marker makes `deploy-here.sh`, ae-deploy and deploy-all refuse box A (118). New code goes through `fleet.py deploy` once Cells run.
-- **Never re-login a canary model on the old relay after wave 1.** It would give that model a second owner (`docs/cell-mode/p3-entry-cut-drill.md`). Wave 2 refuses it (`relogged:`), but only at wave 2.
+- **Never re-login a canary model on the old relay after wave 1.** It would give that model a second owner (`docs/cell-mode/p3-entry-cut-drill.md`). Witness checks for returned sessions between waves, and wave 2 refuses them (`relogged:`).
 - **The KVM4 standby is retired for AE from wave 1 on.** A restored standby would be a second owner of the moved models. Recovery is `fleet.py failover` / `fleet.py restore` from the bucket. Do not run `docs/runbooks/ae-failover-drill.md` after C-2.
 - **One quiet hour per wave:** Tue 09:00–10:00 UTC (measured on the 2026-11-26 copy, ticket 66). W-3 re-checks it.
 
@@ -173,8 +173,14 @@ Leaves: `plan/plan.txt` (for you), `plan/plan.toml` (W-5 pastes it).
 "$PY" -c 'import json, sys; t = json.load(open(sys.argv[1])); print("signed:", t.get("signed")); [print(k, v.get("state")) for k, v in sorted(t["features"].items()) if v.get("state") in ("off", "partial")]' "$REPO/service/cell_features.json"
 ```
 
-Expect: the `off` and `partial` rows. You read them (`docs/cell-mode/release-1-features.md` explains each) and say yes in writing; the AGENT then writes the `signed {by, at, sha256}` block in a PR (ticket 21). `signed: None` blocks every pre-cut (69).
-Leaves: `service/cell_features.json` with `signed` on main (pre-cut `features-signed` reads it).
+Expect: the `off` and `partial` rows. Read the candidate release's table and record your approval in writing. The agent records `signed {by, at, sha256}` in the release PR and copies the approved digest below into `feature_approval` under the existing `[preflight]` in `$MAP`. Use the reviewed candidate checkout for this calculation.
+
+```sh
+. "$HOME/.config/openinfloww/release1/lib.sh"
+"$PY" -c 'import hashlib as h, json, pathlib, sys; p = pathlib.Path(sys.argv[1]); f = json.loads((p / "cell_features.json").read_text())["features"]; t = h.sha256(json.dumps(f, sort_keys=True, separators=(",", ":")).encode()).hexdigest(); s = h.sha256((p / "cell_scope.json").read_bytes()).hexdigest(); print(h.sha256(f"{t}:{s}".encode()).hexdigest())' "$REPO/service"
+```
+
+Leaves: the candidate release carries the approval metadata. The operator map pins the digest independently. Pre-cut checks the candidate table and scope staged at the map's release SHA and reads live feature use from the legacy DB.
 
 **W-5. Owner applies the plan to fleet.toml.** (OWNER, 15 min, laptop only)
 
@@ -343,7 +349,7 @@ need_owner go
 FLEET preflight --stage post-cut | keep C-3-postcut || rc=$?; echo "exit=${rc:-0}"
 ```
 
-Expect: `exit=0`: `PLACEMENT-OK` per Cell, release SHA, manifest v2 < 1 h, `fence-order` OK, the old relay's account list (read twice) without the canaries.
+Expect: `exit=0`: `PLACEMENT-OK` per Cell, release SHA, a v2 manifest from each Cell's latest remote small-file snapshot under 1 h old, `fence-order` OK, and the running old relay's session inventory with retained Creators and no canary sessions. Witness checks that inventory while wave 1 is live and pages on a returned canary.
 Leaves: `evidence/C-3-postcut-*.txt` (120's "post-cut output saved").
 
 **C-4. No canary folder left in the old relay.** (OWNER RUNS, 1 min, read-only)
@@ -545,7 +551,7 @@ need_owner go
 FLEET cell-report --done | keep Y-2-done || rc=$?; echo "exit=${rc:-0}"
 ```
 
-Expect: `exit=0` only for 7 green contiguous days, every Cell, every page confirmed, the M-1 move in the window. Then Fansly, then Fanvue, each by its own gate (80, 81).
+Expect: one `OK|RED <rule>` line per rule (days, dates, coverage, cells, green, pairs, test-page, entry-cut, move), last line `Release 1 done`, `exit=0` only for 7 green contiguous days, every Cell, every page confirmed, the M-1 move in the window. A RED names the rule and what to fix. Then Fansly, then Fanvue, each by its own gate (80, 81).
 Leaves: `evidence/Y-2-done-*.txt` (the Release 1 record).
 
 ---
@@ -569,7 +575,7 @@ FLEET abort "$OP" 2>&1 | keep abort
 
 **After the rollback boundary: forward only, never merge.** `fleet.py abort` refuses (`abort refused: ... forward only`). Finish the cut with `fleet.py resume <op>`, then fix a bad Cell forward: `fleet.py failover <box>` or `fleet.py move <cell> --to <box>/<slot>`. Never copy Cells back into one relay, and never start the old relay over a Cell (ADR-0062; the marker blocks routine deploys).
 
-If you are unsure which side you are on: run the abort block above. Before the boundary it undoes the cut (the safe way); after it, it refuses and names `resume`. Never run `fleet.py resume` to find out: it carries on straight away, past the boundary.
+If you are unsure which side you are on, run the abort block above. A journaled epoch attempt with an unresolved outcome blocks abort even if the bucket still shows the old epoch. Keep the old relay fenced and check the bucket before deciding how to proceed. `fleet.py resume` continues the cut and can write epochs.
 
 ## Box A fault (AMBER, accepted for the demo)
 

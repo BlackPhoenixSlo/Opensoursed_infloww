@@ -11,20 +11,22 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import urlsplit
+from weakref import WeakValueDictionary
 
 import httpx
 from fastapi import HTTPException, Request
-from sqlalchemy import bindparam, delete, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import account_health
 import runtime_switches
-from agency_context import AgencyContext, agency_contexts
+from agency_context import AgencyContext, agency_context
 from automations._knobs import test_mode
 from db.engine import get_session
 from db.models import LeakTrackerTenant, LeakWatch, LeakWatchTombstone
 from permissions import leak_page_granted, leak_writer, removal_offer_viewer
 from send_ops import cells
+from settings_schema import applied_blob
 from tenant_keys import NON_LLM_PROVIDERS, TRACKER_PROVIDER as PROVIDER, get_key, set_keys
 
 log = logging.getLogger("of-relay.leak_tracker")
@@ -96,7 +98,7 @@ def deployment_on() -> bool:
     return not cells() and tracker_url() is not None and runtime_switches.on("LEAK_TRACKER_ENABLED")
 
 
-def _not_found() -> HTTPException:
+def not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Not Found")
 
 
@@ -105,25 +107,28 @@ def page_on(ctx: AgencyContext, flags: dict[str, Any], roles: dict[str, Any]) ->
 
 
 async def require_gates(request: Request, *, need_key: bool) -> Gates:
-    from settings_api import applied_blob
+    gates = getattr(request.state, "leak_tracker_gates", None)
+    if gates is None:
+        gates = request.state.leak_tracker_gates = await _resolve_gates(request)
+    if need_key and not gates.key:
+        raise not_found()
+    return gates
+
+
+async def _resolve_gates(request: Request) -> Gates:
     if not deployment_on():
-        raise _not_found()
+        raise not_found()
     try:
-        contexts = await agency_contexts(
+        ctx = await agency_context(
             account_id=request.headers.get("x-account-id") or request.query_params.get("account_id") or None)
     except HTTPException:
-        raise _not_found() from None
-    if len(contexts) != 1:
-        raise _not_found()
-    (ctx,) = contexts
+        raise not_found() from None
     async with get_session() as s:
         flags: dict[str, Any] = await applied_blob(s, ctx.agency_user_id, "flags")
         roles: dict[str, Any] = await applied_blob(s, ctx.agency_user_id, "roles")
     if not page_on(ctx, flags, roles):
-        raise _not_found()
+        raise not_found()
     key = await get_key(ctx.agency_user_id, PROVIDER)
-    if need_key and not key:
-        raise _not_found()
     return Gates(ctx=ctx, key=key, can_write=leak_writer(ctx, roles), offer_viewer=removal_offer_viewer(ctx, roles))
 
 
@@ -147,6 +152,16 @@ class Gone(Exception):
     pass
 
 
+def watch_acknowledged(r: httpx.Response, watch_id: str) -> bool:
+    if r.status_code != 200:
+        return False
+    try:
+        ack = r.json()
+    except ValueError:
+        return False
+    return isinstance(ack, dict) and ack.get("watch_id") == watch_id
+
+
 def gone(r: httpx.Response) -> bool:
     if r.status_code != 410:
         return False
@@ -161,6 +176,12 @@ def key_invalid(agency_user_id: str) -> bool:
     return agency_user_id in _invalid
 
 
+async def _invalidate_key(agency_user_id: str, key: str) -> None:
+    if await get_key(agency_user_id, PROVIDER) == key:
+        _invalid.add(agency_user_id)
+        drop_copies(agency_user_id)
+
+
 def forget_invalid(agency_user_id: str) -> None:
     _invalid.discard(agency_user_id)
 
@@ -172,14 +193,17 @@ async def call(agency_user_id: str | None, key: str, method: str, path: str, jso
         raise Unreachable()
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as c:
-            r = await c.request(method, base + path, headers={"Authorization": f"Bearer {key}"}, json=json)
+            r = await asyncio.wait_for(
+                c.request(method, base + path, headers={"Authorization": f"Bearer {key}"}, json=json),
+                timeout=timeout.read,
+            )
     except (httpx.ConnectError, httpx.ConnectTimeout):
         raise Down() from None
-    except httpx.HTTPError:
+    except (httpx.HTTPError, TimeoutError):
         raise Unreachable() from None
     if r.status_code == 401:
         if agency_user_id:
-            _invalid.add(agency_user_id)
+            await _invalidate_key(agency_user_id, key)
         raise KeyRefused()
     if r.status_code in (502, 503, 504):
         raise Down()
@@ -199,17 +223,16 @@ async def open_stream(agency_user_id: str, key: str, path: str,
     for name in ("user-agent", "accept"):
         req.headers.pop(name, None)
     try:
-        r = await client.send(req, stream=True)
+        r = await asyncio.wait_for(client.send(req, stream=True), timeout=TIMEOUT.read)
     except BaseException as e:
         await client.aclose()
-        if isinstance(e, httpx.HTTPError):
+        if isinstance(e, (httpx.HTTPError, TimeoutError)):
             raise Unreachable() from None
         raise
     if r.status_code == 401:
         await r.aclose()
         await client.aclose()
-        _invalid.add(agency_user_id)
-        drop_copies(agency_user_id)
+        await _invalidate_key(agency_user_id, key)
         raise KeyRefused()
     return client, r
 
@@ -220,9 +243,8 @@ async def read(agency_user_id: str, key: str, path: str, parse: Callable[[Any], 
         if key_invalid(agency_user_id):
             raise KeyRefused()
         r = await call(agency_user_id, key, "GET", path)
-    except KeyRefused:
-        drop_copies(agency_user_id)
-        raise
+        if r.status_code == 429:
+            raise Unreachable()
     except Unreachable:
         hit = _copies.get((agency_user_id, path)) if keep else None
         return Copy(hit[0], True, hit[1]) if hit else None
@@ -310,22 +332,18 @@ def watch_body(account_id: str, paused: bool, *, platform: str, username: str, v
             "paused": paused}
 
 
-_T = LeakWatch.__table__
-_MARK = (update(_T).where(_T.c.watch_id == bindparam("w"), _T.c.updated_at == bindparam("u"))
-         .values(synced_at=bindparam("at"), synced_paused=bindparam("bit")))
-_RACED = update(_T).where(_T.c.watch_id == bindparam("w"), _T.c.updated_at != bindparam("u")).values(synced_at=None)
+_save_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
 
 
-async def _mark(sent: list[dict[str, Any]], marks: list[dict[str, Any]]) -> None:
-    if sent:
-        async with get_session() as s:
-            if marks:
-                await s.execute(_MARK, marks)
-            await s.execute(_RACED, sent)
+def watch_lock(agency: str, account_id: str) -> asyncio.Lock:
+    return _save_locks.setdefault((agency, account_id), asyncio.Lock())
+
+
+def watch_synced(w: LeakWatch) -> bool:
+    return w.synced_at is not None and w.synced_at >= w.updated_at
 
 
 async def sync_watches(now: datetime | None = None) -> None:
-    from settings_api import applied_blob
     if not deployment_on():
         return
     now = now or datetime.utcnow()
@@ -341,17 +359,18 @@ async def sync_watches(now: datetime | None = None) -> None:
             continue
         async with get_session() as s:
             flag = (await applied_blob(s, agency, "flags")).get(FLAG) is True
-        sent: list[dict[str, Any]] = []
-        marks: list[dict[str, Any]] = []
-        try:
-            for w in watches:
-                bit = paused(w.on, flag, w.account_id in off)
-                if w.synced_at is not None and w.synced_paused == bit and w.synced_at >= day:
-                    continue
+        for w in watches:
+            bit = paused(w.on, flag, w.account_id in off)
+            if watch_synced(w) and w.synced_paused == bit and w.synced_at >= day:
+                continue
+            current = (LeakWatch.watch_id == w.watch_id, LeakWatch.updated_at == w.updated_at)
+            async with watch_lock(agency, w.account_id):
+                async with get_session() as s:
+                    if await s.scalar(select(LeakWatch.id).where(*current)) is None:
+                        continue
                 body = watch_body(w.account_id, bit, platform=w.platform, username=w.username, verified=w.verified,
                                   display_name=w.display_name, aliases_json=w.aliases_json,
                                   instagram=w.instagram, x=w.x)
-                sent.append({"w": w.watch_id, "u": w.updated_at})
                 try:
                     r = await call(agency, key, "PUT", f"/v1/watches/{w.watch_id}", json=body)
                 except Down:
@@ -360,19 +379,19 @@ async def sync_watches(now: datetime | None = None) -> None:
                     log.warning("leak watch sync: %s failed on the service side", w.watch_id)
                     continue
                 except KeyRefused:
-                    drop_copies(agency)
                     break
                 if gone(r):
                     await forget_watch(agency, w.watch_id)
                     continue
                 if r.status_code == 429:
                     break
-                if r.status_code != 200:
-                    log.warning("leak watch sync: %s answered %d", w.watch_id, r.status_code)
+                if not watch_acknowledged(r, w.watch_id):
+                    log.warning("leak watch sync: %s received no matching acknowledgement (HTTP %d)", w.watch_id, r.status_code)
                     continue
-                marks.append({"w": w.watch_id, "u": w.updated_at, "at": now, "bit": bit})
-        finally:
-            await _mark(sent, marks)
+                at = max(now, w.updated_at)
+                async with get_session() as s:
+                    await s.execute(update(LeakWatch).where(*current)
+                                    .values(updated_at=at, synced_at=at, synced_paused=bit))
 
 
 async def drop_watches(*, account_id: str | None = None, agency_user_id: str | None = None) -> None:
@@ -449,7 +468,6 @@ async def land_tombstones(agency_user_id: str | None = None, *, inline: bool = F
                 continue
             except KeyRefused:
                 await _missed(t.watch_id, "key_invalid")
-                drop_copies(agency)
                 break
             if 200 <= r.status_code < 300:
                 async with get_session() as s:

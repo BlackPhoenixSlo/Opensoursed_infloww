@@ -92,7 +92,7 @@ def case_list_members_repeat():
     class C:
         def list_users_in(self, lid, limit, offset):
             return list(full)
-    ids, truncated = of_paging.list_member_ids(C(), 7)
+    ids, truncated = of_paging.list_member_ids(C(), 7, list_page=None)
     assert ids == set(range(1, 101)) and truncated is True, (len(ids), truncated)
 
     class Counted(C):
@@ -104,16 +104,16 @@ def case_list_members_repeat():
             return {"id": lid, "usersCount": self.n}
     for n, want in ((100, False), (250, True), (None, True)):
         c = Counted(n)
-        ids, truncated = of_paging.list_member_ids(c, 7)
+        ids, truncated = of_paging.list_member_ids(c, 7, list_page=None)
         assert (len(ids), truncated, c.counts) == (100, want, 1), (n, truncated, c.counts)
 
     class Boom(C):
         def get_list(self, lid):
             raise RuntimeError("502")
-    assert of_paging.list_member_ids(Boom(), 7)[1] is True
+    assert of_paging.list_member_ids(Boom(), 7, list_page=None)[1] is True
     c = Counted(3)
     c.list_users_in = lambda lid, limit, offset: [{"id": i} for i in (1, 2, 3)][offset:]
-    assert of_paging.list_member_ids(c, 7) == ({1, 2, 3}, False) and c.counts == 0
+    assert of_paging.list_member_ids(c, 7, list_page=None) == ({1, 2, 3}, False) and c.counts == 0
 
 
 def case_list_members_tail_only():
@@ -146,14 +146,13 @@ def case_list_members_tail_only():
     ]
     bad = []
     for name, pages, want in rows:
-        ids, inc = of_paging.list_member_ids(C(pages), 7)
+        ids, inc = of_paging.list_member_ids(C(pages), 7, list_page=None)
         if (len(ids), inc) != (150, want):
             bad.append(f"{name}: {(len(ids), inc)!r} != {(150, want)!r}")
     assert not bad, "\n".join(bad)
 
 
 class _OnePage:
-    platform_list_page = 50
 
     def __init__(self, replies):
         self.replies, self.gets, self.sizes = replies, [], 0
@@ -193,23 +192,21 @@ def case_one_page_list_table():
     bad = []
     for name, reply, want_ids, want_inc in rows:
         c = _OnePage({7: reply})
-        got = of_paging.list_member_ids(c, 7)
+        got = of_paging.list_member_ids(c, 7, list_page=50)
         if (got, c.gets, c.sizes) != ((want_ids, want_inc), [(7, 50, 0)], 0):
             bad.append(f"{name}: {(got, c.gets, c.sizes)!r}")
     assert not bad, "\n".join(bad)
 
 
-def case_resumable_lists_forwards_list_page():
+def case_resumable_lists_reads_using_account_page():
+    import platforms
+
     c = _OnePage({7: {"list": _rows("11"), "hasMore": False}})
     lists = audiences._ResumableLists(c)
-    assert lists.platform_list_page == 50
-    assert of_paging.list_member_ids(lists, 7, max_pages=3) == ({11}, False)
+    with _on_platform("fansly"):
+        page = platforms.for_account("aid").list_page
+        assert of_paging.list_member_ids(lists, 7, list_page=page, max_pages=3) == ({11}, False)
     assert c.gets == [(7, 50, 0)] and lists.pages == 1, (c.gets, lists.pages)
-
-    class OF:
-        def list_users_in(self, lid, limit, offset):
-            return []
-    assert audiences._ResumableLists(OF()).platform_list_page is None
 
 
 def _on_platform(key):
@@ -254,7 +251,8 @@ def case_audience_refusal_is_audience_unknown():
     import asyncio
     c = _OnePage({9: {"list": _rows("1"), "hasMore": True}})
     try:
-        asyncio.run(audiences.drop_exclude_list_members(c, [1, 2], [9]))
+        with _on_platform("fansly"):
+            asyncio.run(audiences.drop_exclude_list_members(c, [1, 2], [9], account_id="aid"))
     except audiences.AudienceUnknown as caught:
         assert isinstance(caught, audiences.AudienceRefusal), caught
         assert caught.reason == "platform_lacks:list_users_in:incomplete", caught.reason
@@ -295,8 +293,9 @@ def case_roster_audience_blocking_platform_causes():
     bad = []
     for name, replies, inc_lists, exc_lists, want in rows:
         try:
-            got = audiences.roster_audience_blocking(
-                _Mixed(replies), user_lists=inc_lists, excluded_user_lists=exc_lists)
+            with _on_platform("fansly"):
+                got = audiences.roster_audience_blocking(
+                    _Mixed(replies), user_lists=inc_lists, excluded_user_lists=exc_lists, account_id="aid")
         except audiences.AudienceRefusal as e:
             got = e.reason
         if got != want:
@@ -320,10 +319,10 @@ def case_roster_audience_blocking_onlyfans_backstop():
     for name, reply, lists in (("tail repeat with no count", full, ["7"]),
                                ("read raises", RuntimeError("502"), ["7"]),
                                ("endless roster", [], ["fans"])):
-        got = audiences.roster_audience_blocking(OF(reply), user_lists=lists)
+        got = audiences.roster_audience_blocking(OF(reply), account_id="of-test", user_lists=lists)
         assert got is None, (name, got)
     try:
-        audiences.roster_audience_blocking(OF(_LacksError("x")), user_lists=["7"])
+        audiences.roster_audience_blocking(OF(_LacksError("x")), account_id="of-test", user_lists=["7"])
     except audiences.AudienceRefusal as e:
         assert e.reason == "platform_lacks:list_users_in:unknown_list", e.reason
     else:
@@ -407,14 +406,14 @@ def case_patch_reaches_callers():
         class C:
             def subscribers(self, **kw):
                 return []
-        assert audiences.roster_audience_blocking(C(), user_lists=["fans"]) is None
+        assert audiences.roster_audience_blocking(C(), account_id="of-test", user_lists=["fans"]) is None
     finally:
         of_paging.page_all_checked = real
 
     class C2:
         def subscribers(self, **kw):
             return [{"id": 3}] if kw.get("offset") == 0 else []
-    assert audiences.roster_audience_blocking(C2(), user_lists=["fans"]) == [3]
+    assert audiences.roster_audience_blocking(C2(), account_id="of-test", user_lists=["fans"]) == [3]
 
 
 

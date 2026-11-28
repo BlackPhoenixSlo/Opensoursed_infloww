@@ -9,6 +9,7 @@ from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
+import platforms
 import smart_message_extras as extras
 from attribution import _MASS_PLACEHOLDER_BASE, write_outbound_attribution
 from automation_registry import register
@@ -230,6 +231,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     outside = extras.window_skip(cfg, now)
     if outside:
         return _skip(outside)
+    if refused := platforms.lack_refusal(account_id, platforms.Lack.PURCHASE_LINKAGE):
+        return _skip(refused)
     media, price_cents = extras.media_and_price(cfg)
     unsend_after = extras.unsend_minutes(cfg)
     once = extras.frequency(cfg, STORED_FREQUENCY) == "once"

@@ -90,7 +90,9 @@ def cells(on: bool = True, accounts: str = f"onlyfans:{AID}", epoch: str = "1"):
     import server
     keys = ("OI_CELL_MAP", "OI_ACCOUNTS", "OI_EPOCH")
     values = dict(zip(keys, ("/nonexistent/placement.json", accounts, epoch))) if on else {}
-    with environment(*(k for k in keys if k not in values), **values), patch.object(server, "_CELLS", on):
+    import cell_mode
+    with environment(*(k for k in keys if k not in values), **values), patch.object(server, "_CELLS", on), \
+            patch.object(server, "cell_mode", cell_mode, create=True):
         yield
 
 

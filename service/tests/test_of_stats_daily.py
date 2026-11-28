@@ -9,14 +9,17 @@ import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
 from pathlib import Path  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 from sqlalchemy import text  # noqa: E402
 
 import account_health  # noqa: E402
 import accounts as account_registry  # noqa: E402
 import client_pool  # noqa: E402
+import fansly_backend  # noqa: E402
 import of_client  # noqa: E402
 import of_stats_daily as osd  # noqa: E402
+import platforms  # noqa: E402
 import stats  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, SubscriberSnapshot, Transaction  # noqa: E402
@@ -25,6 +28,7 @@ from test_of_stats_parse import chart, pts  # noqa: E402
 API = of_client.API_BASE
 FIX = json.loads((Path(__file__).parent / "fixtures" / "of_statistics_reads.json").read_text())
 A1, A2, A3, A4 = "7300001", "7300002", "7300003", "7300004"
+THIRD, FANSLY = "7300011", "7300012"
 NOW = datetime(2026, 10, 3, 12, 0)
 
 
@@ -69,7 +73,7 @@ def _rows(aid: str) -> dict[str, tuple]:
 
 async def _seed() -> None:
     async with get_session() as s:
-        for aid in (A1, A2, A3, A4):
+        for aid in (A1, A2, A3, A4, THIRD, FANSLY):
             s.add(Account(id=aid, nickname=f"stats_{aid}"))
         await s.commit()
 
@@ -183,6 +187,31 @@ def case_the_pass_fetches_only_live_onlyfans_creators_a_few_times_a_day_at_most(
         account_registry.list_accounts, account_registry.get_platform, client_pool.get, osd.earnings_due = saved
         for aid in (A2, A4):
             asyncio.run(account_health.clear_session_dead(aid))
+
+
+def case_the_pass_skips_every_registered_platform_but_onlyfans():
+    metas = [{"id": aid, "has_session": True} for aid in (THIRD, FANSLY, A3)]
+    keys = {THIRD: "myspace", FANSLY: "fansly"}
+    myspace = platforms.Platform("myspace", "MySpace", "myspace_session.json", fansly_backend,
+                                 frozenset(), login="remote_login_myspace")
+    built: list[str] = []
+
+    def get(aid):
+        built.append(aid)
+        return _fake()
+    saved = (account_registry.list_accounts, account_registry.get_platform, client_pool.get, osd.earnings_due)
+    osd.earnings_due = _never_due
+    account_registry.list_accounts = lambda: metas
+    account_registry.get_platform = lambda aid: keys.get(aid, "onlyfans")
+    client_pool.get = get
+    try:
+        with patch.dict(platforms._BY_KEY, {"myspace": myspace}):
+            assert platforms.for_account(THIRD) is myspace
+            done = asyncio.run(osd.tick(now=datetime(2026, 11, 3, 12, 0), pause_s=0))
+    finally:
+        account_registry.list_accounts, account_registry.get_platform, client_pool.get, osd.earnings_due = saved
+    assert built == [A3] and set(done) == {A3}, (built, done)
+    assert _rows(THIRD) == {} and _rows(FANSLY) == {}
 
 
 def case_window_days_name_the_reports_calendar_days():

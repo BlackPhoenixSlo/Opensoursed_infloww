@@ -132,6 +132,8 @@ def case_platform_outcome_table():
     ]
     for kind, guard, reason, want in rows:
         assert outcome(kind, guard, plugin_reason=reason) == want
+    assert outcome("ok", None, plugin_status="partial") == ("partial", "done", None)
+    assert outcome("ok", "skipped", plugin_status="partial") == ("skipped", "done", "sensitive_words")
 
 
 def case_send_once_outcome_table():

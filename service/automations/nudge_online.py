@@ -17,11 +17,14 @@ from db.models import (
     AccountAiConfig, AutomationRule, Blacklist, Fan, FanLease, Message, NudgeState,
     SkipList, Transaction, WelcomeSent,
 )
+from side_effect_gate import live_check, live_check_fan, live_check_gated, live_check_ungranted
 from . import welcome_compose
 from ._fan_notes import substitute_placeholders
 from ._knobs import bool_knob
 
 log = logging.getLogger("of-relay.automation.nudge_online")
+
+KIND = "nudge_online"
 
 
 _DEFAULT_NUDGE_CONFIG: dict = {
@@ -428,7 +431,7 @@ async def _set_pending(account_id: str, fan_id: int, job_id: int, now: datetime)
 
 
 
-@register("nudge_online")
+@register(KIND)
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
     cfg = await _load_nudge_config(account_id)
@@ -445,6 +448,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             fid = int(test_fan)
         except (TypeError, ValueError):
             return {"test_fan": test_fan, "enqueued": 0, "skipped": "bad_test_fan"}
+        if reason := live_check_fan(account_id, KIND, fid):
+            return {"test_fan": fid, "enqueued": 0, "reason": reason}
         now = datetime.utcnow()
         force = bool(payload.get("test_force"))
         await _upsert_last_seen(account_id, [fid], now)
@@ -463,6 +468,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         await _set_pending(account_id, fid, job_id, now)
         return {"test_fan": fid, "enqueued": 1, "job_id": job_id}
 
+    if reason := live_check_ungranted(account_id, KIND):
+        return {"online": 0, "enqueued": 0, "reason": reason}
+    gated = live_check_gated(account_id, KIND)
     client = await asyncio.to_thread(ax._make_client, account_id)
     try:
         online = await asyncio.to_thread(lambda: client.iter_online_subscribers(max_fans=limit))
@@ -479,7 +487,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             fid = int(f.get("id"))
         except (TypeError, ValueError):
             continue
-        online_objs.setdefault(fid, f)
+        if not (gated and live_check(account_id, KIND, frozenset({str(fid)}))):
+            online_objs.setdefault(fid, f)
     online_ids = list(online_objs.keys())
     now = datetime.utcnow()
 

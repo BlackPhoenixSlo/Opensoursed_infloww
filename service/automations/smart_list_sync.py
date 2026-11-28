@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 from dataclasses import dataclass
+from functools import partial
 from datetime import datetime
 
 from sqlalchemy import delete, or_, select, update
@@ -14,9 +14,9 @@ from automation_registry import register
 from db.engine import get_session
 from db.models import SmartList
 from of_client import OFAPIError
-from of_paging import list_audience
-from side_effect_gate import PLATFORM_LACKS_PREFIX, delete_list_refusal, delete_list_ungranted
-from smart_list_rules import rules_refusal
+from of_paging import ListGone, list_audience
+from side_effect_gate import PLATFORM_LACKS_PREFIX, delete_list_checked, delete_list_refusal, delete_list_ungranted
+from smart_list_rules import requires_active_subscription, rules_refusal
 
 log = logging.getLogger("of-relay.automation.smart_list_sync")
 
@@ -38,7 +38,8 @@ def sync_refusal(account_id: str) -> str | None:
 
 
 def _not_found(e: Exception) -> bool:
-    return getattr(getattr(e, "response", None), "status_code", None) == 404
+    return isinstance(e, ListGone) or (isinstance(e, OFAPIError) and
+                                         getattr(e.response, "status_code", None) == 404)
 
 
 def _short(e: Exception) -> str:
@@ -90,6 +91,7 @@ class _Run:
     def __init__(self, account_id: str, client):
         self.account_id = account_id
         self.client = client
+        self.platform = platforms.for_account(account_id)
         self.budget = _MAX_WRITES_PER_RUN
         self.roster: str | None = None
 
@@ -140,37 +142,38 @@ async def _remove(run: _Run, row: SmartList, of_list_id: int, fid: int, t: _Tall
     return True
 
 
-async def _sync_one(run: _Run, row: SmartList) -> dict:
+async def _sync_one(run: _Run, row: SmartList) -> tuple[dict, int]:
     from smart_lists_api import (
         _load_normalised_fans, _rules_of, resolve, uses_subscription_facts,
     )
-    from automations.lifecycle_messages import refresh_roster
+    from automations.lifecycle_messages import last_crawl_was_empty, refresh_roster
 
     rules = _rules_of(row)
-    if uses_subscription_facts(rules):
+    needs_roster = uses_subscription_facts(rules)
+    if needs_roster:
         if run.roster is None:
             res = await refresh_roster(run.account_id, run.client, now=datetime.utcnow())
             run.roster = str(res.get("roster"))
         if run.roster not in _ROSTER_USABLE:
             return {"sync_state": "error",
-                    "sync_error": f"subscriber roster unavailable ({run.roster}) — nothing synced"}
+                    "sync_error": f"subscriber roster unavailable ({run.roster}) — nothing synced"}, 0
     fans = await _load_normalised_fans(run.account_id, rules,
                                        roster_fresh=run.roster in _ROSTER_USABLE)
     target = set(resolve(rules, fans))
-    page = getattr(run.client, "platform_list_page", None)
-    cap = page - 1 if page else _MAX_MEMBERS
+    bounded = run.platform.list_member_limit
+    cap = bounded if bounded is not None else _MAX_MEMBERS
     if len(target) > cap:
         return {"sync_state": "error",
-                "sync_error": f"{len(target)} fans match — lists above {cap} are not synced"}
+                "sync_error": f"{len(target)} fans match — lists above {cap} are not synced"}, 0
 
     of_list_id = row.of_list_id
     if of_list_id is None:
         if run.budget <= 0:
-            return {"sync_state": "pending", "sync_error": None}
+            return {"sync_state": "pending", "sync_error": None}, 0
         created = await run.write(lambda: run.client.create_list(row.name))
         new_id = created.get("id") if isinstance(created, dict) else None
         if not new_id:
-            return {"sync_state": "error", "sync_error": "OnlyFans did not return a list id"}
+            return {"sync_state": "error", "sync_error": "Upstream did not return a list id"}, 0
         of_list_id = int(new_id)
         # Persist at once: the next run must find it, never create a second list.
         await _save(row.id, of_list_id=of_list_id, of_list_name=row.name)
@@ -178,17 +181,17 @@ async def _sync_one(run: _Run, row: SmartList) -> dict:
 
     try:
         members, truncated = await asyncio.to_thread(
-            _crawl_list_ids_blocking, run.client, of_list_id)
-    except OFAPIError as e:
+            _crawl_list_ids_blocking, run.client, of_list_id, list_page=run.platform.list_page)
+    except Exception as e:
         if _not_found(e):
             return {"sync_state": "error", "of_list_id": None, "of_list_name": None,
                     "member_count": None,
-                    "sync_error": "the OnlyFans list was deleted there — a new one is "
-                                  "created on the next sync"}
+                    "sync_error": "the upstream list was deleted — a new one is "
+                                  "created on the next sync"}, 0
         raise
     if truncated:
-        return {"sync_state": "error",
-                "sync_error": "OnlyFans list crawl incomplete (20k backstop) — nothing synced"}
+        error = f"List crawl incomplete ({cap}-member cap) — nothing synced"
+        return {"sync_state": "error", "sync_error": error}, 0
     # Rename only after the crawl has shown the list still exists on OF.
     if row.of_list_name != row.name and run.budget > 0:
         await run.write(lambda: run.client.rename_list(of_list_id, row.name))
@@ -197,11 +200,13 @@ async def _sync_one(run: _Run, row: SmartList) -> dict:
     adds = sorted(target - members)
     removes = sorted(members - target)
     if removes and not fans:
-        return {"sync_state": "error",
-                "sync_error": "no fans stored for this creator — removals held"}
+        if not (run.platform.confirms_empty_active_roster and requires_active_subscription(rules)
+                and await last_crawl_was_empty(run.account_id)):
+            return {"sync_state": "error",
+                    "sync_error": "no fans stored for this creator — removals held"}, 0
 
     t = _Tally(left=len(adds) + len(removes))
-    if page:
+    if bounded is not None:
         for fid in removes:
             if not await _remove(run, row, of_list_id, fid, t, gone_is_removed=False):
                 break
@@ -219,31 +224,34 @@ async def _sync_one(run: _Run, row: SmartList) -> dict:
 
     notes = []
     if t.unconfirmed:
-        notes.append(f"{t.unconfirmed} fans could not be added on OnlyFans")
+        notes.append(f"{t.unconfirmed} fans could not be added")
     if t.failed:
-        notes.append(f"{t.failed} OnlyFans writes failed — retried next sync")
+        notes.append(f"{t.failed} list writes failed — retried next sync")
     log.info("smart_list_sync list=%s of_list=%s target=%d members=%d +%d -%d left=%d",
              row.id, of_list_id, len(target), len(members), t.added, t.removed, t.left)
-    return {"sync_state": "pending" if (t.left or t.failed) else "ok",
+    unconfirmed = t.unconfirmed if run.platform.retry_unconfirmed_list_adds else 0
+    return {"sync_state": "pending" if (t.left or t.failed or unconfirmed) else "ok",
             "sync_error": "; ".join(notes) or None,
             "synced_at": datetime.utcnow(),
-            "member_count": len(members) + t.added - t.removed}
+            "member_count": len(members) + t.added - t.removed}, unconfirmed
 
 
 async def _finish_tombstone(run: _Run, list_id: int, of_list_id: int | None, held: dict[int, str]) -> bool:
     if of_list_id is not None:
         if run.budget <= 0:
             return False
-        if why := await asyncio.to_thread(delete_list_refusal, run.account_id, of_list_id,
-                                          functools.partial(list_audience, run.client, of_list_id)):
-            held[list_id] = why
-            return False
+        read_members = partial(list_audience, run.client, of_list_id, list_page=run.platform.list_page)
         try:
-            await run.write(lambda: run.client.delete_list(of_list_id))
+            args = (run.account_id, of_list_id, run.client, read_members)
+            why = await asyncio.to_thread(delete_list_refusal, *args)
+            if why is None:
+                why = await run.write(partial(delete_list_checked, *args))
+            if why is not None:
+                held[list_id] = why
+                return False
         except Exception as e:  # noqa: BLE001 — the tombstone retries next run
             if not _not_found(e):
-                log.warning("smart_list_sync delete of OF list %s failed (%s)",
-                            of_list_id, _short(e))
+                log.warning("smart_list_sync delete of list %s failed (%s)", of_list_id, _short(e))
                 return False
     from smart_lists_api import DELETING
     async with get_session() as s:
@@ -290,21 +298,27 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     for list_id, of_list_id in tombstones:
         if await _finish_tombstone(state, int(list_id), of_list_id, held):
             stats["deleted"] += 1
+    unconfirmed = 0
     for list_id in ids:
         row = await _claim(list_id)
         if row is None:
             continue
         try:
-            result = await _sync_one(state, row)
+            result, count = await _sync_one(state, row)
+            unconfirmed += count
         except Exception as e:  # noqa: BLE001 — one list's failure never stops the rest
             log.warning("smart_list_sync list=%s failed: %s", list_id, _short(e))
             result = {"sync_state": "error", "sync_error": _short(e)}
         await _save(list_id, **result)
         stats[result["sync_state"]] += 1
     stats["writes"] = _MAX_WRITES_PER_RUN - state.budget
-    stats["status"] = "ok"
+    stats["status"] = "partial" if unconfirmed else "ok"
     if stops := {**refused, **held}:
-        stats["reason"] = f"partial:{next(iter(stops.values()))}"
+        reason = next(iter(stops.values()))
+        if any(stats[key] for key in ("ok", "pending", "error", "deleted")):
+            stats.update(status="partial", reason=f"partial:{reason}")
+        else:
+            stats.update(status="skipped", reason=reason)
     if refused:
         stats["refused_rows"] = sorted(refused)
     if held:

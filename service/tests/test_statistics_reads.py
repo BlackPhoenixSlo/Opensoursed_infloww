@@ -7,6 +7,7 @@ import json  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
+import accounts as account_registry  # noqa: E402
 import of_client  # noqa: E402
 import server  # noqa: E402
 
@@ -17,6 +18,7 @@ RANGE = {"start": S, "end": E}
 OF_RANGE = {"startDate": S, "endDate": E}
 
 IDS = fx.seed_two_agencies()
+account_registry.upsert_account(IDS["creator_a"], nickname="creator_a")
 http = fx.login_owner("agency_a_owner")
 http.headers["X-Account-Id"] = IDS["creator_a"]
 

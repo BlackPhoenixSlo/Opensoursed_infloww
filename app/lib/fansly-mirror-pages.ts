@@ -5,6 +5,8 @@ export interface FanslyMirrorSection {
   pages: Record<string, string>;
 }
 
+export const FANSLY_MIRROR_BUILT: ReadonlySet<string> = new Set(["/fansly-manager/scheduled","/fansly-manager/lists","/fansly-manager/notifications","/fansly-manager/earning-statistics"]);
+
 export const FANSLY_MIRROR_SECTIONS: Record<string, FanslyMirrorSection> = {
   "home": {
     index: "",

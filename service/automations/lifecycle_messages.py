@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from collections import Counter
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from random import Random
 
@@ -32,7 +33,7 @@ from automations._skiplist import (
 from automations.auto_follow import _NOTIFY_OUTCOMES, gated_follow, stamp_ping
 from db.engine import get_session
 from db.models import (
-    AutomationRule, Blacklist, Fan, LifecycleMessageClaim, SubscriberSnapshot,
+    AutomationRule, Blacklist, Fan, LifecycleMessageClaim, SubscriberCrawl, SubscriberSnapshot,
 )
 import platforms
 from side_effect_gate import PLATFORM_LACKS_PREFIX
@@ -48,6 +49,11 @@ KINDS: dict[str, str] = {
     RESUBSCRIBE: "Resubscribe", BIRTHDAY: "Birthday",
 }
 PAID_ONLY = frozenset({EXPIRY, EXPIRED, RESUBSCRIBE})
+LIFECYCLE_LACKS: Mapping[str, platforms.Lack] = {
+    EXPIRY: platforms.Lack.RENEWAL_STATE,
+    EXPIRED: platforms.Lack.LAPSE_DETECTION,
+    RESUBSCRIBE: platforms.Lack.RETURN_DETECTION,
+}
 FREE_PAGE_REFUSAL = "is a free subscription profile and is unable to create this message"
 HOURS: dict[str, tuple[int, int]] = {EXPIRY: (1, 120), EXPIRED: (12, 120)}
 DEFAULT_HOURS = 24
@@ -129,9 +135,24 @@ def _sub_data(u: dict) -> tuple[datetime | None, datetime | None, bool | None, b
 
 async def _last_crawl(account_id: str) -> datetime | None:
     async with get_session() as s:
+        crawl = await s.get(SubscriberCrawl, str(account_id))
+        if crawl is not None:
+            return crawl.crawled_at
         return (await s.execute(
             select(func.max(SubscriberSnapshot.seen_at))
             .where(SubscriberSnapshot.account_id == str(account_id)))).scalar()
+
+
+async def last_crawl_was_empty(account_id: str) -> bool:
+    active = select(SubscriberSnapshot.fan_id).where(
+        SubscriberSnapshot.account_id == SubscriberCrawl.account_id,
+        SubscriberSnapshot.seen_at == SubscriberCrawl.crawled_at,
+    ).exists()
+    async with get_session() as s:
+        crawl = await s.scalar(select(SubscriberCrawl.account_id).where(
+            SubscriberCrawl.account_id == str(account_id), ~active,
+        ))
+    return crawl is not None
 
 
 RENEW_SNAPSHOT_MAX_AGE = timedelta(days=1)
@@ -180,7 +201,8 @@ async def _refresh_roster(account_id: str, client, *, now: datetime,
         except (KeyError, TypeError, ValueError):
             continue
     # A short crawl would turn every fan past it into an expired one.
-    if truncated or not listed:
+    allows_empty = platforms.for_account(account_id).confirms_empty_active_roster
+    if truncated or (not listed and (rows or not allows_empty)):
         log.warning("lifecycle roster crawl unusable account=%s rows=%s truncated=%s",
                     account_id, len(listed), truncated)
         return {"roster": "truncated" if truncated else "empty"}
@@ -211,6 +233,11 @@ async def _refresh_roster(account_id: str, client, *, now: datetime,
                 row.resubscribed_at = sub
                 returned += 1
             row.subscribe_at, row.expired_at, row.renew_on, row.seen_at = sub, exp, renew_on, now
+        await s.execute(
+            sqlite_insert(SubscriberCrawl).values(account_id=str(account_id), crawled_at=now)
+            .on_conflict_do_update(index_elements=[SubscriberCrawl.account_id],
+                                   set_={"crawled_at": now})
+        )
         await s.commit()
     return {"roster": "crawled", "listed": len(listed), "returned": returned}
 
@@ -331,6 +358,11 @@ async def _rest(account_id: str, fan_id: int) -> None:
 
 def _skip(reason: str) -> dict:
     return {"status": "skipped", "reason": reason, "sent": 0}
+
+
+def lifecycle_refusal(account_id: str, kind: str) -> str | None:
+    lack = LIFECYCLE_LACKS.get(kind)
+    return None if lack is None else platforms.lack_refusal(account_id, lack)
 
 
 
@@ -536,10 +568,14 @@ def pick_targets(kind: str, account_id: str, events: dict[int, str], messages: l
 async def sweep(kind: str, account_id: str, payload: dict) -> dict:
     payload = payload or {}
     if isinstance(payload.get("follow_up"), dict):
+        if refused := lifecycle_refusal(account_id, kind):
+            return _skip(refused)
         return await run_follow_up(account_id, kind, payload["follow_up"])
     cfg = await _live_rule(account_id, kind)
     if cfg is None or cfg.get("enabled") is not True:
         return _skip("disabled")
+    if refused := lifecycle_refusal(account_id, kind):
+        return _skip(refused)
     messages = messages_of(cfg)
     if not messages:
         return _skip("no_text")

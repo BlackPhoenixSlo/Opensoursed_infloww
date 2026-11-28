@@ -22,7 +22,9 @@ import inbound_describe
 from attribution import write_outbound_attribution
 from audiences import LIST_INCOMPLETE, AudienceRefusal, lacks_reason
 from automation_registry import register
+from side_effect_gate import burst_refusal, burst_run_reason
 from db.engine import get_session
+import platforms
 from db.models import (
     AccountAiConfig, AutoreplyState, Blacklist, Fan, Message, SkipList, Transaction,
 )
@@ -142,20 +144,22 @@ async def _folder_members(account_id: str, client, list_ids: tuple[int, ...]) ->
     if hit is not None and time.monotonic() - hit[0] < _FOLDER_TTL_S:
         return hit[1]
     from audience_include import _crawl_list_ids_blocking
+
+    page = platforms.for_account(account_id).list_page
     members: set[int] = set()
     partial = False
     for lid in list_ids:
         try:
-            ids, truncated = await asyncio.to_thread(_crawl_list_ids_blocking, client, lid)
+            ids, truncated = await asyncio.to_thread(_crawl_list_ids_blocking, client, lid, list_page=page)
         except Exception as e:
             log.warning("autoreply folder read failed account=%s list=%s: %s",
                         account_id, lid, (str(e).splitlines() or [type(e).__name__])[0][:120])
             _folder_failed[key] = time.monotonic()
             lack = lacks_reason(e)
-            if lack or getattr(client, "platform_list_page", None):
+            if lack or page is not None:
                 raise AudienceRefusal(lack or LIST_INCOMPLETE) from e
             return None
-        if truncated and getattr(client, "platform_list_page", None):
+        if truncated and page is not None:
             log.warning("autoreply folder %s on account=%s read incomplete — replying to nobody", lid, account_id)
             _folder_failed[key] = time.monotonic()
             raise AudienceRefusal(LIST_INCOMPLETE)
@@ -554,6 +558,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_photo_only = 0
     photos_described = 0
     key_error = None
+    burst_refused = None
 
     for f, inbound_at in cands:
         if sent >= max_sends:
@@ -586,6 +591,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             skipped_raced += 1
             continue
 
+        if reason := burst_refusal(account_id, fid):
+            burst_refused = reason
+            continue
         # Cross-engine mutex before any generation: a reply drawn without the lease may be thrown away.
         if await ax.fan_on_cooldown(account_id, fid):
             skipped_cooldown += 1
@@ -743,7 +751,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     return {"enabled": True, "candidates": len(cands), "sent": sent,
             **folder_stats, **audience_stats, **claimed_stats,
-            **({"reason": f"partial:{refused}"} if refused else {}),
+            **({"reason": f"partial:{refused}"} if refused else burst_run_reason(burst_refused, sent)),
             "skipped_cap": skipped_cap,
             "skipped_raced": skipped_raced, "skipped_restricted": skipped_restricted,
             "skipped_unreachable": skipped_unreachable, "skipped_spam": skipped_spam,

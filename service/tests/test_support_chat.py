@@ -21,17 +21,21 @@ import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 import hashlib  # noqa: E402
 import hmac  # noqa: E402
+import io  # noqa: E402
+import struct  # noqa: E402
 import threading  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from PIL import Image  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 import server  # noqa: E402
 import support_api  # noqa: E402
 import support_hub  # noqa: E402
+import support_photos  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Action  # noqa: E402
 from llm_client import LLMKeyError  # noqa: E402
@@ -393,6 +397,209 @@ def case_send_rate_limit():
         assert r.status_code == 429 and "wait a few minutes" in r.json()["detail"], r.text
     finally:
         support_api._transport = saved
+
+
+def _raw_post(path: str, headers: list[tuple[bytes, bytes]], length: int | None) -> tuple[int, int]:
+    calls: list[int] = []
+
+    head = (b'--zz\r\nContent-Disposition: form-data; name="photos"; filename="a.jpg"\r\n'
+            b"Content-Type: image/jpeg\r\n\r\n")
+
+    async def receive():
+        calls.append(1)
+        return {"type": "http.request", "body": head if len(calls) == 1 else b"x" * 65536, "more_body": True}
+    out: dict[str, int] = {}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            out["status"] = msg["status"]
+    hs = [(b"host", b"testserver"), (b"content-type", b"multipart/form-data; boundary=zz"), *headers]
+    if length is not None:
+        hs.append((b"content-length", str(length).encode()))
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+             "scheme": "https", "path": path, "raw_path": path.encode(), "query_string": b"", "root_path": "",
+             "headers": hs, "client": ("203.0.113.5", 1234), "server": ("testserver", 443)}
+    asyncio.run(server.app(scope, receive, send))
+    return out["status"], len(calls)
+
+
+def case_oversize_photo_posts_refused_before_body_is_read():
+    support_hub.reset_throttle()
+    big = 50 * 1024 * 1024
+    bearer = [(b"authorization", f"Bearer {TOKEN}".encode())]
+    assert _raw_post("/support/api/instance/messages/upload", [], big) == (401, 0)
+    assert _raw_post("/support/api/threads/1/reply/upload", [], big) == (401, 0)
+    assert _raw_post("/admin/support/messages/upload", [], big) == (401, 0)
+    assert _raw_post("/support/api/instance/messages/upload", bearer, big) == (413, 0)
+    cookie = _hub_owner().cookies.get(support_hub.COOKIE)
+    owner = [(b"cookie", f"{support_hub.COOKIE}={cookie}".encode())]
+    assert _raw_post("/support/api/threads/1/reply/upload", owner, big) == (413, 0)
+    status, reads = _raw_post("/support/api/instance/messages/upload", bearer, None)
+    assert status == 413 and reads <= support_photos.UPLOAD_CAP // 65536 + 2, (status, reads)
+    support_hub.reset_throttle()
+
+
+def _jpeg(w: int = 64, h: int = 48, orient: int | None = None) -> bytes:
+    buf = io.BytesIO()
+    kw = {}
+    if orient is not None:
+        ex = Image.Exif()
+        ex[0x010F] = "TestCam"
+        ex[0x0112] = orient
+        kw["exif"] = ex.tobytes()
+    Image.new("RGB", (w, h), (200, 30, 30)).save(buf, "JPEG", **kw)
+    return buf.getvalue()
+
+
+def _huge_header(w: int, h: int) -> bytes:
+    raw = bytearray(_jpeg())
+    at = raw.index(b"\xff\xc0")
+    raw[at + 5:at + 9] = struct.pack(">HH", h, w)
+    return bytes(raw)
+
+
+def _files(*blobs: bytes) -> list:
+    return [("photos", (f"p{i}.jpg", b, "image/jpeg")) for i, b in enumerate(blobs)]
+
+
+def _hub_upload(c: TestClient, user_key: str, *blobs: bytes, text: str = ""):
+    return c.post("/support/api/instance/messages/upload", headers=INST, files=_files(*blobs),
+                  data={"instance": "AE", "user_key": user_key, "name": "photo_user", "role": "owner", "text": text})
+
+
+def case_four_photos_roundtrip_crm_hub_owner_and_reply():
+    support_hub.reset_throttle()
+    r = CHATTER.post("/admin/support/messages/upload", data={"text": "see these"},
+                     files=_files(_jpeg(orient=6), _jpeg(), _jpeg(), _jpeg()))
+    assert r.status_code == 200, r.text
+    last = r.json()["messages"][-1]
+    assert last["from"] == "me" and last["text"] == "see these" and len(last["photos"]) == 4, last
+    first = last["photos"][0]
+    assert (first["w"], first["h"]) == (48, 64), first
+    got = CHATTER.get(f"/admin/support/photos/{first['id']}")
+    assert got.status_code == 200, got.text
+    assert got.headers["content-type"] == "image/jpeg"
+    assert got.headers["x-content-type-options"] == "nosniff"
+    assert got.headers["content-security-policy"] == "default-src 'none'"
+    assert got.headers["cache-control"] == "no-store"
+    assert got.headers["content-disposition"] == "inline"
+    with Image.open(io.BytesIO(got.content)) as im:
+        assert im.format == "JPEG" and im.size == (48, 64)
+        assert not im.getexif() and "exif" not in im.info, im.info
+    owner = _hub_owner()
+    t = _thread_of(owner, "chatter_a")
+    opened = owner.get(f"/support/api/threads/{t['id']}").json()
+    assert [p["id"] for p in opened["messages"][-1]["photos"]] == [p["id"] for p in last["photos"]]
+    owned = owner.get(f"/support/api/photos/{first['id']}")
+    assert owned.content == got.content and owned.headers["cache-control"] == "no-store"
+    r = owner.post(f"/support/api/threads/{t['id']}/reply/upload", data={"text": ""}, files=_files(_jpeg(30, 20)))
+    assert r.status_code == 200, r.text
+    reply = r.json()["messages"][-1]
+    assert reply["sender"] == "support" and reply["text"] == "" and len(reply["photos"]) == 1
+    msgs = CHATTER.get("/admin/support/thread").json()["messages"]
+    assert msgs[-1]["from"] == "support" and msgs[-1]["photos"] == reply["photos"]
+    assert CHATTER.get(f"/admin/support/photos/{reply['photos'][0]['id']}").status_code == 200
+    assert owner.post(f"/support/api/threads/{t['id']}/reply/upload", data={"text": "  "}).status_code == 400
+    assert owner.post(f"/support/api/threads/{t['id']}/reply/upload", data={"text": "words only"}).status_code == 200
+    body, _, _ = support_hub._digest_input()
+    assert "User: see these [photo] [photo] [photo] [photo]" in body and "Team: [photo]" in body, body
+    CHATTER.post("/admin/support/read")
+
+
+def case_photo_of_another_thread_is_404_and_no_cookie_is_401():
+    owner = _hub_owner()
+    t = _thread_of(owner, "chatter_a")
+    pid = owner.get(f"/support/api/threads/{t['id']}").json()["messages"][-2]["photos"][0]["id"]
+    assert OWNER_A.get(f"/admin/support/photos/{pid}").status_code == 404
+    assert _hub_client().get(f"/support/api/instance/photos/{pid}", headers=INST,
+                             params={"instance": "AE", "user_key": "nobody"}).status_code == 404
+    assert _hub_client().get(f"/support/api/instance/photos/{pid}",
+                             params={"instance": "AE", "user_key": "nobody"}).status_code == 401
+    assert owner.get("/support/api/photos/999999").status_code == 404
+    assert _hub_client().get(f"/support/api/photos/{pid}").status_code == 401
+    assert ANON.get(f"/admin/support/photos/{pid}").status_code == 401
+    support_hub.reset_throttle()
+
+
+def case_valid_session_never_throttled_on_shared_ip():
+    owner = _hub_owner()
+    cookie = owner.cookies.get(support_hub.COOKIE)
+    t = _thread_of(owner, "chatter_a")
+    pids = [p["id"] for m in owner.get(f"/support/api/threads/{t['id']}").json()["messages"] for p in m.get("photos", [])]
+    assert len(pids) >= 4, pids
+    bad = _hub_client()
+    _set_cookie(bad, "junk")
+    for _ in range(support_hub.FAIL_LIMIT):
+        assert bad.get("/support/api/threads").status_code == 401
+    assert bad.get("/support/api/threads").status_code == 429
+    paths = [f"/support/api/photos/{pids[i % len(pids)]}" for i in range(12)]
+    paths += [f"/support/api/threads/{t['id']}"] * 4 + ["/support/api/threads"] * 4
+    statuses: list[int] = []
+    gate = threading.Barrier(len(paths))
+
+    def hit(path: str):
+        c = _hub_client()
+        _set_cookie(c, cookie)
+        gate.wait()
+        statuses.append(c.get(path).status_code)
+    threads = [threading.Thread(target=hit, args=(p,)) for p in paths]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert len(paths) == 20 and statuses == [200] * 20, statuses
+    support_hub.reset_throttle()
+
+
+def case_send_limit_and_identity_checked_before_decode():
+    c = _hub_client()
+    key = f"early:{uuid.uuid4().hex}"
+    who = {"instance": "AE", "user_key": key, "name": "early_user", "role": "owner"}
+    for i in range(support_hub.SEND_LIMIT):
+        assert c.post("/support/api/instance/messages", json={**who, "text": f"m{i}"}, headers=INST).status_code == 200
+    decodes: list[int] = []
+    real = support_photos._reencode
+    support_photos._reencode = lambda raw: decodes.append(1) or real(raw)
+    try:
+        assert _hub_upload(c, key, _jpeg()).status_code == 429
+        r = c.post("/support/api/instance/messages/upload", headers=INST, files=_files(_jpeg()),
+                   data={"instance": "AE", "user_key": " "})
+        assert r.status_code == 400, r.text
+        assert _hub_owner().post("/support/api/threads/999999/reply/upload", files=_files(_jpeg())).status_code == 404
+        assert decodes == [], decodes
+    finally:
+        support_photos._reencode = real
+    support_hub.reset_throttle()
+
+
+def case_bad_photos_refused():
+    c = _hub_client()
+    key = f"bad:{uuid.uuid4().hex}"
+    assert _hub_upload(c, key, _huge_header(30000, 30000)).status_code == 400
+    assert _hub_upload(c, key, _huge_header(3000, 3000)).status_code == 400
+    assert _hub_upload(c, key, b"<html><script>alert(1)</script></html>").status_code == 400
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buf, "PNG")
+    assert _hub_upload(c, key, buf.getvalue()).status_code == 400
+    assert _hub_upload(c, key, *[_jpeg()] * 5).status_code == 400
+    assert _hub_upload(c, key, b"\xff\xd8" + b"0" * (support_photos.MAX_PHOTO_BYTES + 10)).status_code == 413
+    assert _hub_upload(c, key).status_code == 400
+    assert _hub_upload(c, key, text="text only").status_code == 200
+    r = CHATTER.post("/admin/support/messages/upload", files=_files(*[_jpeg()] * 5))
+    assert r.status_code == 400, r.text
+    r = CHATTER.post("/admin/support/messages/upload", files=_files(b"<html></html>"))
+    assert r.status_code == 400 and r.json()["detail"] == "Only photos (JPEG) can be sent.", r.text
+
+
+def case_db_budget_refuses_new_photos():
+    c = _hub_client()
+    key = f"budget:{uuid.uuid4().hex}"
+    with _env(SUPPORT_HUB_MAX_DB_GB="0.000001"):
+        r = _hub_upload(c, key, _jpeg())
+        assert r.status_code == 507, r.text
+        assert _hub_upload(c, key, text="text still works").status_code == 200
+        r = OWNER_A.post("/admin/support/messages/upload", files=_files(_jpeg()))
+        assert r.status_code == 507 and "full" in r.json()["detail"], r.text
 
 
 def case_support_traffic_not_audited():

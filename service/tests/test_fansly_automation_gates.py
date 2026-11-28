@@ -5,6 +5,7 @@ import _harness
 
 _harness.bootstrap()
 
+import dataclasses  # noqa: E402
 import json  # noqa: E402
 import tempfile  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
@@ -21,15 +22,17 @@ import automations.mass_premade  # noqa: E402,F401
 import automations.send_mass_message  # noqa: E402,F401
 import automations.smart_list_sync as sls  # noqa: E402
 import automations.unsend_messages  # noqa: E402,F401
+import platforms  # noqa: E402
 from automation_executor import run_once  # noqa: E402
 from automations import send_welcome  # noqa: E402
 from automations.auto_follow import gated_follow  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account, Action, AutomationRun, AutomationRule, Fan, LifecycleMessageClaim, MassBroadcastCache, MassRun, Message,
-    ScheduledJob, SmartList, SubscriberSnapshot, WelcomeSent,
+    ScheduledJob, SmartList, SubscriberCrawl, SubscriberSnapshot, WelcomeSent,
 )
 from fansly_shim import FanslyShimClient  # noqa: E402
+from side_effect_gate import branch_refusal  # noqa: E402
 
 _TMP = tempfile.TemporaryDirectory(prefix="fansly_automation_gates_")
 account_registry.SESSIONS_DIR = Path(_TMP.name)
@@ -262,12 +265,18 @@ async def _seed_expiry(aid: str) -> tuple[int, int]:
     return discounted, plain
 
 
+def _renewal_state_lifted():
+    return patch.dict(platforms._BY_KEY, {"fansly": dataclasses.replace(
+        platforms.FANSLY, lacks=platforms.FANSLY.lacks - {platforms.Lack.RENEWAL_STATE})})
+
+
 async def _claimed_fans(aid: str) -> set[int]:
     async with get_session() as s:
         return set((await s.execute(select(LifecycleMessageClaim.fan_id).where(
             LifecycleMessageClaim.account_id == aid))).scalars())
 
 
+@_renewal_state_lifted()
 async def case_fansly_expiry_drops_only_the_discounted_plan():
     aid = "8803201"
     discounted, plain = await _seed_expiry(aid)
@@ -376,21 +385,25 @@ async def _welcome(aid: str, fake) -> tuple[dict, list[tuple]]:
     return r, order
 
 
-async def _check_own_greeting(aid: str, fake) -> None:
+async def case_fansly_welcome_with_the_of_toggle_on_skips_before_any_call():
+    aid = "8803501"
+    account_registry.save_meta(aid, {"platform": "fansly"})
+    fake = _Fansly()
+    r, order = await _welcome(aid, fake)
+    assert r["status"] == "skipped" and r["reason"] == "platform_lacks:my_settings", r
+    assert (fake.calls, order) == ([], []), (fake.calls, order)
+    async with get_session() as s:
+        assert await s.get(WelcomeSent, (aid, 46901)) is None
+
+
+async def case_of_welcome_off_sends_its_own_greeting_then_marks():
+    aid, fake = "8803502", _OF()
     r, order = await _welcome(aid, fake)
     assert fake.calls == [("send", 46901, "hey Ida")], fake.calls
     assert order == [("mark", 46901, [("send", 46901, "hey Ida")])], order
     assert (r["of_welcome_on"], r["welcomes_sent"]) == (False, 1), r
     async with get_session() as s:
         assert await s.get(WelcomeSent, (aid, 46901)) is not None
-
-
-async def case_fansly_welcome_sends_its_own_greeting_then_marks():
-    await _check_own_greeting("8803501", _Fansly())
-
-
-async def case_of_welcome_off_sends_its_own_greeting_then_marks():
-    await _check_own_greeting("8803502", _OF())
 
 
 def _spy_exclude_list(fake) -> None:
@@ -582,6 +595,7 @@ async def case_fansly_unsend_dry_run_excludes_mass_targets():
         assert [t["kind"] for t in result["would_unsend"]] == ["chat"], result
 
 
+@_renewal_state_lifted()
 async def case_fansly_discount_only_expiry_refuses_before_roster_refresh():
     aid = "8803203"
     await _seed_expiry(aid)
@@ -619,6 +633,7 @@ async def _snapshot(aid: str) -> dict[int, datetime]:
             SubscriberSnapshot.account_id == aid))).scalars()}
 
 
+@_renewal_state_lifted()
 async def case_fansly_short_roster_keeps_the_old_snapshot():
     aid = "8803210"
     await _seed_expiry(aid)
@@ -627,6 +642,9 @@ async def case_fansly_short_roster_keeps_the_old_snapshot():
     try:
         first = await lm.sweep(lm.EXPIRY, aid, {})
         async with get_session() as s:
+            crawl = await s.get(SubscriberCrawl, aid)
+            if crawl is not None:
+                crawl.crawled_at -= timedelta(minutes=30)
             for r in (await s.execute(select(SubscriberSnapshot).where(SubscriberSnapshot.account_id == aid))).scalars():
                 r.seen_at -= timedelta(minutes=30)
         before = await _snapshot(aid)
@@ -688,6 +706,7 @@ async def case_of_word_guard_skip_keeps_plugin_return_precedence():
         assert run.status == "skipped"
 
 
+@_renewal_state_lifted()
 async def case_fansly_expiry_preview_excludes_discounted_plan():
     aid = "8803204"
     discounted, plain = await _seed_expiry(aid)
@@ -702,6 +721,7 @@ async def case_fansly_expiry_preview_excludes_discounted_plan():
     assert await _claimed_fans(aid) == set()
 
 
+@_renewal_state_lifted()
 async def case_fansly_expiry_with_only_discounted_candidates_skips_client_load():
     aid = "8803205"
     discounted, _ = await _seed_expiry(aid)
@@ -712,6 +732,21 @@ async def case_fansly_expiry_with_only_discounted_candidates_skips_client_load()
     assert result["status"] == "ok" and result["sent"] == 0 and result["skipped"] == 1, result
     assert result["discount_skipped"] == "platform_lacks:set_subscription_discount", result
     assert await _claimed_fans(aid) == set()
+
+
+
+def case_branch_refusal_names_only_a_branch_the_accounts_platform_lists():
+    account_registry.save_meta("8804201", {"platform": "fansly"})
+    account_registry.save_meta("8804202", {"platform": "onlyfans"})
+    table = [
+        ("8804201", "create_post", "media", "platform_lacks:create_post:media"),
+        ("8804201", "create_post", "text", None),
+        ("8804201", "send_message", "media", None),
+        ("8804202", "create_post", "media", None),
+        ("8804203", "create_post", "media", None),
+    ]
+    for aid, method, branch, want in table:
+        assert branch_refusal(aid, method, branch) == want, (aid, method, branch)
 
 
 _harness.run()

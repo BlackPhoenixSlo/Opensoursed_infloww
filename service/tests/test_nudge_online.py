@@ -16,7 +16,7 @@ from automations import nudge_online, nudge_online_fire  # noqa: E402
 from automations._fan_notes import substitute_placeholders  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
-    Account, AccountAiConfig, AutomationRule, Fan, Message, NudgeState, ScheduledJob,
+    Account, AccountAiConfig, AutomationRule, AutomationRun, Fan, Message, NudgeState, ScheduledJob,
     Transaction, WelcomeSent,
 )
 
@@ -469,6 +469,8 @@ async def _roster_refused_run(aid: str, error: Exception) -> tuple[dict, list, l
 async def case_incomplete_roster_skips_before_any_last_seen_or_enqueue():
     res, states, jobs = await _roster_refused_run("n_incomplete", _RosterRefused("short roster"))
     assert res["status"] == "skipped" and res["reason"] == "platform_lacks:subscribers:incomplete", res
+    async with get_session() as s:
+        assert (await s.get(AutomationRun, res["run_id"])).status == "skipped"
     assert [fid for fid, _seen in states] == [1] and jobs == [], (states, jobs)
 
 

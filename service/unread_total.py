@@ -51,7 +51,7 @@ def _slot(aid: str) -> dict:
 
 
 def _lacks(aid: str) -> bool:
-    return platforms.Lack.UNREAD_TOTAL in platforms.for_account(aid).lacks
+    return platforms.lacks_for_account(aid, platforms.Lack.UNREAD_TOTAL)
 
 
 def _moved(aid: str) -> bool:

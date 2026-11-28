@@ -49,6 +49,32 @@ def case_failover_prefers_the_same_country():
     assert _on(c) == ["1", "3", "4", "6"] and _on(b) == ["2", "5"], "both went to the HU standby"
 
 
+def case_failover_spreads_over_idle_peers_of_unknown_country():
+    labels = _pool(6)
+    a, known = labels[0], labels[4]
+    for aid in ("2", "3", "4"):
+        proxies.assign_account(a, aid)
+    proxy_health.note_trace(a, {"ok": True, "geo": "HU"})
+    proxy_health.note_trace(known, {"ok": True, "geo": "HU"})
+    with _Watch(False, False, False):
+        _fail(a)
+    loads = sorted(len(_on(x)) for x in labels)
+    assert _on(a) == [] and loads == [0, 1, 1, 1, 1, 2], f"spread, not stacked on the one known HU peer: {loads}"
+    assert all(_on(x) for x in labels[1:4]), "each idle unknown peer took one"
+
+
+def case_failover_skips_a_peer_whose_probe_shows_another_country():
+    a, b, c = _pool()
+    for x in (b, c):
+        for aid in _on(x):
+            proxies.unbind_account(x, aid)
+    proxy_health.note_trace(a, {"ok": True, "geo": "HU"})
+    with _Watch(False, False, False, geo={b: "DE"}):
+        _fail(a)
+    assert _on(c) == ["1", "4"] and _on(b) == [], f"b's trace said DE: {_on(b)} {_on(c)}"
+    assert proxy_health.last_geo(proxies.get_by_label(b)) == "DE"
+
+
 def case_failover_prefers_the_first_tier_then_falls_back():
     a, b, c = _pool(tier_break=2)
     assert [proxies.get_by_label(x)["tier"] for x in (a, b, c)] == [0, 0, 1]

@@ -23,7 +23,7 @@ const offer = (over: Partial<RemovalOffer> = {}): RemovalOffer =>
   ({ brand: BRAND, contact_url: CONTACT, angle: "came_back", n: 2, ...over });
 const card = () => screen.queryByRole("region", { name: "Removal help" });
 const show = (r: Removal | null, o: RemovalOffer | null = null) =>
-  renderWithProviders(<RemovalArea creatorId="acc-a" removal={r} offer={o} />);
+  renderWithProviders(<RemovalArea creatorId="acc-a" scopeAccountId="acc-b" removal={r} offer={o} />);
 
 beforeEach(() => {
   for (const m of Object.values(relay) as Mock[]) m.mockReset();
@@ -104,7 +104,7 @@ describe("Removal offer card", () => {
     expect(c.querySelector("form, input, select, [role=switch]")).toBeNull();
     fireEvent.click(within(c).getByRole("button", { name: "Contact us to start removal" }));
     const dialog = await screen.findByRole("dialog", { name: `Start removal with ${BRAND}` });
-    expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/offer", { accountId: "acc-a" });
+    expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/offer", { accountId: "acc-b" });
     const link = await within(dialog).findByRole("link", { name: `Contact ${BRAND}` });
     expect(link.getAttribute("href")).toBe(CONTACT);
     expect(link.getAttribute("target")).toBe("_blank");
@@ -131,7 +131,7 @@ describe("Removal offer card", () => {
     show(removal(), offer());
     fireEvent.click(screen.getByRole("button", { name: "Not now" }));
     await waitFor(() => expect(card()).toBeNull());
-    expect(relayPost).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/offer-snooze", { snoozed: true }, { accountId: "acc-a" });
+    expect(relayPost).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/offer-snooze", { snoozed: true }, { accountId: "acc-b" });
     expect(screen.getByText("Removal offer hidden until 4 Dec.")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.queryByText(/undo/i)).toBeNull();

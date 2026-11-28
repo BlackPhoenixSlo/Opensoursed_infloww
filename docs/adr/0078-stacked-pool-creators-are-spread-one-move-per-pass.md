@@ -1,0 +1,11 @@
+# Stacked pool Creators are spread onto idle same-tier proxies, one move per pass
+
+**Status: accepted** (owner, 2026-11-28; `service/proxies.py` `rebalance_step`, `service/proxy_health.py` `rebalance_loop`). Amends ADR 0030.
+
+ADR 0030 never moved a Creator back and left a recovered proxy empty until the next login. Its region preference also only counted proxies whose country was known, and only proxies with Creators are probed, so an idle proxy's country stayed unknown and a failover picked only among the few already-probed (busy) ones: it stacked. MEASURED on AE 2026-11-27 (sweep 20261127T2328Z): all 5 tier-1 proxies were refused 16:27–16:33Z, the failover moved 5 Creators, 4 of them onto one tier-0 proxy (infloww-0cc11c36), while about 18 tier-0 proxies held nobody. The owner decided (2026-11-28) the pool spreads them out. We decided: an unknown country counts as same-country when picking (a country learned by the destination probe that differs is passed over while a same or unknown one is left in the tier), and a loop of its own (`PROXY_REBALANCE_INTERVAL_S`, default and floor 600 s, `0` off) moves at most one Creator per pass, the last bound one on the most-loaded proxy of a tier (2+ active Creators), onto an idle proxy of the same tier and same or unknown country that answers a probe (at most 2 probed). It runs only when nothing is down or failover-due and no failover ran since the last pass, leaves a tier with any herd-guarded proxy alone, and never crosses tiers (`PROXY_REBALANCE_TIERS`, default `0`, so the tier-2 datacenter test Creators stay put). The bind is a compare-and-set under the registry lock, as the failover's. Each move is one IP change for one Creator (ASSUMPTION, as in ADR 0030, that OnlyFans tolerates it: 8 observed moves 2026-11-06, 0 session losses); one per pass caps the churn at six an hour. The sweep logs it as `rebalanced`, info only, never impact.
+
+## Considered Options
+
+- **Fix the region rule only, spread by hand.** Rejected: every later failover leaves a stack again.
+- **Move Creators back to their original tier on recovery.** Rejected: needs memory of the origin and doubles the IP changes.
+- **Probe idle proxies so their country is known.** Rejected: about 140 probes per pass for a preference.

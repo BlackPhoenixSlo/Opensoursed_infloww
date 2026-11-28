@@ -29,7 +29,7 @@ CONTROL = frozenset({
     "leak_watch_tombstone",
 })
 CONTROL_PREFIX = "bio_"
-CELL_MODE_ONLY_JOBS = frozenset({"agency-copy-poll", "grant-age-watch", "reservation-activation-retry"})
+CELL_MODE_ONLY_JOBS = frozenset({"agency-copy-poll", "bell-notices-to-control", "grant-age-watch", "reservation-activation-retry"})
 LOCAL_BUT_REQUIRED = frozenset({"actions", "agency_notifications"})
 MODES = ("block", "record")
 OPS = ("INSERT", "UPDATE", "DELETE")

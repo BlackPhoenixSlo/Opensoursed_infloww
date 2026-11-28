@@ -7,6 +7,7 @@ import logging
 import re
 
 import automation_executor as ax
+import platforms
 from automation_registry import register
 from automations.s4s_post import _advertised, _agency
 from db.engine import get_session
@@ -59,17 +60,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         except ValueError:  # Auto Post cuts raw_json at 20,000 characters
             then = {}
         req = await s.get(S4SRequest, slot.request_id)
-        sent_media = len(slot_media_ids(req, slot)) if req is not None else 0
+        sent_media = len(slot_media_ids(req, slot.poster_account_id)) if req is not None else 0
         of_post_id, sent_text = slot.of_post_id, _advertised(slot.text)
 
+    backend = platforms.for_account(str(account_id)).backend
+    read_errors = (OFAPIError,) if backend is None else (OFAPIError, backend.APIError)
     client = await asyncio.to_thread(ax._make_client, str(account_id))
     try:
         now = await asyncio.to_thread(client.get_post, of_post_id)
-    except OFAPIError as e:
-        if not post_is_gone(e):
+    except read_errors as e:
+        gone = isinstance(e, OFAPIError) and post_is_gone(e)
+        if not gone:
             log.warning("s4s_check: slot %s read failed, inconclusive", slot_id, exc_info=True)
-            return {"status": "error", "reason": "inconclusive", "slot_id": slot_id}
-        now = None
+        now = None if gone else {}
+    if now is not None and not now.get("id"):
+        return {"status": "error", "reason": "inconclusive", "slot_id": slot_id}
     reason = tamper_reason(now, then if isinstance(then, dict) else {}, sent_text, sent_media)
     if reason is None:
         return {"status": "ok", "slot_id": slot_id, "tamper": None}

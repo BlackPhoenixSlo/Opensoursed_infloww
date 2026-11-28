@@ -518,6 +518,59 @@ def case_probe_all_only_creator_proxies():
     assert probed == ["hu-1"], "the unbound proxy is not probed"
 
 
+def case_rebalance_moves_once_only_when_all_is_calm():
+    import logging
+    a, b, c, d = _pool(4)
+    proxies.unbind_account(d, "4")
+    lines: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda r: lines.append(r.getMessage())
+    proxy_health.log.addHandler(handler)
+    try:
+        proxy_health._state[b] = {**proxy_health_decide.blank(), "down": True, "bad_reason": "down"}
+        with _Watch() as w:
+            assert proxy_health.rebalance(since=0) is None
+        assert _on(d) == [] and w.probed == [], "something down: no rebalance"
+        proxy_health._state.clear()
+        with _Watch() as w:
+            proxy_health._state[c] = {**proxy_health_decide.blank(), "failed_over_at": proxy_health._now()}
+            assert proxy_health.rebalance(since=proxy_health._now() - 1) is None
+            assert _on(d) == [] and w.probed == [], "a failover since the last pass: no rebalance"
+            assert proxy_health.rebalance(since=proxy_health._now() + 1) == ("5", a, d)
+        assert _on(a) == ["1"] and _on(d) == ["5"] and w.probed == [d], (w.probed, _on(a), _on(d))
+        assert f"proxy rebalance: moved 5 {a} -> {d}" in lines, lines
+        with _Watch():
+            assert proxy_health.probe_all() == 4 and _on(a) == ["1"], "the probe pass never rebalances"
+    finally:
+        proxy_health.log.removeHandler(handler)
+
+
+def case_rebalance_env():
+    env = proxy_health.REBALANCE_INTERVAL_ENV
+    for raw, want in [(None, 600.0), ("", 600.0), ("0", 0.0), ("-1", 0.0), ("60", 600.0), ("900", 900.0),
+                      ("x", 600.0)]:
+        os.environ.pop(env, None)
+        if raw is not None:
+            os.environ[env] = raw
+        assert proxy_health.rebalance_interval_s() == want, (raw, proxy_health.rebalance_interval_s())
+    os.environ.pop(env, None)
+    for raw, want in [(None, (0,)), ("", (0,)), ("0,2", (0, 2)), ("x", (0,))]:
+        os.environ.pop(proxy_health.REBALANCE_TIERS_ENV, None)
+        if raw is not None:
+            os.environ[proxy_health.REBALANCE_TIERS_ENV] = raw
+        assert proxy_health.rebalance_tiers() == want, (raw, proxy_health.rebalance_tiers())
+    os.environ.pop(proxy_health.REBALANCE_TIERS_ENV, None)
+
+
+def case_rebalance_loop_off_at_zero():
+    import asyncio
+    os.environ[proxy_health.REBALANCE_INTERVAL_ENV] = "0"
+    try:
+        asyncio.run(asyncio.wait_for(proxy_health.rebalance_loop(), 1))
+    finally:
+        os.environ.pop(proxy_health.REBALANCE_INTERVAL_ENV, None)
+
+
 def _refused_then(n: int):
     left = [n]
 

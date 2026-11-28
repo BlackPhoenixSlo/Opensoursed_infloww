@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 
+from side_effect_gate import burst_run_reason
+
 from . import funnel_decide as fd
 
 
@@ -17,6 +19,7 @@ class Tally:
     errors: int = 0
     cap_hit: bool = False
     key_error: dict | None = None
+    refused: str | None = None
     fx: Counter = field(default_factory=Counter)
 
 
@@ -40,4 +43,5 @@ def summary(t: Tally, runs: int, audience_mode: str, dry_run: bool, model: str) 
         "dry_run": dry_run,
         "model": model,
         **({"key_error": t.key_error} if t.key_error else {}),
+        **burst_run_reason(t.refused, t.advanced),
     }

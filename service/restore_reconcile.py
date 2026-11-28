@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
-import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -94,10 +92,12 @@ def _creator_messages(client, account: str, target: str, since: datetime, until:
             if at is not None and since < at <= until and str((m.get("fromUser") or {}).get("id")) == account:
                 out.append(m)
         oldest = _utc(rows[-1].get("createdAt")) if rows else None
-        if not page.get("hasMore") or not rows or oldest is None or oldest <= since:
+        if not page.get("hasMore") or (oldest is not None and oldest <= since):
             return out
+        if not rows or oldest is None:
+            raise ValueError("incomplete restore peek page")
         before = rows[-1]["id"]
-    return out
+    raise ValueError("restore peek page limit reached before the gap start")
 
 
 def _known(db: sqlite3.Connection, account: str, target: str, msg_id: str, restored_at: str) -> bool:
@@ -109,9 +109,31 @@ def _known(db: sqlite3.Connection, account: str, target: str, msg_id: str, resto
     return False
 
 
+class QueueHold(NamedTuple):
+    why: str
+    op: str
+
+
+def queue_hold(w: dict | None) -> QueueHold | None:
+    if w and w["peek_until"] and not w["gap_confirmed_at"]:
+        return QueueHold("restore_gap_unconfirmed", f"data_gen {w['data_gen']}")
+    return None
+
+
+def refuse_queue(platform: str, kind: str, db: sqlite3.Connection | None = None) -> None:
+    from send_ops import MANUAL, QUEUE
+    from send_tripwire import CellHeld
+    if active() and platform == "onlyfans" and kind in QUEUE and kind not in MANUAL:
+        if hold := queue_hold(window(db)):
+            raise CellHeld(hold)
+
+
 def before_send(platform: str, account: str, kind: str, target: str) -> None:
     import send_ops
-    if _path is None or platform != "onlyfans" or kind in send_ops.MANUAL or kind in send_ops.QUEUE:
+    if _path is None or platform != "onlyfans" or kind in send_ops.MANUAL:
+        return
+    if kind in send_ops.QUEUE:
+        refuse_queue(platform, kind)
         return
     with contextlib.closing(_connect()) as db:
         w = window(db)
@@ -126,20 +148,12 @@ def before_send(platform: str, account: str, kind: str, target: str) -> None:
     except Exception as e:
         log.warning("Cells: restore peek failed account=%s target=%s: %s", account, target, e)
         raise send_ops.SendRefused(503, "peek_failed", target=target) from e
-    epoch = os.environ.get("OI_EPOCH", "")
     with contextlib.closing(_connect()) as db:
         db.execute("BEGIN IMMEDIATE")
         lost = [m for m in found if not _known(db, account, target, str(m["id"]), w["restored_at"] or _now())]
         for m in lost:
-            mid = str(m["id"])
-            db.execute(
-                "INSERT OR IGNORE INTO send_ops (account, op_id, kind, target, digest, epoch, data_gen, state,"
-                " upstream_id, result, attempts, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'uncertain',?,?,1,"
-                f"{send_ops._NOW},{send_ops._NOW})",
-                (account, send_ops.op_id(platform, account, KIND, target, mid), KIND, target,
-                 send_ops.digest({"kind": KIND, "message_id": mid}), int(epoch) if epoch.isdigit() else None,
-                 w["data_gen"], mid, json.dumps({"id": m["id"], "createdAt": m.get("createdAt"),
-                                                 "text": m.get("text") or ""})))
+            send_ops.record_uncertain(db, platform, account, KIND, target, w["data_gen"], str(m["id"]),
+                                      {"id": m["id"], "createdAt": m.get("createdAt"), "text": m.get("text") or ""})
         db.execute(f"INSERT OR IGNORE INTO reconcile_peeks VALUES (?,?,?,?,{_NOW},?)",
                    (platform, account, target, w["data_gen"], len(lost)))
         db.execute("COMMIT")
@@ -236,17 +250,23 @@ async def restore_gap(account_id: str = Query(...)) -> dict:
     w = await run_in_threadpool(window)
     if w is None:
         return {"gap": None, "messages": []}
-    return {"gap": {k: w[k] for k in _COLS} | {"data_gen": w["data_gen"], "peeking": peeking(w)},
+    return {"gap": {k: w[k] for k in _COLS} | {"data_gen": w["data_gen"], "peeking": peeking(w),
+                    "queue_held": queue_hold(w) is not None},
             "messages": await run_in_threadpool(unattributed, account_id)}
 
 
 @router.post("/admin/cell/restore-gap/confirm")
 async def restore_gap_confirm() -> dict:
-    from auth import get_request_user
+    from auth import assert_account_owned, get_request_user
+    from cell_mode import owned_ids
     from starlette.concurrency import run_in_threadpool
     user = get_request_user()
-    if user is None:
+    owned = owned_ids()
+    if user is None or not owned:
         raise HTTPException(403, "owner authorization required")
+    if not user.is_admin:
+        for account in owned:
+            assert_account_owned(account)
     by = f"user:{user.id}:{user.username}"
     ok = await run_in_threadpool(confirm_gap, by)
     log.warning("Cells: restore gap shifts confirmed by %s (%s)", by, "ok" if ok else "nothing to confirm")

@@ -11,6 +11,7 @@ from db.engine import get_session
 from db.models import Action, Post, S4SProfile, S4SRequest, S4SSlot, ScheduledJob
 from employees import AgencyContext
 from s4s_common import _owner_context
+from s4s_media import partner_media_refusal
 from s4s_requests_api import OPEN, _audit, _linked, _own_ids, _wire
 from shifts_api import _parse_range
 
@@ -88,10 +89,12 @@ async def opt_out_cascade(s, ctx: AgencyContext, account_id: str, now: datetime)
 
 
 def _display(slot: S4SSlot, *, own_opted_in: bool, partner_live: bool,
-             post_status: str | None, job_status: str | None) -> tuple[str, str | None]:
+             post_status: str | None, job_status: str | None, media_refusal: str | None) -> tuple[str, str | None]:
     if slot.status in ("scheduled", "posting") and job_status == "error":
         return FAILED, "job_error"
     if slot.status == "scheduled":
+        if job_status == "done" and media_refusal:
+            return FAILED, media_refusal
         if not partner_live:
             return CANCELED, "partner_opted_out"
         if not own_opted_in:
@@ -127,6 +130,7 @@ async def _outs(s, slots: list[S4SSlot]) -> list[dict[str, Any]]:
         select(S4SSlot).where(S4SSlot.request_id.in_(set(requests)), S4SSlot.status == "failed",
                               S4SSlot.reason.in_(TAMPER_REASONS))
     )).scalars().all()}
+    refusals: dict[str, str | None] = {}
     out = []
     for sl in slots:
         r = requests[sl.request_id]
@@ -136,6 +140,7 @@ async def _outs(s, slots: list[S4SSlot]) -> list[dict[str, Any]]:
         display, reason = _display(
             sl, own_opted_in=sl.poster_account_id in opted, partner_live=sl.partner_account_id in live,
             post_status=posts.get(sl.post_id), job_status=jobs.get(sl.job_id),
+            media_refusal=partner_media_refusal(r, sl.poster_account_id, memo=refusals),
         )
         out.append({
             "id": sl.id, "slot_at": _wire(sl.slot_at), "status": sl.status, "display_status": display,

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -17,6 +18,7 @@ from chatters import get_request_chatter
 from db.engine import get_session
 from db.models import User
 from support_hub import MAX_TEXT
+from support_photos import PHOTO_HEADERS, capped_form, form_text, read_photos
 
 log = logging.getLogger("of-relay.support_api")
 
@@ -24,6 +26,8 @@ router = APIRouter()
 
 UNREAD_TTL_S = 30.0
 TIMEOUT = httpx.Timeout(6.0, connect=3.0)
+PHOTO_TIMEOUT = httpx.Timeout(30.0, connect=3.0)
+UNREACHABLE = "Support is unreachable right now — try again soon."
 NOT_CONFIGURED = {"configured": False}
 
 _unread: dict[str, tuple[float, int]] = {}
@@ -107,7 +111,17 @@ def _who(hub: Hub, asker: Asker) -> dict[str, str]:
 
 def _messages(body: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"id": m["id"], "from": "support" if m["sender"] == "support" else "me",
-             "text": m["text"], "at": m["at"]} for m in body.get("messages", [])]
+             "text": m["text"], "at": m["at"], "photos": m.get("photos", [])} for m in body.get("messages", [])]
+
+
+async def _hub_request(hub: Hub, method: str, path: str, **kw: Any) -> httpx.Response:
+    try:
+        async with httpx.AsyncClient(timeout=PHOTO_TIMEOUT, transport=_transport) as client:
+            return await client.request(method, f"{hub.url}/support/api/instance/{path}",
+                                        headers={"Authorization": f"Bearer {hub.token}"}, **kw)
+    except httpx.HTTPError as e:
+        log.warning("support: hub %s %s failed: %s", method, path, type(e).__name__)
+        raise HTTPException(status_code=502, detail=UNREACHABLE)
 
 
 @router.get("/admin/support/unread")
@@ -154,6 +168,50 @@ async def send(body: SendBody = Body(...)) -> dict[str, Any]:
     payload = {**_who(hub, asker), "agency_id": asker.agency_id, "agency_name": asker.agency_name,
                "name": asker.name, "role": asker.role, "text": text}
     return {"configured": True, "messages": _messages(await _call(hub, "POST", "messages", json=payload))}
+
+
+@router.post("/admin/support/messages/upload")
+async def send_upload(request: Request) -> dict[str, Any]:
+    hub = _hub_config()
+    if hub is None:
+        return NOT_CONFIGURED
+    asker = await _asker()
+    form = await capped_form(request, max_fields=1)
+    try:
+        text = form_text(form, "text", MAX_TEXT).strip()
+        photos = await read_photos(form)
+    finally:
+        await form.close()
+    if not text and not photos:
+        raise HTTPException(status_code=400, detail="empty message")
+    fields = {**_who(hub, asker), "agency_id": asker.agency_id, "agency_name": asker.agency_name,
+              "name": asker.name, "role": asker.role, "text": text}
+    r = await _hub_request(hub, "POST", "messages/upload", data=fields,
+                           files=[("photos", (f"photo{i}.jpg", p, "image/jpeg")) for i, p in enumerate(photos)])
+    if r.status_code == 429:
+        raise HTTPException(status_code=429, detail="You've sent a lot of messages — wait a few minutes, then try again.")
+    if r.status_code in (400, 413, 507):
+        detail = r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else None
+        raise HTTPException(status_code=r.status_code, detail=detail if isinstance(detail, str) else "Couldn't send that.")
+    if r.status_code != 200:
+        log.warning("support: hub POST messages/upload answered %s", r.status_code)
+        raise HTTPException(status_code=502, detail=UNREACHABLE)
+    return {"configured": True, "messages": _messages(r.json())}
+
+
+@router.get("/admin/support/photos/{photo_id}")
+async def photo(photo_id: int) -> Response:
+    hub = _hub_config()
+    if hub is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    asker = await _asker()
+    r = await _hub_request(hub, "GET", f"photos/{photo_id}", params=_who(hub, asker))
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail="no such photo")
+    if r.status_code != 200:
+        log.warning("support: hub GET photos answered %s", r.status_code)
+        raise HTTPException(status_code=502, detail=UNREACHABLE)
+    return Response(r.content, media_type="image/jpeg", headers=PHOTO_HEADERS)
 
 
 @router.post("/admin/support/read")

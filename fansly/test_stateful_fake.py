@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from fansly_client import API_BASE
-from fansly_shim import FanslyUnsupported
+from fansly_shim import ListGone
 from stateful_fake import ROUTES, StatefulFansly, Unmodelled
 
 HERE = Path(__file__).resolve().parent
@@ -109,7 +109,7 @@ def main() -> int:
     check(_raises(lambda: c.list_chats(filter="unread")), "flags=2 is not captured and must raise")
     check(_raises(lambda: c.list_chats(query="synth")), "a search is not captured and must raise")
     try:
-        c.payout_balances()
+        c._request("GET", "/payments/wallets")
     except Exception:
         pass
     check(len(fake.unmodelled) == 3 and "/payments/wallets" in fake.unmodelled[-1],
@@ -197,10 +197,9 @@ def main() -> int:
     try:
         c.list_users_in("900000000000009999")
         check(False, "an unknown list must raise, never read empty")
-    except FanslyUnsupported as e:
-        check(e.reason == "platform_lacks:list_users_in:unknown_list"
-              and [p for _m, p, _b, _q in fake.calls] == ["/lists/account"],
-              f"an unknown list must refuse after the account read only: {e.reason} {fake.calls}")
+    except ListGone as e:
+        check([p for _m, p, _b, _q in fake.calls] == ["/lists/account"],
+              f"an unknown list must refuse after the account read only: {e} {fake.calls}")
     fake.calls.clear()
     check(c.rename_list(lid, "renamed") == {"id": lid, "name": "renamed"} and fake.calls == [
         ("POST", "/lists/edit", {"id": lid, "accountId": fake.account_id, "pos": None, "type": 1,
@@ -292,7 +291,7 @@ def main() -> int:
 
     check(_raises(lambda: c.like_message(FAN_MESSAGE)),
           "an unmodelled write must raise through the Shim, not be swallowed as a skip")
-    check(_raises(c.payout_balances), "an unmodelled read must raise")
+    check(_raises(lambda: c._request("GET", "/payments/wallets")), "an unmodelled read must raise")
     check(_raises(lambda: c._request("DELETE", "/lists")), "an unmodelled method must raise")
 
     if fails:

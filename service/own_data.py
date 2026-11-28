@@ -394,6 +394,7 @@ TABLES = {
     "smart_lists": ("account_id",
         "id account_id name rules_json created_at updated_at of_list_id of_list_name is_active",
         "sync_state sync_error synced_at member_count"),
+    "subscriber_crawl": ("", "", "account_id crawled_at"),
     "subscriber_snapshot": ("",
         "",
         "account_id fan_id subscribe_at expired_at renew_on seen_at resubscribed_at"),

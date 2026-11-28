@@ -136,11 +136,17 @@ async def _owned_rules(smart_list_id, account_id: str) -> dict | None:
         return _rules_of(row)
 
 
+class _RulesRefused(Exception):
+    pass
+
+
 async def _resolve_smart_list(smart_list_id, account_id: str) -> list[int]:
     from smart_lists_api import _load_normalised_fans, resolve
     rules = await _owned_rules(smart_list_id, account_id)
     if rules is None:
         return []
+    if reason := rules_refusal(platforms.for_account(str(account_id)), rules):
+        raise _RulesRefused(reason)
     fans = await _load_normalised_fans(account_id, rules)
     return resolve(rules, fans)
 
@@ -191,6 +197,8 @@ async def _merge_pools(account_id: str, client, sources: list[str],
             else:
                 ids = await _resolve_targets(account_id, {**targets, "source": name},
                                              headroom)
+        except _RulesRefused:
+            raise
         except Exception:
             if name == "all_stored":
                 log.error("auto_follow source=all_stored FAILED account=%s — the "
@@ -432,9 +440,11 @@ async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool
                          lo=1, hi=365, zero_default=True)
     recently = await _recently_pinged_ids(account_id, gap_days)
     examined_before = datetime.utcnow() - timedelta(days=gap_days)
-    pool = await _merge_pools(account_id, client, sources, targets, headroom,
-                              exclude=recently,
-                              examined_before=examined_before)
+    try:
+        pool = await _merge_pools(account_id, client, sources, targets, headroom,
+                                  exclude=recently, examined_before=examined_before)
+    except _RulesRefused as exc:
+        return _refused(dry_run, sources, str(exc))
     source = ",".join(sources)
     pool = select_follow_pool(pool, hard_skip=hard_skip, headroom=headroom)
 

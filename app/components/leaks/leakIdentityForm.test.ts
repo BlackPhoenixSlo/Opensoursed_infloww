@@ -18,7 +18,8 @@ describe("leakIdentityFormReducer", () => {
   it("adopt fills the identity and resets consent and the error", () => {
     const s = run([adopt({ aliases: ["mia.vale.x"], instagram: "miavale", x: null }), consent,
       { type: "saveFailed", message: "boom" }, adopt({ tracked: true, username: "other", verified: false })]);
-    expect(s).toEqual({ ...INITIAL_FORM, tracked: true, username: "other", verified: false, display_name: "Mia Vale" });
+    expect(s).toEqual({ ...INITIAL_FORM, username: "other", verified: false, display_name: "Mia Vale",
+      originalIdentity: JSON.stringify(["other", "Mia Vale", [], null, null]) });
   });
 
   it.each<[string, Action[], Pick<LeakIdentityForm, "username" | "verified">]>([
@@ -120,6 +121,13 @@ describe("canSubmit", () => {
     ["create without consent", [adopt()], false],
     ["create with consent", [adopt(), consent], true],
     ["create with consent taken back", [adopt(), consent, { type: "setConsent", value: false }], false],
+    ["changed handle needs consent", [adopt({ tracked: true }), edit("username", "other")], false],
+    ["changed name needs consent", [adopt({ tracked: true }), edit("display_name", "Other")], false],
+    ["changed alias needs consent", [adopt({ tracked: true }), { type: "addAlias", value: "other" }], false],
+    ["changed social needs consent", [adopt({ tracked: true }), edit("x", "other")], false],
+    ["changed identity with fresh consent", [adopt({ tracked: true }), edit("x", "other"), consent], true],
+    ["subsequent change clears consent", [adopt({ tracked: true }), edit("x", "other"), consent, edit("x", "another")], false],
+    ["normalized unchanged handle keeps consent", [adopt({ tracked: true }), edit("username", " MiaVale ")], true],
     ["update without consent", [adopt({ tracked: true })], true],
     ["create, consent, invalid handle", [adopt(), consent, edit("username", "m")], false],
     ["update, invalid alias", [adopt({ tracked: true }), { type: "addAlias", value: "leak" }], false],

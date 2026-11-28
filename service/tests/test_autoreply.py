@@ -809,7 +809,6 @@ class RepeatingFolderOF(FolderOF):
 
 
 class OnePageFolder(FolderOF):
-    platform_list_page = 50
     def list_users_in(self, list_id, *, limit=20, offset=0):
         return {"list": super().list_users_in(list_id, limit=limit, offset=offset), "hasMore": True}
 
@@ -820,6 +819,8 @@ class LackingFolder(FolderOF):
 
 
 async def case_folder_lack_refuses_the_folder_and_keeps_new_fans():
+    from unittest.mock import patch
+
     incomplete = "platform_lacks:list_users_in:incomplete"
     for n, (fake, sent, lack) in enumerate((
             (RepeatingFolderOF({561: [8802]}), [8801, 8802], None),
@@ -831,7 +832,9 @@ async def case_folder_lack_refuses_the_folder_and_keeps_new_fans():
         await _seed_fan(aid, 8802, sub_days=30)
         ax._make_client = lambda account_id, fake=fake: fake  # type: ignore[attr-defined]
         await _counting_llm()
-        res = await run_once(aid, "autoreply", payload={})
+        platform = "fansly" if isinstance(fake, OnePageFolder) else "onlyfans"
+        with patch("accounts.get_platform", return_value=platform):
+            res = await run_once(aid, "autoreply", payload={})
         peek = _autoreply.peek_folder(aid, [561])
         assert sorted(c for c, _ in fake.sent) == sent and res["status"] == "ok", (n, fake.sent, res)
         assert res.get("folder_error") == lack and res.get("reason") == (lack and f"partial:{lack}"), (n, res)

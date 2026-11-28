@@ -68,18 +68,29 @@ export function prepareFanslyDoc(doc: Document, args: DocArgs): void {
   if (header) for (const el of doc.querySelectorAll<HTMLElement>("[data-oi-banner]")) setImage(el, proxyImage(header, accountId));
 }
 
+export function onFanslyFrameReady(frame: HTMLIFrameElement, ready: (doc: Document) => void | (() => void)): () => void {
+  let clean: void | (() => void);
+  const onLoad = () => {
+    clean?.();
+    const doc = frame.contentDocument;
+    clean = doc ? ready(doc) : undefined;
+  };
+  if (frame.contentDocument?.readyState === "complete") onLoad();
+  frame.addEventListener("load", onLoad);
+  return () => {
+    frame.removeEventListener("load", onLoad);
+    clean?.();
+  };
+}
+
 export function useFanslyDoc(ref: RefObject<HTMLIFrameElement | null>, src: string, accountId: string | null): void {
   const me = useQuery(ofMeQuery(accountId)).data;
   const dark = useTheme().theme !== "light";
   useEffect(() => {
     const frame = ref.current;
     if (!frame) return;
-    const apply = () => {
-      const doc = frame.contentDocument;
-      if (doc?.body) prepareFanslyDoc(doc, me && accountId ? { me, accountId, dark } : { me: null, accountId, dark });
-    };
-    if (frame.contentDocument?.readyState === "complete") apply();
-    frame.addEventListener("load", apply);
-    return () => frame.removeEventListener("load", apply);
+    return onFanslyFrameReady(frame, (doc) => {
+      if (doc.body) prepareFanslyDoc(doc, me && accountId ? { me, accountId, dark } : { me: null, accountId, dark });
+    });
   }, [ref, src, accountId, me, dark]);
 }

@@ -19,6 +19,7 @@ import server  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, UserAccount  # noqa: E402
 from of_client import OFAPIError  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 IDS = fx.seed_two_agencies()
 A1, B1, A2 = IDS["creator_a"], IDS["creator_b"], "1000003"
@@ -238,6 +239,65 @@ def case_the_inbox_lists_only_onlyfans_creators():
             assert (A2 in _inbox(OWNER_A)["chats"]) is listed, key
     finally:
         account_registry.save_meta(A2, saved)
+
+@contextlib.contextmanager
+def _platform(aid: str, key: str):
+    saved = account_registry.load_meta(aid)
+    account_registry.save_meta(aid, {**saved, "platform": key})
+    try:
+        yield
+    finally:
+        account_registry.save_meta(aid, saved)
+
+
+def _loads(aid: str):
+    with LOCK:
+        CALLS.append((aid, "client"))
+    return FAKES[aid]
+
+
+REFUSED = "subscribers chart: not on this platform"
+CHART_ROUTE = (
+    ("onlyfans", FakeOF, 200, {"subscribers": int(A2) % 13, "start": "a", "end": "b", "by": None},
+     [(A2, "client"), (A2, "chart")]),
+    ("fansly", FakeOF, 501, {"detail": REFUSED}, []),
+)
+
+
+def case_the_chart_route_on_fansly_answers_501_before_any_client():
+    for platform, fake, status, body, calls in CHART_ROUTE:
+        _use(a2=fake(A2))
+        with _platform(A2, platform), patch.object(server, "_load_client", _loads):
+            got = _get(OWNER_A, "/api/of/v2/subscriptions/subscribers/chart", A2, start="a", end="b")
+        assert got == (status, body), (platform, got)
+        assert CALLS == calls, (platform, CALLS)
+
+
+NEW_FANS_WARM = (
+    ({}, "_LAST"),
+    ({"accounts": f"{A1},{A2}"}, "_cached"),
+)
+
+
+def case_fansly_new_fans_refuses_before_its_warm_last_value_and_cache():
+    import relay_cache
+    import screens_api
+    for params, warm_path in NEW_FANS_WARM:
+        _use(a1=FakeOF(A1), a2=FakeOF(A2))
+        warm = _dash(OWNER_A)
+        assert warm["newFans"][A2] is not None and not warm["errors"], warm
+        assert any(k[1:3] == ("newFans", A2) for k in screens_api._LAST), warm_path
+        assert any(k[:2] == ("screen_subs_chart", A2) for k in relay_cache._cache), warm_path
+        n = len(CALLS)
+        with _platform(A2, "fansly"):
+            got = _dash(OWNER_A, **params)
+        assert got["errors"] == [{"accountId": A2, "read": "newFans", "status": 501, "detail": REFUSED}], (
+            warm_path, got["errors"])
+        assert got["newFans"] == {A1: warm["newFans"][A1]}, (warm_path, got["newFans"])
+        assert {r: got[r][A2] for r in ("profile", "subscriberCounts")} == {
+            r: warm[r][A2] for r in ("profile", "subscriberCounts")}, warm_path
+        assert [c for c in CALLS[n:] if c[0] == A2 and c[1] == "chart"] == [], (warm_path, CALLS[n:])
+
 
 def _lanes() -> dict[str, dict]:
     with server._lane_stats_lock:

@@ -377,10 +377,59 @@ def case_scan_state_records_success_without_disarming_backoff():
         assert row.current_status == "ok", row.current_status
         assert row.consecutive_failures == 0, row.consecutive_failures
         assert row.last_error is None, row.last_error
-        assert row.fully_backfilled is True, row.fully_backfilled
+        assert row.fully_backfilled is False, row.fully_backfilled
         assert row.paused_until == datetime(2099, 1, 1), \
             "a successful tick force-cleared paused_until, disarming backoff"
     asyncio.run(go())
+
+
+def case_a_stamped_backfill_reads_false_after_one_scan_and_the_backfill_bucket_still_ticks():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import tx_ingest_admin_api
+
+    modes: list[str] = []
+    real_tick = transaction_ingest.supervised_tick
+
+    async def spy(aid, mode):
+        modes.append(mode)
+        return await real_tick(aid, mode)
+
+    async def live():
+        return [ACCT]
+
+    async def go():
+        await _seed_account()
+        async with get_session() as s:
+            row = await s.get(TransactionScanHistory, ACCT)
+            if row is None:
+                row = TransactionScanHistory(account_id=ACCT)
+                s.add(row)
+            row.fully_backfilled = True
+            row.last_full_at = None
+            row.current_status = "ok"
+            row.consecutive_failures = 0
+            row.paused_until = None
+        stub = _install([])
+        with _fansly_in_registry(), patch.object(transaction_ingest, "supervised_tick", spy), \
+                patch.object(transaction_ingest, "live_account_ids", live):
+            await transaction_ingest.supervisor_cycle()
+            async with get_session() as s:
+                after_one = (await s.get(TransactionScanHistory, ACCT)).fully_backfilled
+            await transaction_ingest.supervisor_cycle()
+        async with get_session() as s:
+            row = await s.get(TransactionScanHistory, ACCT)
+        assert after_one is False, after_one
+        assert (row.fully_backfilled, row.current_status, row.consecutive_failures) == (False, "ok", 0), row
+        assert modes == ["recent", "backfill"], modes
+        assert stub.calls == 2, stub.calls
+    asyncio.run(go())
+    app = FastAPI()
+    app.include_router(tx_ingest_admin_api.router)
+    health = TestClient(app).get("/admin/ingest/transactions/health")
+    assert health.status_code == 200, health.text
+    mine = [a for a in health.json()["accounts"] if a["account_id"] == ACCT]
+    assert [a["fully_backfilled"] for a in mine] == [False], mine
 
 
 def case_one_id_repeated_in_a_page_is_banked_once():
@@ -577,7 +626,6 @@ def case_only_exact_notification_codes_can_bank():
         assert res["rows_inserted"] == 1, res
         assert await _shim_rows(acct, *(r["id"] for r in rows)) == []
         assert seen == [(logging.INFO, _seen_line(acct, '{"invalid_type": 5}'))], seen
-        assert feed.notifications_count()["all"] == 1
         assert feed._purchases_by_fan()[BUYER] == {valid["correlationId"]}
     asyncio.run(go())
 

@@ -237,8 +237,7 @@ async def _recheck(s, res: Reservation, want: Mapping[str, Any], now: datetime) 
 
 
 def promotion_type_refusal(account_id: str) -> str | None:
-    lack = platforms.Lack.PROMOTION_TYPE
-    return platforms.lack_reason(lack) if lack in platforms.for_account(str(account_id)).lacks else None
+    return platforms.lack_refusal(str(account_id), platforms.Lack.PROMOTION_TYPE)
 
 
 async def reserve(account_id: str, campaign_id: int | None, source: str, terms: dict,

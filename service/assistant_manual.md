@@ -280,7 +280,11 @@ phone locked.
 - **Support tab: message the team behind the product.** When the install has
   Support switched on, the help chat shows a life-buoy button at the top. Tap it
   to write to the product team about anything missing, broken or annoying —
-  the team reads every message and replies there. A red dot on the help
+  the team reads every message and replies there. Attach up to 4 photos per
+  message (photo button or paste); new replies appear without refreshing.
+  Under the latest help-chat answer, **Contact support** opens Support with
+  your question already typed in — nothing is sent until you press Send.
+  A red dot on the help
   launcher or on that button means a new reply. Owners, admins and chatters
   each get their own thread; nobody in your agency sees another person's.
   Back (the arrow) returns to the help chat. No button means Support is not

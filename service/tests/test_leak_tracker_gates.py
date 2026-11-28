@@ -181,6 +181,11 @@ def case_every_gate_on_answers_and_reports_the_flag():
         assert _flag(OWNER_A) is True
 
 
+def case_routes_inherit_the_base_gate():
+    for route in leak_tracker_api.router.routes:
+        assert any(dep.dependency is leak_tracker_api._base_gate for dep in route.dependencies), route.path
+
+
 def case_default_off_with_no_env():
     _reset()
     with _env(LEAK_TRACKER_URL=None, LEAK_TRACKER_ENABLED=None, OI_CELL_MAP=None):
@@ -314,6 +319,13 @@ def case_agency_gate_reads_one_agency():
             _all_404(OWNER_A, "agency A flag off")
     finally:
         _reset()
+
+
+def case_headerless_multi_agency_tracker_avoids_mirror_resolution():
+    from unittest.mock import patch
+
+    with _on(), patch.object(employees, "get_or_create_mirror_employee", side_effect=AssertionError):
+        assert CHATTER_AB.get("/admin/leaks/setup").status_code == 404
 
 
 def case_the_all_merge_never_turns_it_on():

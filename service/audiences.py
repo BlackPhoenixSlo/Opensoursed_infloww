@@ -17,6 +17,7 @@ from db.models import (
 )
 import of_pacing
 import of_paging
+import platforms
 from send_tripwire import CellHeld
 from fans import _NON_REVENUE_STATUSES
 from side_effect_gate import PLATFORM_LACKS_PREFIX
@@ -265,25 +266,24 @@ def audience_refusal(account_id: str, user_lists, excluded) -> str | None:
     names = {str(n).strip().lower() for g in (user_lists, excluded) for n in (g or ())}
     if "following" not in names:
         return None
-    import platforms
     return f"{PLATFORM_LACKS_PREFIX}following" if platforms.refusal_for_account(account_id, "following") else None
 
 
-async def _read_list_members(client, names: list[str], what: str) -> set[int]:
-    got = await asyncio.to_thread(lambda: roster_audience_blocking(client, user_lists=names))
+async def _read_list_members(client, names: list[str], what: str, *, account_id: str) -> set[int]:
+    got = await asyncio.to_thread(roster_audience_blocking, client, user_lists=names, account_id=account_id)
     if got is None:
         raise AudienceUnknown(f"Couldn't read who is on {what} {', '.join(names)}, so the "
                               "send's audience can't be resolved. Nothing was sent.")
     return set(got)
 
 
-async def drop_exclude_list_members(client, ids: Iterable, excluded_lists) -> list[int]:
+async def drop_exclude_list_members(client, ids: Iterable, excluded_lists, *, account_id: str) -> list[int]:
     # OF's `excludedLists` is verified on list audiences only, not explicit `userIds`, so exclude lists are subtracted here.
     ids = [int(i) for i in ids]
     excl = [str(n).strip() for n in (excluded_lists or []) if str(n).strip()]
     if not excl or not ids:
         return ids
-    drop = await _read_list_members(client, excl, "the excluded list")
+    drop = await _read_list_members(client, excl, "the excluded list", account_id=account_id)
     return [i for i in ids if i not in drop]
 
 
@@ -311,12 +311,12 @@ async def _threshold_base(
     else:
         base = {int(i) for i in included}
         if names:
-            base |= await _read_list_members(client, names, "the picked list")
+            base |= await _read_list_members(client, names, "the picked list", account_id=account_id)
         if online is not None:
             base &= online
     if gone is not None:
         base &= set(gone)
-    return set(await drop_exclude_list_members(client, base, excluded_lists))
+    return set(await drop_exclude_list_members(client, base, excluded_lists, account_id=account_id))
 
 
 async def threshold_fan_ids(
@@ -528,6 +528,8 @@ LIST_INCOMPLETE = f"{PLATFORM_LACKS_PREFIX}list_users_in:incomplete"
 
 
 def lacks_reason(e: Exception) -> str | None:
+    if isinstance(e, of_paging.ListGone):
+        return f"{PLATFORM_LACKS_PREFIX}list_users_in:unknown_list"
     reason = getattr(e, "reason", None)
     return reason if isinstance(reason, str) and reason.startswith(PLATFORM_LACKS_PREFIX) else None
 
@@ -556,14 +558,16 @@ def roster_audience_blocking(
     *,
     user_lists: Iterable | None = None,
     excluded_user_lists: Iterable | None = None,
+    account_id: str,
 ) -> list[int] | None:
+    list_page = platforms.for_account(account_id).list_page
     try:
         def roster(page):
             return lambda: of_paging.ids_from_pages(
                 lambda off: page(type="active", limit=of_paging.ROSTER_PAGE, offset=off))
 
         def custom(lid):
-            return lambda: of_paging.list_member_ids(client, lid)
+            return lambda: of_paging.list_member_ids(client, lid, list_page=list_page)
 
         crawls = []
         for raw in (user_lists or []):
@@ -581,7 +585,7 @@ def roster_audience_blocking(
         n_inc = len(crawls)
         crawls += [(f"exclude list {lid!r}", custom(lid), LIST_INCOMPLETE)
                    for lid in (excluded_user_lists or [])]
-        sets, cut = _crawl_until_cut(crawls, bool(getattr(client, "platform_list_page", None)))
+        sets, cut = _crawl_until_cut(crawls, list_page is not None)
 
         ids = set().union(*sets[:n_inc])
         out = final_audience(sorted(ids), sets[n_inc:], truncated=cut)
@@ -607,18 +611,6 @@ def _auto_exclude_list_id_blocking(client) -> int:
     if list_id is None:
         list_id = client.create_list(AUTO_EXCLUDE_LIST_NAME).get("id")
     return list_id
-
-
-def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
-    list_id = _auto_exclude_list_id_blocking(client)
-
-    members, truncated = of_paging.list_member_ids(client, list_id)
-    if truncated:
-        log.error("auto_exclude: Auto_Exclude list=%s crawl hit the paging backstop "
-                  "(%d members read) — stale members past it are NOT removed",
-                  list_id, len(members))
-    _reconcile_exclude_list_blocking(client, list_id, members, ids)
-    return int(list_id)
 
 
 def _reconcile_exclude_list_blocking(client, list_id, members: set[int], ids: set[int]) -> None:
@@ -675,7 +667,8 @@ def _ensure_exclude_blocking(account_id: str, client, ids: set[int]) -> tuple[in
                     "dropped, crawled again", m.list_id, list_id)
         del _ae_mirrors[account_id]
     t0 = time.monotonic()
-    members, truncated = of_paging.list_member_ids(client, list_id)
+    members, truncated = of_paging.list_member_ids(
+        client, list_id, list_page=platforms.for_account(account_id).list_page)
     if not truncated:
         _reconcile_exclude_list_blocking(client, list_id, members, ids)
         return list_id, False
@@ -692,7 +685,6 @@ class _ResumableLists:
     def __init__(self, client):
         self._c = client
         self.pages = 0
-        self.platform_list_page = getattr(client, "platform_list_page", None)
 
     def list_users_in(self, list_id, **kw):
         for i in range(AE_PAGE_TRIES):
@@ -744,7 +736,8 @@ async def _refresh_auto_exclude(account_id: str, client) -> aed.RefreshStats | N
             snap = set(m.members)
         lists = _ResumableLists(client)
         crawled, truncated = await asyncio.to_thread(
-            of_paging.list_member_ids, lists, m.list_id, max_pages=aed.REFRESH_MAX_PAGES)
+            of_paging.list_member_ids, lists, m.list_id, max_pages=aed.REFRESH_MAX_PAGES,
+            list_page=platforms.for_account(aid).list_page)
         stats.crawled, stats.crawl_s = len(crawled), round(time.monotonic() - t0, 2)
         if truncated:
             log.error("auto_exclude refresh account=%s list=%s crawl hit its %d-page backstop "

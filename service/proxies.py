@@ -620,19 +620,26 @@ Geo = Callable[[dict[str, Any]], str | None]
 Verify = Callable[[dict[str, Any]], bool]
 
 
-def _pick_pool(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
-               rng: random.Random, *, like: dict[str, Any] | None, geo: Geo,
-               deactivated: frozenset[str]) -> dict[str, Any]:
-    def country(p: dict[str, Any]) -> str | None:
-        return geo(p) or p.get("verified_geo") or None
+def _country(p: dict[str, Any] | None, geo: Geo) -> str | None:
+    return (geo(p) or p.get("verified_geo") or None) if p else None
 
+
+def _loads(data: dict[str, Any], deactivated: frozenset[str],
+           skip: str | None = None) -> tuple[Callable[[dict[str, Any]], str], dict[str, int]]:
     entries = data.get("proxies", [])
     key = _egress_key(entries)
     used: dict[str, int] = {}
     for p in entries:
-        used[key(p)] = used.get(key(p), 0) + sum(1 for x in _ids_on(p) if x != aid and x not in deactivated)
-    want_geo = country(like) if like else None
-    same = [p for p in candidates if want_geo and country(p) == want_geo]
+        used[key(p)] = used.get(key(p), 0) + sum(1 for x in _ids_on(p) if x != skip and x not in deactivated)
+    return key, used
+
+
+def _pick_pool(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
+               rng: random.Random, *, like: dict[str, Any] | None, geo: Geo,
+               deactivated: frozenset[str]) -> dict[str, Any]:
+    key, used = _loads(data, deactivated, skip=aid)
+    want_geo = _country(like, geo)
+    same = [p for p in candidates if want_geo and _country(p, geo) in (want_geo, None)]
     candidates = same or candidates
     least = min(used.get(key(p), 0) for p in candidates)
     return rng.choice([p for p in candidates if used.get(key(p), 0) == least])
@@ -642,9 +649,17 @@ def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid:
                     rng: random.Random, *, like: dict[str, Any] | None, geo: Geo,
                     verify: Verify, checked: dict[str, bool], deactivated: frozenset[str],
                     probes: int | None = None, first_tier: int | None = None) -> dict[str, Any] | None:
+    want_geo = _country(like, geo)
+
+    def near(p: dict[str, Any]) -> bool:
+        return not want_geo or _country(p, geo) in (want_geo, None)
+
     for tier in _tiers(candidates, first_tier):
         left = list(tier)
+        spare = None
         while left:
+            if spare and not any(near(p) for p in left):
+                return spare
             pick = _pick_pool(left, data, aid, rng, like=like, geo=geo, deactivated=deactivated)
             label = pick.get("label") or ""
             if label not in checked:
@@ -653,8 +668,12 @@ def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid:
                 checked[label] = bool(verify(pick))
                 probes = None if probes is None else probes - 1
             if checked[label]:
-                return pick
+                if near(pick):
+                    return pick
+                spare = spare or pick
             left = [p for p in left if p.get("label") != label]
+        if spare:
+            return spare
     return None
 
 
@@ -744,6 +763,45 @@ def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
             _bind(data, plan[aid], aid)
         save(data)
     return moved
+
+
+REBALANCE_PROBES = 2
+
+
+def rebalance_step(*, bad: set[str], due: set[str], geo: Geo, verify: Verify, deactivated: frozenset[str],
+                   tiers: tuple[int, ...] = (0,),
+                   rng: random.Random | None = None) -> tuple[str, str, str] | None:
+    rng = rng or random
+    data = load()
+    pool = [p for p in data["proxies"] if is_pool(p)]
+    key, used = _loads(data, deactivated)
+    for t in tiers:
+        tier = [p for p in pool if _tier(p) == t]
+        if not tier or any(p.get("label") in bad or p.get("label") in due for p in tier):
+            continue
+        source = max(tier, key=lambda p: used.get(key(p), 0))
+        want_geo = _country(source, geo)
+        idle = [p for p in tier if not used.get(key(p), 0)
+                and (not want_geo or _country(p, geo) in (want_geo, None))]
+        mover = next((a for a in reversed(_ids_on(source)) if a not in deactivated), None)
+        if used.get(key(source), 0) < 2 or not idle or mover is None:
+            continue
+        target = _pick_answering(idle, data, mover, rng, like=source, geo=geo, verify=verify, checked={},
+                                 deactivated=deactivated, probes=REBALANCE_PROBES)
+        if target is None or (want_geo and _country(target, geo) not in (want_geo, None)):
+            continue
+        src, dst = source["label"], target["label"]
+        with _lock:
+            data = _load_for_write()
+            key, used = _loads(data, deactivated)
+            now_src, now_dst = _by_label(data, src), _by_label(data, dst)
+            if not (is_pool(now_src) and mover in _ids_on(now_src) and is_pool(now_dst)
+                    and not used.get(key(now_dst), 0)):
+                return None
+            _bind(data, dst, mover)
+            save(data)
+        return mover, src, dst
+    return None
 
 
 

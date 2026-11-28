@@ -7,7 +7,7 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import os  # noqa: E402
-from contextlib import contextmanager  # noqa: E402
+from contextlib import contextmanager, nullcontext  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 import tempfile  # noqa: E402
 import uuid  # noqa: E402
@@ -620,6 +620,73 @@ def case_of_no_session_mass_route_still_reserves_and_resolves_first():
             assert r.status_code == 503, (r.status_code, r.text)
             assert seen == ["reserve", "audience"], seen
             assert mass_queue_api._send_keys == {}
+
+
+_EXPIRED = {**_MASS, "expired_over_days": 30}
+
+
+@contextmanager
+def _expired_spies(*, lifted: bool):
+    import send_ops
+    from automations import lifecycle_messages
+
+    real_expired = lifecycle_messages.expired_fans
+
+    def begin(*_a, **_k):
+        seen.append("claim")
+
+    async def expired(*a, **k):
+        seen.append("expired_fans")
+        return await real_expired(*a, **k)
+
+    lift = (patch.object(FanslyShimClient.send_mass_message, "platform_blocked", None) if lifted
+            else nullcontext())
+    with (_mass_spies() as seen, _smart_list_refusals("mass_queue_api") as refused, lift,
+          patch.object(send_ops, "anchor", lambda _req: "op-45"), patch.object(send_ops, "begin", begin),
+          patch.object(lifecycle_messages, "expired_fans", expired)):
+        yield seen, refused
+
+
+def case_fansly_expired_over_days_answers_lapse_detection_before_claim_or_audience():
+    _on("fansly")
+    runs = asyncio.run(_mass_runs())
+    with _expired_spies(lifted=True) as (seen, refused):
+        fake = _MassOF()
+        r = _call("POST", "/api/of/v2/messages/queue", fake, json=_EXPIRED)
+    assert r.status_code == 501, (r.status_code, r.text)
+    assert r.json()["detail"] == "'Expired over' filter: not on this platform", r.text
+    assert refused == ["platform_lacks:lapse_detection"], refused
+    assert seen == [] and fake.writes == [], (seen, fake.writes)
+    assert mass_queue_api._send_keys == {} and asyncio.run(_mass_runs()) == runs
+
+
+def case_fansly_mass_refusal_answers_before_the_expired_over_days_refusal():
+    _on("fansly")
+    with _expired_spies(lifted=False) as (seen, refused):
+        for body, what in zip(_MASS_BODIES, ("mass message", "scheduled mass message", "scheduled mass message")):
+            r = _call("POST", "/api/of/v2/messages/queue", _shim, json={**body, "expired_over_days": 30})
+            assert r.status_code == 501 and r.json()["detail"] == f"{what}: not on this platform", (body, r.text)
+    assert refused == [] and seen == [], (refused, seen)
+
+
+def case_fansly_mass_without_expired_over_days_still_claims_resolves_and_posts():
+    _on("fansly")
+    with _expired_spies(lifted=True) as (seen, refused):
+        fake = _MassOF()
+        r = _call("POST", "/api/of/v2/messages/queue", fake, json=_MASS)
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert refused == [] and seen == ["claim", "reserve", "audience", "exclude_list"], (refused, seen)
+    assert fake.writes == [("send_mass_message", [4242])], fake.writes
+
+
+def case_of_expired_over_days_still_claims_and_reads_expired_fans():
+    _on("onlyfans")
+    with _expired_spies(lifted=False) as (seen, refused):
+        fake = _MassOF()
+        r = _call("POST", "/api/of/v2/messages/queue", fake, json=_EXPIRED)
+    assert r.status_code == 422 and "Expired fans aren't known yet" in r.json()["detail"], (r.status_code, r.text)
+    assert refused == [] and seen == ["claim", "reserve", "audience", "expired_fans"], (refused, seen)
+    assert fake.writes == [] and mass_queue_api._send_keys == {}
 
 
 def case_fansly_settings_and_templates_refuse_before_client_load():

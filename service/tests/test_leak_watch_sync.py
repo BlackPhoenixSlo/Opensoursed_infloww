@@ -72,7 +72,10 @@ class Tracker:
         if isinstance(answer, Exception):
             raise answer
         assert request.method == answer["method"], request.method
-        return httpx.Response(answer["status"], json=answer["response"])
+        response = answer["response"]
+        if answer is PUT_UPDATED:
+            response = {**response, "watch_id": request.url.path.rsplit("/", 1)[-1]}
+        return httpx.Response(answer["status"], json=response)
 
     def pushed(self) -> dict[str, dict]:
         return {r.url.path.removeprefix("/v1/watches/"): json.loads(r.content) for r in self.calls}
@@ -128,7 +131,7 @@ def _row(account: str, *, agency: str = AGENCY_A, on: bool = True, synced_at: da
                             verified=req["verified"], display_name=req["display_name"],
                             aliases_json=json.dumps(req["aliases"]), instagram=req["instagram"], x=req["x"],
                             consent_at=TODAY, consent_by="user:fixture:agency_a_owner", synced_at=synced_at,
-                            synced_paused=synced_paused))
+                            synced_paused=synced_paused, updated_at=TODAY))
     asyncio.run(_add())
     return watch_id
 
@@ -378,42 +381,44 @@ def case_an_edit_during_the_push_is_not_marked_synced():
     assert row.display_name == "Edited" and row.synced_at is None, "the edit is pushed by the next run"
 
 
-def case_an_identity_saved_mid_run_is_pushed_again_by_the_next_run_whatever_the_stale_push_answered():
+def case_an_identity_edited_mid_run_preserves_the_last_push_and_retries_the_latest_identity():
     real = account_page.of_me
 
     async def none(_account_id: str):
         return None
     account_page.of_me = none
     try:
-        for label, answer in [("200", PUT_UPDATED), ("read timeout", httpx.ReadTimeout("slow")),
-                              ("500", {**LIMITED, "status": 500}), ("503", {**LIMITED, "status": 503})]:
-            _reset()
-            first = _row(SECOND, synced_at=None, synced_paused=None)
-            raced = _row(CREATOR, synced_at=None, synced_paused=None)
-            saved: list[int] = []
-            with _tracker() as t:
-                def save(request, t=t, first=first, raced=raced, saved=saved, answer=answer):
-                    if saved or not request.url.path.endswith(first):
-                        return
-                    saved.append(1)
-                    r = OWNER_A.put(f"/admin/leaks/watches/{CREATOR}", json={"username": "mianew", "display_name": "Mia New"})
-                    assert r.json() == {"synced": True}, r.text
-                    t.by_watch[raced] = answer
-                t.during = save
-                _sync()
-                sent = [(r.url.path.rsplit("/", 1)[-1], json.loads(r.content)["username"]) for r in t.calls]
-                assert sent == [(first, _body(SECOND, paused=False)["username"]), (raced, "mianew"),
-                                (raced, _body(CREATOR, paused=False)["username"])], (label, sent)
-                rows = _rows()
-                assert rows[first].synced_at == TODAY, label
-                assert rows[raced].username == "mianew" and rows[raced].synced_at is None, (label, "the stale push re-dirties it")
-                t.calls.clear()
-                t.during = None
-                t.by_watch.clear()
-                _sync(TODAY + timedelta(hours=1))
-                assert t.pushed() == {raced: {**_body(CREATOR, paused=False), "username": "mianew", "display_name": "Mia New",
-                                              "aliases": [], "instagram": None, "x": None, "verified": False}}, (label, t.pushed())
-                assert _rows()[raced].synced_at == TODAY + timedelta(hours=1), label
+        _reset()
+        first = _row(SECOND, synced_at=None, synced_paused=None)
+        raced = _row(CREATOR, synced_at=TODAY - timedelta(days=1))
+        route = f"/admin/leaks/watches/{CREATOR}"
+        identity = {"username": "mianew", "display_name": "Mia New"}
+        with _tracker() as t:
+            def save(request):
+                if not request.url.path.endswith(first):
+                    return
+                assert OWNER_A.put(route, json=identity).status_code == 422
+                t.by_watch[raced] = DOWN
+                r = OWNER_A.put(route, json={**identity, "consent": True})
+                assert r.json() == {"synced": False}, r.text
+
+            t.during = save
+            _sync()
+            sent = [(r.url.path.rsplit("/", 1)[-1], json.loads(r.content)["username"]) for r in t.calls]
+            assert sent == [(first, _body(SECOND, paused=False)["username"]), (raced, "mianew")], sent
+            rows = _rows()
+            assert rows[first].synced_at == TODAY
+            edited = rows[raced]
+            assert edited.username == "mianew" and edited.synced_at == TODAY - timedelta(days=1)
+            assert not leak_tracker.watch_synced(edited)
+            t.calls.clear()
+            t.during = None
+            t.by_watch.clear()
+            _sync(TODAY + timedelta(hours=1))
+            assert t.pushed() == {raced: {**_body(CREATOR, paused=False), **identity,
+                                          "aliases": [], "instagram": None, "x": None, "verified": False}}
+            retried = _rows()[raced]
+            assert retried.synced_at == retried.updated_at and leak_tracker.watch_synced(retried)
     finally:
         account_page.of_me = real
 

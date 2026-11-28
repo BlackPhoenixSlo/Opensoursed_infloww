@@ -13,11 +13,12 @@ import send_tripwire
 from automation_registry import register
 from automations import auto_posts
 from db.engine import get_session
-from db.models import Post, S4SProfile, S4SSlot
+from db.models import Post, S4SProfile, S4SRequest, S4SSlot
 from s4s_api import live_posting
-from s4s_media import MediaMissing, fetch_to, prune, slot_vault_ids
+from s4s_media import MediaMissing, fetch_to, partner_media_refusal, prune, slot_vault_ids
 from s4s_requests_api import _linked
 from s4s_schedule_api import claim_slot, move_slot
+from side_effect_gate import branch_refusal
 from tenant_keys import owners_of
 
 log = logging.getLogger("of-relay.automation.s4s_post")
@@ -105,19 +106,36 @@ async def _fail(slot: S4SSlot, reason: str, agency: str | None) -> None:
                         audit={"actor": "system", "reason": reason[:500]}, agency_user_id=agency, employee_id=None)
 
 
+async def _media_refusal(account_id: str, slot_id: int | None) -> dict | None:
+    if slot_id is None or branch_refusal(str(account_id), "create_post", "media") is None:
+        return None
+    async with get_session() as s:
+        slot = await s.get(S4SSlot, slot_id)
+        if slot is None or slot.poster_account_id != str(account_id) or slot.status in DONE:
+            return None
+        req = await s.get(S4SRequest, slot.request_id)
+        if req is None or (reason := partner_media_refusal(req, slot.poster_account_id)) is None:
+            return None
+    return {"status": "skipped", "reason": reason, "slot_id": slot_id}
+
+
 @register("s4s_post")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     """Post one S4S slot, or end it with a reason. Returns a stats dict."""
     try:
-        return await _run(account_id, payload, run_id=run_id)
+        slot_id = int((payload or {}).get("slot_id"))
+    except (TypeError, ValueError):
+        slot_id = None
+    if refused := await _media_refusal(account_id, slot_id):
+        return refused
+    try:
+        return await _run(account_id, slot_id, run_id=run_id)
     finally:
         await _prune()
 
 
-async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
-    try:
-        slot_id = int((payload or {}).get("slot_id"))
-    except (TypeError, ValueError):
+async def _run(account_id: str, slot_id: int | None, *, run_id: int) -> dict:
+    if slot_id is None:
         return {"status": "skipped", "reason": "no_slot_id"}
     now = datetime.utcnow()
     async with get_session() as s:

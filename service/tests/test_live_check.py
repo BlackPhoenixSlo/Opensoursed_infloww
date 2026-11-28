@@ -178,9 +178,10 @@ def case_is_live_check_name_covers_marked_methods_and_lanes():
         assert not gate.is_live_check_name(platforms.FANSLY, "send_message")
         assert not gate.is_live_check_name(platforms.ONLYFANS, "poke_fan")
         assert not gate.is_live_check_name(unknown, "poke_fan")
-    assert gate.LIVE_CHECK_LANES == frozenset({"priority_mass"})
-    assert gate.is_live_check_name(platforms.FANSLY, "priority_mass")
-    assert not gate.is_live_check_name(platforms.ONLYFANS, "priority_mass")
+    assert gate.LIVE_CHECK_LANES == frozenset({"priority_mass", "nudge_online"})
+    for lane in gate.LIVE_CHECK_LANES:
+        assert gate.is_live_check_name(platforms.FANSLY, lane), lane
+        assert not gate.is_live_check_name(platforms.ONLYFANS, lane), lane
     with patch.object(gate, "LIVE_CHECK_LANES", frozenset({"test_lane"})):
         assert gate.is_live_check_name(platforms.FANSLY, "test_lane")
         assert not gate.is_live_check_name(platforms.ONLYFANS, "test_lane")

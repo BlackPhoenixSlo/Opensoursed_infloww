@@ -1,0 +1,9 @@
+{
+  "_source": "RECIPES.md '## Presence — and why `statusId` is NOT the online flag' — real statusId/lastSeenAt values, synthetic ids; `now` is our own logged-in lastSeenAt at capture; the stale row is synthetic (3 days before `now`)",
+  "now": 1788287617000,
+  "accounts": {
+    "dormant": {"id": "900000000000000401", "username": "synthdormant", "displayName": "Synth Dormant", "statusId": 1, "lastSeenAt": 0},
+    "recent": {"id": "900000000000000402", "username": "synthrecent", "displayName": "Synth Recent", "statusId": 1, "lastSeenAt": 1788287553000},
+    "stale": {"id": "900000000000000403", "username": "synthstale", "displayName": "Synth Stale", "statusId": 1, "lastSeenAt": 1788028417000}
+  }
+}

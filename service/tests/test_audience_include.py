@@ -212,7 +212,7 @@ async def case_scheduled_send_at_fire():
 
 def case_fence_build_verify_zero_diff():
     fake = FakeOF(lists={700: {2, 9}})
-    built = _build_autofence_blocking(fake, 700, {1, 2, 3})
+    built = _build_autofence_blocking(fake, 700, {1, 2, 3}, list_page=None)
     assert fake.lists[700] == {1, 2, 3}, fake.lists
     assert built == {"size": 3, "unaddable": 0}, built
     add_order = [u for (l, u) in fake.added if l == 700]
@@ -220,7 +220,7 @@ def case_fence_build_verify_zero_diff():
     assert add_order and rem_order and fake.added and fake.removed, "both legs ran"
 
     fake2 = FakeOF(lists={701: set()}, fail_add=(5,))
-    built2 = _build_autofence_blocking(fake2, 701, {4, 5})
+    built2 = _build_autofence_blocking(fake2, 701, {4, 5}, list_page=None)
     assert built2 == {"size": 1, "unaddable": 1}, built2
 
     from curl_cffi.requests import exceptions as curl_exc
@@ -232,7 +232,7 @@ def case_fence_build_verify_zero_diff():
                 raise curl_exc.Timeout("curl: (28) Operation timed out")
             return super().add_user_to_list(list_id, user_id)
     try:
-        _build_autofence_blocking(TimeoutOF(lists={703: set()}), 703, {4, 5})
+        _build_autofence_blocking(TimeoutOF(lists={703: set()}), 703, {4, 5}, list_page=None)
         assert False, "a timed-out add must halt the fence build"
     except AudienceHalt as e:
         assert e.reason == "fence_add_failed", e.reason
@@ -242,7 +242,7 @@ def case_fence_build_verify_zero_diff():
             return {}
     fake3 = StickyOF(lists={702: {8}})
     try:
-        _build_autofence_blocking(fake3, 702, set())
+        _build_autofence_blocking(fake3, 702, set(), list_page=None)
         assert False, "verify must catch the sticky member"
     except AudienceHalt as e:
         assert e.reason == "fence_verify_diff", e.reason

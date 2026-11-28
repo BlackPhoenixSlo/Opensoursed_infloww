@@ -19,6 +19,7 @@ from db.models import (
     ScrapeHistory, SkipList,
 )
 import automation_executor as ax
+import platforms
 import relay_hooks
 import webhook_dispatch_decide as decide
 from automation_registry import kind_family
@@ -399,6 +400,8 @@ async def on_inbound_tip(account_id: str, fan_id: int, message_id: int,
                          tip_cents: int) -> None:
     try:
         from automations.customs_watch import order_floor, watch_flags
+        if platforms.lack_refusal(account_id, platforms.Lack.TIP_LEDGER):
+            return
         cw_on, cw_payload = await watch_flags(account_id)
         # Gated on the rule: a $100 DM tip is an order on male accounts but generosity on female ones; firing account-blind would gag the bot.
         if cw_on and int(tip_cents or 0) >= order_floor(cw_payload):

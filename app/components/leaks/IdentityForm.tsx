@@ -8,7 +8,7 @@ import { relay } from "@/lib/relay";
 
 import {
   ALIAS_LANE_LABEL, ALIASES_MAX, aliasLane, buildPayload, canSubmit, INITIAL_FORM, isTrimmed, leakIdentityFormReducer, TRIMMED_NOTE,
-  validate,
+  needsConsent, validate,
   type LeakIdentityPayload,
 } from "./leakIdentityForm";
 import type { LeakTrimmed } from "./leakCoverage";
@@ -29,8 +29,9 @@ export function disclosure(brand: string | null): string {
     + `Pausing keeps it; deleting removes it within 30 days (removal-case records stay with ${b} if you're their client).`;
 }
 
-export function IdentityForm({ creatorId, tracked, start, brand, trimmed, onDone, onCancel }: {
+export function IdentityForm({ creatorId, scopeAccountId, tracked, start, brand, trimmed, onDone, onCancel }: {
   creatorId: string;
+  scopeAccountId: string | null;
   tracked: boolean;
   start: IdentityStart;
   brand: string | null;
@@ -45,17 +46,17 @@ export function IdentityForm({ creatorId, tracked, start, brand, trimmed, onDone
   const errors = validate(state);
   const save = useMutation({
     mutationFn: (body: LeakIdentityPayload) =>
-      relay.put<{ synced: boolean }>(`/admin/leaks/watches/${creatorId}`, body, { accountId: creatorId }),
+      relay.put<{ synced: boolean }>(`/admin/leaks/watches/${creatorId}`, body, { accountId: scopeAccountId }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["leak-tracker", "roster"] });
-      void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId] });
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId, scopeAccountId] });
       void qc.invalidateQueries({ queryKey: ["leak-tracker", "all"] });
       onDone();
     },
     onError: (e: Error) => {
       dispatch({ type: "saveFailed", message: e.message });
       void qc.invalidateQueries({ queryKey: ["leak-tracker", "roster"] });
-      void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId] });
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId, scopeAccountId] });
     },
   });
   const submit = (e: FormEvent<HTMLFormElement>) => {
@@ -155,7 +156,7 @@ export function IdentityForm({ creatorId, tracked, start, brand, trimmed, onDone
           {fieldError(errors.x, true)}
         </div>
       </div>
-      {!state.tracked && (
+      {needsConsent(state) && (
         <label className="flex items-start gap-2 text-[14px] text-fg">
           <input
             type="checkbox"

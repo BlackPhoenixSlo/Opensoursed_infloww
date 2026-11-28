@@ -14,7 +14,8 @@ let flags: FeatureFlags | undefined;
 vi.mock("@/components/shell/useFlags", () => ({ useFlags: () => flags }));
 let granted: Set<string> | null = null;
 vi.mock("@/components/shell/useGrantedPages", () => ({ useGrantedPages: () => granted }));
-vi.mock("@/lib/fansly-mirror-pages", () => ({
+vi.mock("@/lib/fansly-mirror-pages", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/fansly-mirror-pages")>(),
   FANSLY_MIRROR_SECTIONS: {
     home: { index: "", pages: { "": "Home" } },
     lists: { index: "", pages: { "": "Lists", list: "List" } },

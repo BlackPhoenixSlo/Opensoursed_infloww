@@ -1,23 +1,26 @@
-import { EMAIL, MONEY, PLACEHOLDER, collectPeople, esc, isFakeDigits } from "./scrub.mjs";
+import { decodedViews } from "./dom.mjs";
+import { EMAIL, MONEY, PLACEHOLDER, collectPeople, esc, hasCredential, isFakeDigits } from "./scrub.mjs";
 
 export const STATIC_URL = "/fansly-mirror/static";
 const SAFE_IPS = new Set(["127.0.0.1", "1.2.3.4"]);
 const INVISIBLE = /[\p{Cf}\u00ad]/gu;
-const views = (v) => [...new Set([v, v.normalize("NFKC")].flatMap((x) => [x, x.replace(INVISIBLE, "")]))];
+const views = (v) => [...new Set(decodedViews(v).flatMap((x) => [x, x.normalize("NFKC")]).flatMap((x) => [x, x.replace(INVISIBLE, "")]))];
 const KEEP_MONEY = new Set(["$1", "$3", "$4.99", "$10", "$20", "$20.00", "$50.00"]);
 const isFakeMoney = (m) => KEEP_MONEY.has(m) || /^\$(?:5|1,234|12,345|123,456)(?:\.00)?$/.test(m) || (/^\$\d+(?:\.\d{1,2})?$/.test(m) && m.slice(1).split(".").every(isFakeDigits));
 const SAFE_HANDLE = new RegExp(`^(?:${esc(PLACEHOLDER.username)}|username|fan\\d+)$`, "i");
 const SCHEME = /(?<![a-z0-9+.-])(https?|wss?|javascript):/gi;
 const unbuild = (v, build) => (build ? v.replace(new RegExp(`${esc(STATIC_URL)}/${esc(build)}(?![\\w.-])`, "g"), `${STATIC_URL}/build`).replaceAll(`"${build}"`, '"build"') : v);
 
-export function textKinds(value, kinds, { build, needles = [], people = null, numeric = true, readable = false } = {}) {
-  for (const v of views(unbuild(value, build))) {
+export function textKinds(value, kinds, { build, needles = [], people = null, numeric = true, readable = false, opaqueCredentials = true } = {}) {
+  value = unbuild(value, build);
+  if (hasCredential(value, opaqueCredentials)) kinds.add("credential");
+  for (const v of views(value)) {
     if (/fansly\.com\b|\bfans\.ly\b/i.test(v)) kinds.add("fansly-host");
     const flat = v.replace(/[\t\n\r]/g, "");
     for (const m of flat.matchAll(SCHEME)) kinds.add(m[1].toLowerCase() === "javascript" ? "handler" : "remote");
     if (/(?<![:\w/\\])[\\/]{2}[a-z0-9-]+\.[a-z]/i.test(flat)) kinds.add("remote");
     if (/(?<![\w-])data:(?:\s*[\w.+-]+\/[\w.+-]+|,)/i.test(v)) kinds.add("data-uri");
-    for (const m of v.matchAll(EMAIL)) if (!m[0].toLowerCase().endsWith(PLACEHOLDER.email)) kinds.add("email");
+    for (const m of v.matchAll(EMAIL)) if (m[0].toLowerCase() !== PLACEHOLDER.email) kinds.add("email");
     const lower = v.toLowerCase();
     if (needles.some((n) => lower.includes(n)) || (people && v.search(people) >= 0)) kinds.add("identity");
     if (numeric) {

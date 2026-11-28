@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import automation_executor as ax
+import platforms
 from automation_registry import register
 from db.engine import get_session
 from db.models import Blacklist, Fan, FanProfile
@@ -202,7 +204,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Never pretend a value reached OnlyFans: without a session, stay DB-only.
     if push_requested and _OF_PUSH_SUPPORTED:
         try:
-            of_client_obj = OFClient.from_account(account_id)
+            if platforms.for_account(str(account_id)).backend is None:
+                of_client_obj = OFClient.from_account(account_id)
+            else:
+                of_client_obj = await asyncio.to_thread(ax._make_client, str(account_id))
         except Exception:
             log.warning("apply_profiles push_to_of: no OF session for %s — DB only",
                         account_id)

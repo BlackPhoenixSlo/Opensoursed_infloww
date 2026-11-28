@@ -76,7 +76,10 @@ class Tracker:
         assert request.method == answer["method"], request.method
         if "raw" in answer:
             return httpx.Response(answer["status"], content=answer["raw"], headers=answer.get("headers"))
-        return httpx.Response(answer["status"], json=answer["response"])
+        response = answer["response"]
+        if answer is PUT_CREATED or answer is PUT_UPDATED:
+            response = {**response, "watch_id": request.url.path.rsplit("/", 1)[-1]}
+        return httpx.Response(answer["status"], json=response)
 
     def bearers(self) -> list[str]:
         return [r.headers.get("authorization", "") for r in self.calls]
@@ -235,6 +238,56 @@ def case_a_later_401_marks_the_key_no_longer_valid_until_a_new_key_is_saved():
         assert _put(KEY_2).status_code == 200
         assert _setup()["key"] == "set"
     assert _stored() == KEY_2 and _binding() == "tn_example0001"
+
+
+def case_a_late_refusal_of_the_old_key_does_not_invalidate_the_replacement():
+    _connect()
+    real_client = httpx.AsyncClient
+    agency = IDS["agency_a_owner"]
+
+    async def rotate():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def refuse(_request):
+            started.set()
+            await release.wait()
+            return httpx.Response(401)
+
+        leak_tracker.httpx.AsyncClient = lambda **kw: real_client(**kw, transport=httpx.MockTransport(refuse))
+        pending = asyncio.create_task(leak_tracker.call(agency, KEY_1, "GET", "/v1/me"))
+        await asyncio.wait_for(started.wait(), 3)
+        await leak_tracker.store_key(agency, KEY_2)
+        release.set()
+        try:
+            await pending
+        except leak_tracker.KeyRefused:
+            pass
+        else:
+            raise AssertionError("old key was not refused")
+        assert not leak_tracker.key_invalid(agency)
+
+    with _tracker():
+        asyncio.run(rotate())
+
+
+def case_the_tracker_request_has_a_total_deadline():
+    real_client = httpx.AsyncClient
+
+    async def slow(_request):
+        await asyncio.sleep(0.1)
+        return httpx.Response(200)
+
+    async def request():
+        leak_tracker.httpx.AsyncClient = lambda **kw: real_client(**kw, transport=httpx.MockTransport(slow))
+        try:
+            await leak_tracker.call(None, "", "GET", "/v1/me", timeout=httpx.Timeout(0.02))
+        except leak_tracker.Unreachable:
+            return
+        raise AssertionError("slow request escaped the total timeout")
+
+    with _tracker():
+        asyncio.run(request())
 
 
 def case_a_key_of_another_tenant_is_refused_and_the_binding_never_moves():
@@ -457,10 +510,28 @@ def case_saving_a_kept_verified_handle_reads_no_live_identity():
         assert _enrol().status_code == 200
         assert asked == [CREATOR]
         t.answer = PUT_UPDATED
-        assert _enrol({**MIA, "display_name": "Mia V."}, consent=None).status_code == 200
+        assert _enrol({**MIA, "display_name": "Mia V."}).status_code == 200
         assert asked == [CREATOR], "an already-verified handle is kept without asking OnlyFans again"
     (row,) = _watches()
     assert row.verified is True and _pushed(t)[-1]["verified"] is True
+
+
+def case_identity_changes_require_fresh_consent():
+    _connect({"enforce": True, "roles": [], "assignments": {str(EMP_A): "admin"}})
+    with _tracker() as t, _live({}):
+        t.answer = PUT_CREATED
+        assert _enrol().status_code == 200
+        (before,) = _watches()
+        for change in ({"username": "other"}, {"display_name": "Other"}, {"aliases": ["newalias"]},
+                       {"instagram": "other"}, {"x": "other"}):
+            r = _enrol({**MIA, **change}, client=CHATTER_A, consent=False)
+            assert r.status_code == 422, r.text
+        assert len(t.calls) == 1
+        assert _enrol({**MIA, "display_name": "Other"}, client=CHATTER_A).status_code == 200
+        (after,) = _watches()
+        assert after.watch_id == before.watch_id
+        assert after.consent_at > before.consent_at
+        assert after.consent_by == f"chatter:{IDS['chatter_a']}:chatter_a"
 
 
 def case_a_second_creator_on_the_same_handle_is_409():
@@ -496,25 +567,128 @@ def case_save_while_the_service_is_down_keeps_the_row_unsynced():
     assert leak_tracker.key_invalid(IDS["agency_a_owner"])
 
 
-def case_an_update_keeps_the_watch_id_and_the_consent():
+def case_saving_with_a_known_invalid_key_refuses_without_writing():
+    _connect()
+    with _tracker() as t, _live({}):
+        t.answer = ERR_401
+        assert _setup()["key"] == "invalid"
+        r = _enrol()
+        assert r.status_code == 409 and r.json()["detail"]["error"] == "key_invalid"
+        assert _watches() == [] and len(t.calls) == 1
+
+
+def case_only_an_ack_for_this_watch_marks_it_synced():
+    for answer in ({**PUT_CREATED, "raw": b"<html>"},
+                   {**PUT_CREATED, "response": {"watch_id": "other-watch"}}):
+        _connect()
+        with _tracker() as t, _live({}):
+            t.answer = answer
+            assert _enrol().json() == {"synced": False}
+            assert _watches()[0].synced_at is None
+            asyncio.run(leak_tracker.sync_watches())
+            assert len(t.calls) == 2
+            assert _watches()[0].synced_at is None
+            t.answer = PUT_UPDATED
+            asyncio.run(leak_tracker.sync_watches())
+            assert len(t.calls) == 3 and _watches()[0].synced_at is not None
+
+
+def case_an_update_keeps_the_watch_id_and_refreshes_consent():
     _connect()
     with _tracker() as t, _live({}):
         t.answer = PUT_CREATED
         assert _enrol().status_code == 200
         (first,) = _watches()
         t.answer = PUT_UPDATED
-        r = _enrol({**MIA, "display_name": "Mia V."}, consent=None)
+        r = _enrol({**MIA, "display_name": "Mia V."})
         assert r.status_code == 200 and r.json() == {"synced": True}, r.text
         (row,) = _watches()
-        assert (row.watch_id, row.consent_at, row.consent_by) == (first.watch_id, first.consent_at, first.consent_by)
+        assert (row.watch_id, row.consent_by) == (first.watch_id, first.consent_by)
+        assert row.consent_at > first.consent_at
         assert row.display_name == "Mia V."
         assert {r.url.path for r in t.calls} == {f"/v1/watches/{row.watch_id}"}
         assert _pushed(t)[-1] == {**PUT_UPDATED["request"], "account_id": CREATOR, "verified": False}
         t.answer = httpx.ConnectError("refused")
-        r = _enrol({**MIA, "display_name": "Mia"}, consent=None)
+        r = _enrol({**MIA, "display_name": "Mia"})
         assert r.json() == {"synced": False}, r.text
     (row,) = _watches()
-    assert row.display_name == "Mia" and row.synced_at is None, "saved locally, pushed later"
+    assert row.display_name == "Mia" and row.synced_at < row.updated_at and row.synced_paused is False
+
+
+def case_concurrent_first_saves_do_not_share_a_refused_watch():
+    from server import app
+
+    _connect()
+    real_client = httpx.AsyncClient
+
+    async def race():
+        first_started = asyncio.Event()
+        release = asyncio.Event()
+        upstream = {}
+
+        async def upstream_put(request):
+            identity = json.loads(request.content)
+            watch_id = request.url.path.rsplit("/", 1)[-1]
+            if identity["display_name"] == "Refused":
+                first_started.set()
+                await release.wait()
+                return httpx.Response(422, json=INVALID["response"])
+            upstream[watch_id] = identity["display_name"]
+            return httpx.Response(200, json={"watch_id": watch_id})
+
+        leak_tracker.httpx.AsyncClient = lambda **kw: real_client(
+            **kw, transport=httpx.MockTransport(upstream_put))
+        async with real_client(transport=httpx.ASGITransport(app=app), base_url="http://testserver",
+                               cookies=dict(OWNER_A.cookies.items())) as client:
+            path = f"/admin/leaks/watches/{CREATOR}"
+            first = asyncio.create_task(client.put(path, json={**MIA, "display_name": "Refused", "consent": True}))
+            await asyncio.wait_for(first_started.wait(), 3)
+            second = asyncio.create_task(client.put(path, json={**MIA, "display_name": "Accepted", "consent": True}))
+            await asyncio.wait({second}, timeout=0.4)
+            release.set()
+            rejected, accepted = await asyncio.gather(first, second)
+        assert (rejected.status_code, accepted.status_code) == (422, 200)
+        return upstream
+
+    with _tracker(), _live({}):
+        upstream = asyncio.run(race())
+    (row,) = _watches()
+    assert upstream == {row.watch_id: row.display_name} == {row.watch_id: "Accepted"}
+
+
+def case_a_shared_creator_watch_uses_the_named_roster_agency():
+    _connect()
+    owner_a, owner_b = IDS["agency_a_owner"], IDS["agency_b_owner"]
+    other = IDS["creator_b"]
+    async def share():
+        async with get_session() as s:
+            s.add(UserAccount(user_id=owner_b, account_id=CREATOR))
+        return [await employees.get_or_create_mirror_employee(
+            IDS["chatter_ab"], owner, display_name="chatter_ab", color="#bbbbbb") for owner in (owner_a, owner_b)]
+
+    employees_ab = asyncio.run(share())
+    try:
+        for owner, employee in zip((owner_a, owner_b), employees_ab):
+            fx.store_blob(owner, "roles", {"enforce": True, "roles": [], "assignments": {str(employee): "admin"}})
+            fx.store_blob(owner, "flags", {"leak_tracker": True})
+            asyncio.run(leak_tracker.store_key(owner, KEY_1))
+        with _tracker() as t, _live({}):
+            t.answer = DOWN
+            scope_b = {"X-Account-Id": other}
+            path = f"/admin/leaks/watches/{CREATOR}"
+            r = CHATTER_AB.put(path, json={**MIA, "display_name": "Agency B", "consent": True}, headers=scope_b)
+            assert r.status_code == 200, r.text
+            result = CHATTER_AB.get(path, headers=scope_b)
+            assert result.json()["identity"]["display_name"] == "Agency B"
+            (row,) = _watches()
+            assert row.agency_user_id == owner_b
+    finally:
+        async def unshare():
+            async with get_session() as s:
+                await s.execute(delete(UserAccount).where(
+                    UserAccount.user_id == owner_b, UserAccount.account_id == CREATOR))
+
+        asyncio.run(unshare())
 
 
 def case_service_refusals_drop_a_new_row_and_leave_an_old_one():
@@ -532,7 +706,7 @@ def case_service_refusals_drop_a_new_row_and_leave_an_old_one():
             assert _enrol().status_code == 200
             (kept,) = _watches()
             t.answer = answer
-            r = _enrol({**MIA, "display_name": "Changed"}, consent=None)
+            r = _enrol({**MIA, "display_name": "Changed"})
             assert r.status_code == status, r.text
         (row,) = _watches()
         assert (row.display_name, row.synced_at) == ("Mia Vale", kept.synced_at), detail
@@ -787,7 +961,7 @@ def case_a_contract_error_is_an_error_and_never_replaces_the_last_good_copy():
         assert stale["rows"] == good["rows"] and stale["rows"][0]["reachable"] is True, label
 
 
-def case_a_malformed_entry_reads_unknown_and_the_rest_merge():
+def case_a_malformed_creator_entry_is_unreadable():
     mia, rowan = CREATORS["response"]["creators"]
     for label, bad in [("counts a list", {"counts": [1, 2]}),
                        ("count a string", {"counts": {**mia["counts"], "live": "1"}}),
@@ -801,11 +975,8 @@ def case_a_malformed_entry_reads_unknown_and_the_rest_merge():
             _enrol_three(t)
             creators = [{**mia, **bad}, rowan]
             t.routes["/v1/creators"] = {**CREATORS, "response": {**CREATORS["response"], "creators": creators}}
-            body = _roster()
-        assert [r["reachable"] for r in body["rows"]] == [True, True, True], label
-        assert {k: body["rows"][0][k] for k in UNKNOWN} == UNKNOWN, (label, body["rows"][0])
-        rowan_row = {**_local(SECOND, "creator_a2", "rowanash"), "reachable": True, **_service(ROWAN_W)}
-        assert body["rows"][1] == rowan_row, label
+            r = OWNER_A.get("/admin/leaks/roster")
+        assert r.status_code == 502, label
 
 
 def case_the_roster_passes_today_through_and_a_bad_today_reads_null():

@@ -134,7 +134,8 @@ def case_uvicorn_exits_nonzero_before_binding_on_each_refusal():
         "unreadable": (None, {"OI_CELL_ID": "s02", "OI_CELL_ROLE": "data"}),
         "missing id": (_placement(), {"OI_CELL_ROLE": "data"}),
         "role mismatch": (_placement(), {"OI_CELL_ID": "s02", "OI_CELL_ROLE": "control"}),
-        "proto too high": (_placement(min_cell_proto=2), {"OI_CELL_ID": "s02", "OI_CELL_ROLE": "data"}),
+        "proto too high": (_placement(min_cell_proto=cell_mode.CELL_PROTO + 1),
+                           {"OI_CELL_ID": "s02", "OI_CELL_ROLE": "data"}),
     }
     for name, (doc, env) in bad.items():
         port = _free_port()

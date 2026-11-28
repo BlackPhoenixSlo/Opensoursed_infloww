@@ -376,7 +376,7 @@ async def case_exclude_sync_failure_fails_closed():
 
 
 async def case_exclude_sync_tolerates_one_bad_user():
-    from audiences import _sync_exclude_list_blocking
+    from audiences import _ensure_exclude_blocking
 
     fake = FakeListClient()
     fake.lists.append({"id": FakeListClient.AUTO_LID, "name": "Auto_Exclude"})
@@ -387,7 +387,7 @@ async def case_exclude_sync_tolerates_one_bad_user():
         of_error(403, UNLISTABLE_403))
         if int(uid) == bad else real_add(lid, uid))
 
-    lid = _sync_exclude_list_blocking(fake, {1, 2, bad, 3})
+    lid, _ = _ensure_exclude_blocking("of-bad-user", fake, {1, 2, bad, 3})
     assert lid == FakeListClient.AUTO_LID, lid
     assert fake.members[FakeListClient.AUTO_LID] == {1, 2, 3}, fake.members
 
@@ -397,14 +397,14 @@ async def case_exclude_sync_tolerates_one_bad_user():
     fake2.add_user_to_list = lambda lid, uid: (_ for _ in ()).throw(RuntimeError("OF down"))
     raised = False
     try:
-        _sync_exclude_list_blocking(fake2, {1, 2, 3})
+        _ensure_exclude_blocking("of-down", fake2, {1, 2, 3})
     except RuntimeError:
         raised = True
     assert raised, "all-adds-fail must re-raise (fail closed)"
 
 
 async def case_exclude_sync_steady_state_straggler():
-    from audiences import _sync_exclude_list_blocking
+    from audiences import _ensure_exclude_blocking
 
     fake = FakeListClient()
     fake.lists.append({"id": FakeListClient.AUTO_LID, "name": "Auto_Exclude"})
@@ -413,7 +413,7 @@ async def case_exclude_sync_steady_state_straggler():
     fake.add_user_to_list = lambda lid, uid: (_ for _ in ()).throw(
         of_error(403, UNLISTABLE_403))
 
-    lid = _sync_exclude_list_blocking(fake, {1, 2, 3, bad})
+    lid, _ = _ensure_exclude_blocking("of-straggler", fake, {1, 2, 3, bad})
     assert lid == FakeListClient.AUTO_LID, lid
     assert fake.members[FakeListClient.AUTO_LID] == {1, 2, 3}, fake.members
     assert fake.removed == [], fake.removed
@@ -521,13 +521,13 @@ def case_roster_audience_reads_both_rosters():
     c.members[901] = {3, 6}
     c.members[902] = {7, 8}
     got = roster_audience_blocking(
-        c, user_lists=["fans", "following", "902"], excluded_user_lists=[901])
+        c, account_id="of-test", user_lists=["fans", "following", "902"], excluded_user_lists=[901])
     assert got == [1, 2, 4, 5, 7, 8], got
     assert any(x.startswith("subscribers:active") for x in c.calls), c.calls
     assert any(x.startswith("following:active:0:infinite") for x in c.calls), c.calls
 
     c2 = FakeRosterClient(fans=[], following=[10, 11], envelope_following=True)
-    assert roster_audience_blocking(c2, user_lists=["following"]) == [10, 11]
+    assert roster_audience_blocking(c2, account_id="of-test", user_lists=["following"]) == [10, 11]
 
 
 def case_roster_audience_fails_closed():
@@ -535,28 +535,28 @@ def case_roster_audience_fails_closed():
     base = dict(user_lists=["fans"])
 
     ok = FakeRosterClient(fans=[5])
-    assert roster_audience_blocking(ok, **base) == [5], "control"
+    assert roster_audience_blocking(ok, account_id="of-test", **base) == [5], "control"
 
     assert roster_audience_blocking(
-        FakeRosterClient(fans=[5]), user_lists=["fans", "recent"]) is None
+        FakeRosterClient(fans=[5]), account_id="of-test", user_lists=["fans", "recent"]) is None
 
     class Boom(FakeRosterClient):
         def subscribers(self, **kw):
             raise RuntimeError("proxy 403")
-    assert roster_audience_blocking(Boom(), **base) is None
+    assert roster_audience_blocking(Boom(), account_id="of-test", **base) is None
 
     class Endless(FakeRosterClient):
         def subscribers(self, *, type="active", limit=10, offset=0, **kw):
             base_id = 1000 + offset
             return {"list": [{"id": base_id + i} for i in range(limit)],
                     "hasMore": True}
-    assert roster_audience_blocking(Endless(), **base) is None
+    assert roster_audience_blocking(Endless(), account_id="of-test", **base) is None
 
     class BadExclude(FakeRosterClient):
         def list_users_in(self, list_id, **kw):
             raise RuntimeError("list gone")
     assert roster_audience_blocking(
-        BadExclude(fans=[5]), excluded_user_lists=[901], **base) is None
+        BadExclude(fans=[5]), account_id="of-test", excluded_user_lists=[901], **base) is None
 
 
 async def case_the_run_records_body_and_stamp_and_reads_no_roster():

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from functools import lru_cache
 from typing import Any, Callable
 from zoneinfo import available_timezones
 
+from sqlalchemy import select
+
+from db.models import VERSIONED_SETTINGS_TABS, SettingsVersion, UserSetting
 from tx_rollup import CONVERTERS_WINDOW_MAX_S, CONVERTERS_WINDOW_MIN_S
 
 Error = tuple[str, str]
@@ -276,3 +281,48 @@ def parse_blob(tab: str, raw: dict[str, Any]) -> tuple[dict[str, Any], list[Erro
     blob = TABS[tab](raw, errors)
     blob["version"] = VERSION
     return blob, errors
+
+
+def _loads(raw: str | None) -> dict[str, Any]:
+    try:
+        loaded = json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+async def read_blob(s, user_id: str, tab: str) -> dict[str, Any]:
+    if tab in VERSIONED_SETTINGS_TABS:
+        return blob_at(await versions(s, user_id, tab), datetime.utcnow())
+    row = await s.get(UserSetting, (user_id, tab))
+    return _loads(row.config_json if row is not None else None)
+
+
+async def version_rows(s, user_id: str, tab: str) -> list[SettingsVersion]:
+    return list((await s.execute(
+        select(SettingsVersion).where(SettingsVersion.user_id == user_id, SettingsVersion.tab == tab)
+        .order_by(SettingsVersion.effective_from, SettingsVersion.id)
+    )).scalars().all())
+
+
+async def versions(s, user_id: str, tab: str) -> list[tuple[datetime, dict[str, Any]]]:
+    out: list[tuple[datetime, dict[str, Any]]] = []
+    for row in await version_rows(s, user_id, tab):
+        if out and out[-1][0] == row.effective_from:
+            out.pop()
+        out.append((row.effective_from, _loads(row.config_json)))
+    return out
+
+
+def blob_at(versions: list[tuple[datetime, dict[str, Any]]], ts: datetime) -> dict[str, Any]:
+    found: dict[str, Any] = {}
+    for at, blob in versions:
+        if at > ts:
+            break
+        found = blob
+    return found
+
+
+async def applied_blob(s, agency_user_id: str, tab: str) -> dict[str, Any]:
+    blob, _ = parse_blob(tab, await read_blob(s, agency_user_id, tab))
+    return blob

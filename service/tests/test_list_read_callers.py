@@ -29,7 +29,7 @@ class Row(NamedTuple):
 CALLERS = {
     "of_paging:list_member_ids.fetch": Row("read", "OnlyFans offset paging inside the read",
                                            "test_of_paging:case_one_page_list_table"),
-    "of_paging:_one_page_member_ids": Row("read", "the one-page read on a `platform_list_page` client",
+    "of_paging:_one_page_member_ids": Row("read", "the one-page read using the platform registry",
                                           "test_of_paging:case_one_page_list_table"),
     "audience_include:<module>": Row("read", "`_crawl_list_ids_blocking` alias of `of_paging.list_member_ids`",
                                      "smart_list_sync/chat"),
@@ -53,10 +53,8 @@ CALLERS = {
                                            "send_mass_message/broadcast"),
     "audiences:_ResumableLists.list_users_in": Row("behind-02f-mass-write-gate", "the refresh's retrying reader",
                                                    "send_mass_message/broadcast"),
-    "audiences:_sync_exclude_list_blocking": Row("unused", "no Relay caller; tests only",
-                                                 "test_list_read_callers:case_an_unused_reader_has_no_relay_caller"),
-    "of_paging:list_audience": Row("refuses", "the delete_list member read; a raise is an incomplete ListAudience, "
-                                              "which `live_check` refuses as `platform_lacks:delete_list`",
+    "of_paging:list_audience": Row("refuses", "ListGone propagates; other read errors yield an incomplete "
+                                              "ListAudience, which `live_check` refuses as `platform_lacks:delete_list`",
                                    "test_platform_kind_verdicts:case_a_granted_tombstone_deletes_only_a_proof_fan_list"),
 }
 
@@ -77,10 +75,8 @@ ROSTER_CALLERS = {
 }
 
 DELETE_CALLERS = {
-    "server:_delete_list": Row("refuses", "`delete_list_ungranted` before the client, `delete_list_refusal` "
-                                          "before the write; a non-Live-check client keeps `_platform_call`"),
-    "automations.smart_list_sync:_finish_tombstone": Row("refuses", "`run` holds an ungranted tombstone before the "
-                                                                    "client; `delete_list_refusal` before the write"),
+    "server:_delete_list": Row("refuses", "checks the grant and fresh membership before returning the delete response"),
+    "side_effect_gate:delete_list_checked": Row("refuses", "checks the grant and fresh membership before the write"),
 }
 
 for _path in sorted(Path(__file__).parent.glob("_list_read_callers_*.py")):

@@ -400,12 +400,16 @@ def case_tombstone_reads_as_missing_everywhere():
             await s.flush()
             return row.id
     lid = asyncio.run(seed())
-    assert asyncio.run(_resolve_smart_list(lid, aid)) == [], "auto_follow must not target it"
+
+    async def follow_targets():
+        return await _resolve_smart_list(lid, aid)
+
+    assert asyncio.run(follow_targets()) == [], "auto_follow must not target it"
     assert _client.get(f"/admin/smart-lists/{lid}/resolve").status_code == 404
     assert _client.post(f"/admin/smart-lists/{lid}/activate").status_code == 404
     assert _client.patch(f"/admin/smart-lists/{lid}", json={"name": "U"}).status_code == 404
     asyncio.run(_set_state(lid, "ok"))
-    assert asyncio.run(_resolve_smart_list(lid, aid)) == [21]
+    assert asyncio.run(follow_targets()) == [21]
 
 
 async def _get(lid):

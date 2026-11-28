@@ -13,8 +13,9 @@ import _agency_fixtures as fx  # noqa: E402
 from _s4s_fixtures import (  # noqa: E402
     IDS, audit_rows, count, db, list_in_discovery, of_profile, profile, seed_creators, with_env,
 )
+import accounts  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import S4SRequest, S4SSlot, ScheduledJob, UserAccount  # noqa: E402
+from db.models import S4SBlock, S4SRequest, S4SSlot, ScheduledJob, UserAccount  # noqa: E402
 
 A = IDS["creator_a"]
 B = IDS["creator_b"]
@@ -22,10 +23,11 @@ C = "1000009"
 NO_PRIMARY_A, NO_PRIMARY_B, OUT_A, OUT_B, HIDDEN_B, GONE_B = (
     "1000011", "1000012", "1000013", "1000014", "1000015", "1000016")
 PROP_A, PROP_B, PROP_X = "1000021", "1000022", "1000023"
+FANSLY_A, FANSLY_B = "1000061", "1000062"
 seed_creators({C: "agency_a_owner", NO_PRIMARY_A: "agency_a_owner", OUT_A: "agency_a_owner",
                NO_PRIMARY_B: "agency_b_owner", OUT_B: "agency_b_owner", HIDDEN_B: "agency_b_owner",
                GONE_B: "agency_b_owner", PROP_A: "agency_a_owner", PROP_B: "agency_b_owner",
-               PROP_X: "agency_a_owner"})
+               PROP_X: "agency_a_owner", FANSLY_A: "agency_a_owner", FANSLY_B: "agency_b_owner"})
 
 OWNER_A = fx.login_owner("agency_a_owner")
 OWNER_B = fx.login_owner("agency_b_owner")
@@ -49,6 +51,10 @@ list_in_discovery(OWNER_B, GONE_B, "Fixture Gone", "fixture_gone")
 list_in_discovery(OWNER_A, PROP_A, "Fixture Prop A", "fixture_prop_a")
 list_in_discovery(OWNER_B, PROP_B, "Fixture Prop B", "fixture_prop_b")
 list_in_discovery(OWNER_A, PROP_X, "Fixture Prop X", "fixture_prop_x")
+list_in_discovery(OWNER_A, FANSLY_A, "Fixture Fansly A", "fixture_fansly_a")
+list_in_discovery(OWNER_B, FANSLY_B, "Fixture Fansly B", "fixture_fansly_b")
+for _aid in (FANSLY_A, FANSLY_B):
+    accounts.save_meta(_aid, {**(accounts.load_meta(_aid) or {}), "platform": "fansly"})
 
 
 def pid(client, aid: str) -> int:
@@ -56,7 +62,8 @@ def pid(client, aid: str) -> int:
 
 
 PID = {A: pid(OWNER_A, A), B: pid(OWNER_B, B), C: pid(OWNER_A, C),
-       PROP_A: pid(OWNER_A, PROP_A), PROP_B: pid(OWNER_B, PROP_B), PROP_X: pid(OWNER_A, PROP_X)}
+       PROP_A: pid(OWNER_A, PROP_A), PROP_B: pid(OWNER_B, PROP_B), PROP_X: pid(OWNER_A, PROP_X),
+       FANSLY_A: pid(OWNER_A, FANSLY_A), FANSLY_B: pid(OWNER_B, FANSLY_B)}
 
 
 def day(n: int, hour: int = 10, minute: int = 0) -> datetime:
@@ -408,6 +415,83 @@ def case_the_master_acts_as_an_owner_of_its_own_creators_only():
         assert r.status_code == 404, f"the Master {verb}s a request it is not a party to: {r.status_code} {r.text}"
     assert act(OWNER_A, req["id"], "cancel").status_code == 200
 
+
+
+MEDIA = json.dumps([{"id": 7001, "media_type": "photo"}])
+MEDIA_REFUSAL = "platform_lacks:create_post:media"
+
+
+def with_media(request_id: int, *, from_media: bool, to_media: bool) -> None:
+    db(update(S4SRequest).where(S4SRequest.id == request_id).values(
+        from_media_json=MEDIA if from_media else None, to_media_json=MEDIA if to_media else None))
+
+
+def accept_state(request_id: int) -> tuple:
+    (r,) = rows(S4SRequest, id=request_id)
+    return ((r.status, r.answered_at), count(S4SSlot), count(ScheduledJob, kind="s4s_post"),
+            len(audit_rows("s4s.request_accept")))
+
+
+def case_accept_refuses_501_when_either_poster_cannot_post_the_partners_media_and_moves_nothing():
+    for label, from_id, to_id, media in (
+        ("a Fansly to poster posting the sender's media", A, FANSLY_B, {"from_media": True, "to_media": False}),
+        ("a Fansly from poster posting the receiver's media", FANSLY_A, B, {"from_media": False, "to_media": True}),
+    ):
+        req = sent(OWNER_A, from_id, to_id, day(60, 9))
+        with_media(req["id"], **media)
+        before = accept_state(req["id"])
+        r = act(OWNER_B, req["id"], "accept")
+        assert (r.status_code, r.json().get("detail")) == (501, MEDIA_REFUSAL), f"{label}: {r.status_code} {r.text}"
+        assert accept_state(req["id"]) == before == (("pending", None), *before[1:]), label
+        assert not rows(S4SSlot, request_id=req["id"]), label
+        assert act(OWNER_A, req["id"], "cancel").status_code == 200, label
+
+
+def case_accept_with_text_only_snapshots_or_only_the_fansly_posters_own_media_books_both_slots():
+    for n, (label, from_id, to_id, media) in enumerate((
+        ("Fansly to poster, text-only", A, FANSLY_B, {"from_media": False, "to_media": False}),
+        ("Fansly from poster, text-only", FANSLY_A, B, {"from_media": False, "to_media": False}),
+        ("Fansly to poster, only its own media", A, FANSLY_B, {"from_media": False, "to_media": True}),
+        ("Fansly from poster, only its own media", FANSLY_A, B, {"from_media": True, "to_media": False}),
+        ("two OnlyFans posters with media both ways", A, B, {"from_media": True, "to_media": True}),
+    )):
+        req = sent(OWNER_A, from_id, to_id, day(61 + n, 9))
+        with_media(req["id"], **media)
+        slots, jobs = count(S4SSlot), count(ScheduledJob, kind="s4s_post")
+        r = act(OWNER_B, req["id"], "accept")
+        assert r.status_code == 200 and r.json()["status"] == "accepted", f"{label}: {r.status_code} {r.text}"
+        assert (count(S4SSlot), count(ScheduledJob, kind="s4s_post")) == (slots + 2, jobs + 2), label
+
+
+def case_earlier_answers_stay_ahead_of_the_media_refusal_and_it_stays_ahead_of_booking_conflicts():
+    wrong_party = sent(OWNER_A, A, FANSLY_B, day(70, 9))
+    with_media(wrong_party["id"], from_media=True, to_media=False)
+    r = act(OWNER_A, wrong_party["id"], "accept")
+    assert r.status_code == 404, f"the sender accepts: {r.status_code} {r.text}"
+    assert act(OWNER_A, wrong_party["id"], "cancel").status_code == 200
+    r = act(OWNER_B, wrong_party["id"], "accept")
+    assert r.status_code == 409, f"accept a cancelled request: {r.status_code} {r.text}"
+
+    past = sent(OWNER_A, A, FANSLY_B, day(71, 9))
+    with_media(past["id"], from_media=True, to_media=False)
+    db(update(S4SRequest).where(S4SRequest.id == past["id"]).values(
+        slot_at=datetime.utcnow().replace(microsecond=0) - timedelta(minutes=1)))
+    r = act(OWNER_B, past["id"], "accept")
+    assert r.status_code == 409, f"accept a request past its time: {r.status_code} {r.text}"
+
+    blocked = sent(OWNER_A, A, FANSLY_B, day(72, 9))
+    with_media(blocked["id"], from_media=True, to_media=False)
+    db(S4SBlock.__table__.insert().values(agency_user_id=IDS["agency_b_owner"], account_id=A, projection_json="{}"))
+    try:
+        before = accept_state(blocked["id"])
+        r = act(OWNER_B, blocked["id"], "accept")
+        assert (r.status_code, r.json().get("detail")) == (501, MEDIA_REFUSAL), f"blocked: {r.status_code} {r.text}"
+        assert accept_state(blocked["id"]) == before
+        with_media(blocked["id"], from_media=False, to_media=False)
+        r = act(OWNER_B, blocked["id"], "accept")
+        assert r.status_code == 409, f"text-only while blocked: {r.status_code} {r.text}"
+    finally:
+        db(delete(S4SBlock).where(S4SBlock.account_id == A, S4SBlock.agency_user_id == IDS["agency_b_owner"]))
 
 
 def proposal(client, from_id: str, to_aid: str):

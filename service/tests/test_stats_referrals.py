@@ -15,11 +15,14 @@ from pathlib import Path  # noqa: E402
 
 from fastapi import HTTPException  # noqa: E402
 
+import _agency_fixtures as fx  # noqa: E402
 import account_health  # noqa: E402
 import auth  # noqa: E402
 import relay_cache  # noqa: E402
 import server  # noqa: E402
 import of_stats_api  # noqa: E402  # after server: its routes load with it
+from db.engine import get_session  # noqa: E402
+from db.models import Account, UserAccount  # noqa: E402
 
 FIX = json.loads((Path(__file__).parent / "fixtures" / "of_statistics_reads.json").read_text())
 
@@ -67,7 +70,7 @@ async def _call(account_id=None, f="2026-10-01", t="2026-10-02"):
 async def case_one_read_per_creator_in_cents():
     _reset(**{A: _chart(12.5, [("2026-10-01", 2.5), ("2026-10-02", 10)]), B: _chart(0, [])})
     out = await _call()
-    assert out["unavailable"] == [], out
+    assert out["unavailable"] == [F], out
     rows = {r["account_id"]: r for r in out["rows"]}
     assert set(rows) == {A, B}, f"Fansly or a session-less account was read: {out}"
     assert rows[A]["total_cents"] == 1250, rows[A]
@@ -80,7 +83,7 @@ async def case_one_read_per_creator_in_cents():
 async def case_a_failed_creator_is_unavailable():
     _reset(**{A: _chart(3, [("2026-10-01", 3)])})
     out = await _call()
-    assert out["unavailable"] == [B], out
+    assert out["unavailable"] == [F, B], out
     assert [r["account_id"] for r in out["rows"]] == [A], out
 
 
@@ -145,11 +148,11 @@ async def case_late_creator_is_unavailable():
     budget, of_stats_api._REFERRALS_BUDGET_S = of_stats_api._REFERRALS_BUDGET_S, 0.2
     try:
         out = await _call()
-        assert out["unavailable"] == [B] and [r["account_id"] for r in out["rows"]] == [A], out
+        assert out["unavailable"] == [F, B] and [r["account_id"] for r in out["rows"]] == [A], out
         assert len(of_stats_api._referrals_running) == 1, "the late read was cancelled or dropped"
         await asyncio.gather(*of_stats_api._referrals_running)
         out = await _call()
-        assert out["unavailable"] == [] and {r["account_id"] for r in out["rows"]} == {A, B}, out
+        assert out["unavailable"] == [F] and {r["account_id"] for r in out["rows"]} == {A, B}, out
         assert len(_fakes[B].calls) == 1, "the late read did not land in the cache"
     finally:
         of_stats_api._REFERRALS_BUDGET_S = budget
@@ -161,15 +164,15 @@ async def case_one_read_in_flight_per_creator():
     budget, of_stats_api._REFERRALS_BUDGET_S = of_stats_api._REFERRALS_BUDGET_S, 0.2
     try:
         out = await _call()
-        assert out["unavailable"] == [B], out
+        assert out["unavailable"] == [F, B], out
         for t in ("2026-10-03", "2026-10-04"):
             out = await _call(t=t)
-            assert out["unavailable"] == [B], out
+            assert out["unavailable"] == [F, B], out
         assert len(_fakes[B].calls) == 1, f"stale windows stacked up reads: {_fakes[B].calls}"
         await asyncio.gather(*of_stats_api._referrals_running)
         _fakes[B].delay = 0.0
         out = await _call(t="2026-10-04")
-        assert out["unavailable"] == [], out
+        assert out["unavailable"] == [F], out
         assert len(_fakes[B].calls) == 2, _fakes[B].calls
     finally:
         of_stats_api._REFERRALS_BUDGET_S = budget
@@ -182,8 +185,35 @@ async def case_a_deactivated_creator_is_not_read():
         out = await _call()
     finally:
         await account_health.activate(B)
-    assert out["unavailable"] == [B] and [r["account_id"] for r in out["rows"]] == [A], out
+    assert out["unavailable"] == [F, B] and [r["account_id"] for r in out["rows"]] == [A], out
     assert _fakes[B].calls == [], "a deactivated Creator was read"
+
+
+REFERRALS_ROUTE = (
+    (F, 200, {"rows": [], "unavailable": [F]}),
+    (f"{A},{F}", 200, {"rows": [{"account_id": A, "total_cents": 250,
+                                 "by_day": [{"day": "2026-10-01", "cents": 250}]}], "unavailable": [F]}),
+    (A, 200, {"rows": [{"account_id": A, "total_cents": 250,
+                        "by_day": [{"day": "2026-10-01", "cents": 250}]}], "unavailable": []}),
+)
+
+
+async def _own(user_id: str, *aids: str) -> None:
+    async with get_session() as s:
+        for aid in aids:
+            s.add(Account(id=aid, nickname=f"ref_{aid}"))
+            s.add(UserAccount(user_id=user_id, account_id=aid))
+
+
+def case_the_route_lists_fansly_unavailable_and_keeps_onlyfans_rows():
+    ids = fx.seed_two_agencies()
+    asyncio.run(_own(ids["agency_a_owner"], A, F))
+    http = fx.login_owner("agency_a_owner")
+    for scope, status, body in REFERRALS_ROUTE:
+        _reset(**{A: _chart(2.5, [("2026-10-01", 2.5)])})
+        r = http.get("/admin/stats/referrals", params={"account_id": scope, "from": "2026-10-01", "to": "2026-10-02"})
+        assert (r.status_code, r.json()) == (status, body), (scope, r.status_code, r.text)
+        assert _fakes[F].calls == [], (scope, "Fansly has no referral program")
 
 
 def case_imported_first_fails_loudly():

@@ -213,11 +213,16 @@ html:has([data-look="site"]) body {
   color-scheme: dark;
 }
 
-/* The help messenger (components/assistant/AssistantWidget.tsx dock + sheet; not the /help-center page) is always
- * light, as Infloww's own Intercom messenger is, whatever the app's theme.
+/* The help messenger (components/assistant/AssistantWidget.tsx dock + sheet; not the /help-center page) follows
+ * the app theme (owner): dark tokens by default, Intercom's light palette under the light theme.
  * Scoped like `data-look="site"`: the panel's token utilities (and
  * AnswerText's, which it renders) pick these values up. */
 [data-look="messenger"] {
+  /* Intercom's messenger sets the system stack, not the app's Instrument Sans. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               Helvetica, Arial, sans-serif;
+}
+html[data-theme="light"] [data-look="messenger"] {
   --color-bg:           #ffffff;
   --color-bg-elev-1:    #f2f2f2;
   --color-bg-elev-2:    #e4e4e4;
@@ -228,9 +233,6 @@ html:has([data-look="site"]) body {
   --color-border:       #e6e6e6;
   --color-border-light: #d9d9d9;
   color-scheme: light;
-  /* Intercom's messenger sets the system stack, not the app's Instrument Sans. */
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-               Helvetica, Arial, sans-serif;
 }
 
 html, body {

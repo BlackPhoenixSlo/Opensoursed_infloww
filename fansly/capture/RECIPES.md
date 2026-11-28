@@ -255,8 +255,9 @@ still the client's label, not a captured row.
 `FANSLY_PARITY_STATUS.md` records that **tips** and the **PPV "fan actually
 paid" signal** are both blocked because every creator-side sales endpoint 404s
 (`/account/media/purchases`, `/purchases`, `/statements`, `/account/sales`,
-`/payments/statements`, `/messagepurchases`, …), and `transactions()` is an empty
-stub as a result.
+`/payments/statements`, `/messagepurchases`, …). `transactions()` is Blocked
+for its own reason: the per-sale feed is unproven; the earnings capture holds
+aggregates only.
 
 But notifications carry those events directly:
 * **`7001` = Tips** → a trigger for `tip_reward` / `tip_ladder` that does not
@@ -365,8 +366,9 @@ POST https://apiv3.fansly.com/api/v1/status?ngsw-bypass=true
 {"statusId":1}
 → {"success":true,"response":{"accountId","statusId":1,"lastSeenAt","updatedAt"}}
 ```
-`statusId:1` = online. Broadcast as the serviceId-8 event. Relevant to §3.5
-(`iter_online_subscribers`) — this is the WRITE side; the read side is still open.
+Broadcast as the serviceId-8 event. Relevant to §3.5
+(`iter_online_subscribers`) — this is the WRITE side; on reads `statusId` is not
+the online flag, `lastSeenAt` recency is (see Presence below).
 
 ---
 
@@ -984,8 +986,8 @@ GET /api/v1/notifications/unack
 ```
 Live with six `acknowledgedAt: null` rows on `/notifications`; the bell showed
 **6** = the sum. Earlier captures saw `[]` only because everything was acked.
-`notifications_count` keeps deriving from the feed (one fetch, badge == list);
-this endpoint is the cross-check.
+`notifications_count` reads this endpoint: it is the badge source (a failed
+or malformed answer raises, never 0).
 
 ### "Mark as Unread" is client-local — `mark_chat_unread` stays a no-op
 

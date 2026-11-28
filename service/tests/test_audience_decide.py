@@ -90,20 +90,20 @@ def case_recipients_truncation_stops_crawl():
     m = {"fans": [{"id": 1}, {"id": 2}], "following": [{"id": 3}], 77: [{"id": 2}]}
     ok = _Roster(members=m)
     assert audiences.roster_audience_blocking(
-        ok, user_lists=["fans", "following"], excluded_user_lists=[77]) == [1, 3]
+        ok, account_id="of-test", user_lists=["fans", "following"], excluded_user_lists=[77]) == [1, 3]
 
     c = _Roster(endless={"fans"}, members=m)
     assert audiences.roster_audience_blocking(
-        c, user_lists=["fans", "following"], excluded_user_lists=[77]) is None
+        c, account_id="of-test", user_lists=["fans", "following"], excluded_user_lists=[77]) is None
     assert not any(x.startswith(("following", "77")) for x in c.calls), c.calls[-3:]
 
     c = _Roster(endless={77}, members=m)
     assert audiences.roster_audience_blocking(
-        c, user_lists=["fans"], excluded_user_lists=[77, 88]) is None
+        c, account_id="of-test", user_lists=["fans"], excluded_user_lists=[77, 88]) is None
     assert not any(x.startswith("88") for x in c.calls), c.calls[-3:]
 
     c = _Roster(members=m)
-    assert audiences.roster_audience_blocking(c, user_lists=["fans", "vips"]) is None
+    assert audiences.roster_audience_blocking(c, account_id="of-test", user_lists=["fans", "vips"]) is None
     assert c.calls == [], c.calls
 
 
@@ -136,18 +136,18 @@ def case_exclude_sync_truncated_logs_loud():
     class H(logging.Handler):
         def emit(self, record):
             logged.append(record)
-    h = H(level=logging.ERROR)
+    h = H(level=logging.WARNING)
     audiences.log.addHandler(h)
     try:
         c = _AutoExclude(endless={50})
-        assert audiences._sync_exclude_list_blocking(c, {1, 10_000}) == 50
+        assert audiences._ensure_exclude_blocking("of-cut", c, {1, 10_000}) == (50, True)
         assert c.added == [1], c.added
-        assert len(c.removed) == of_paging.MAX_PAGES - 1 and 10_000 not in c.removed
-        assert any("backstop" in r.getMessage() for r in logged), logged
+        assert c.removed == []
+        assert any("incremental" in r.getMessage() for r in logged), logged
 
         logged.clear()
         ok = _AutoExclude(members={50: [{"id": 1}, {"id": 9}]})
-        assert audiences._sync_exclude_list_blocking(ok, {1, 2}) == 50
+        assert audiences._ensure_exclude_blocking("of-complete", ok, {1, 2}) == (50, False)
         assert (ok.added, ok.removed, logged) == ([2], [9], []), (ok.added, ok.removed, logged)
     finally:
         audiences.log.removeHandler(h)
@@ -176,7 +176,7 @@ def case_exclude_add_failure_table():
             c.added.append(uid)
         c.add_user_to_list = add
         try:
-            got = audiences._sync_exclude_list_blocking(c, {1, 2, 3}) == 50
+            got = audiences._ensure_exclude_blocking("of-add-errors", c, {1, 2, 3}) == (50, False)
         except Exception:
             got = False
         if got != goes_on:

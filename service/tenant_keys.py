@@ -135,7 +135,7 @@ async def key_overview(registry: dict[str, bool],
 
     providers: dict[str, list[str]] = {}
     for uid, prov in keyed:
-        if prov not in NON_LLM_PROVIDERS:
+        if prov in TENANT_KEY_PROVIDERS:
             providers.setdefault(uid, []).append(prov)
 
     out: dict[str, dict] = {}

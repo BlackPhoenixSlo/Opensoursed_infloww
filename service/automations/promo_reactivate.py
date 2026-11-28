@@ -19,12 +19,14 @@ from db.models import AutomationRule, PromoCampaign, PromoKeepState, ScheduledJo
 import job_queue
 import link_metrics
 import of_pacing
+import platforms
 import promo_create_guard
 import runtime_switches
 from isotime import parse_iso
 from notifications_api import push_unread
 from of_promos import fetch_of_promos, promo_type_body
 from promo_create_guard import PREEMPT_SWITCH, Refused
+from side_effect_gate import PLATFORM_LACKS_PREFIX
 from promo_keep_decide import (HOLD_REASONS, NOT_LISTED_S, TIMED_LEAD_S, AfterEnd, Created, Fill,
                                Inputs, Kept, Memo, Tally, Timed, TurnOff, Wait, decide,
                                end_on_our_clock, observe, preempt_applies, preempt_failure,
@@ -303,6 +305,8 @@ async def _live_followup(account_id: str, payload: dict, kept: PromoCampaign | N
 
 @register("promo_reactivate")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
+    if platforms.refusal_for_account(account_id, "promotions"):
+        return {"status": "skipped", "reason": f"{PLATFORM_LACKS_PREFIX}promotions"}
     payload = payload or {}
     dry_run = bool_knob(payload, "dry_run", True)
     try:

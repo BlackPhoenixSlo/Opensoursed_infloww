@@ -17,6 +17,7 @@ import automation_executor as ax
 from db.engine import get_session
 from db.models import S4SMedia, S4SPost, S4SProfile, S4SRequest, S4SSlot
 from s4s_common import _json_object, _owner_context, listed_to
+from side_effect_gate import branch_refusal
 
 log = logging.getLogger("of-relay.s4s_media")
 
@@ -38,8 +39,18 @@ def _ids(raw: str | None) -> list[int]:
     return [int(m["id"]) for m in json.loads(raw)] if raw else []
 
 
-def slot_media_ids(r: S4SRequest, slot: S4SSlot) -> list[int]:
-    return _ids(r.from_media_json if slot.poster_account_id == r.to_account_id else r.to_media_json)
+def slot_media_ids(r: S4SRequest, poster_account_id: str) -> list[int]:
+    return _ids(r.from_media_json if poster_account_id == r.to_account_id else r.to_media_json)
+
+
+def partner_media_refusal(r: S4SRequest, poster_account_id: str, *,
+                          memo: dict[str, str | None] | None = None) -> str | None:
+    if not slot_media_ids(r, poster_account_id):
+        return None
+    memo = {} if memo is None else memo
+    if poster_account_id not in memo:
+        memo[poster_account_id] = branch_refusal(poster_account_id, "create_post", "media")
+    return memo[poster_account_id]
 
 
 def _out(row: S4SMedia) -> dict[str, Any]:
@@ -66,7 +77,7 @@ async def snapshot(s, account_id: str) -> list[dict[str, Any]]:
 
 
 async def slot_vault_ids(s, slot: S4SSlot) -> list[int]:
-    ids = slot_media_ids(await s.get(S4SRequest, slot.request_id), slot)
+    ids = slot_media_ids(await s.get(S4SRequest, slot.request_id), slot.poster_account_id)
     if not ids:
         return []
     rows = {m.id: m for m in (await s.execute(select(S4SMedia).where(S4SMedia.id.in_(ids)))).scalars().all()}

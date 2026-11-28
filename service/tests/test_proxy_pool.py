@@ -714,6 +714,8 @@ def case_pick_pool_table():
          ["de", "fr"], "9", _e("old", "old.invalid", geo="Berlin, DE"), nogeo, "de"),
         ([_e("de", "de.invalid", 1, ["1"], geo="Berlin, DE"), _e("fr", "fr.invalid", 1)],
          ["de", "fr"], "9", _e("old", "old.invalid"), nogeo, "fr"),
+        ([_e("de", "de.invalid", 1, ["1"], geo="Berlin, DE"), _e("xx", "xx.invalid", 1)],
+         ["de", "xx"], "9", _e("old", "old.invalid", geo="Berlin, DE"), nogeo, "xx"),
         ([_e("a", "a.invalid", 1, ["1"], geo="X, DE"), _e("b", "b.invalid", 1, geo="Y, DE")],
          "ab", "9", _e("old", "old.invalid", geo="Z, FR"), lambda p: "Z, FR" if p["label"] in ("a", "old") else None, "a"),
     ]
@@ -750,6 +752,100 @@ def case_pick_answering_table():
                                              verify=verify, checked=checked, deactivated=frozenset(), probes=probes)
         assert (got["label"] if got else None, seen) == (want, probed), (answers, before, probes, got, seen)
         assert all(checked[k] == answers[k] for k in seen), checked
+
+
+def case_pick_answering_drops_a_country_learned_by_its_probe():
+    a, b = _e("a", "a.invalid"), _e("b", "b.invalid", ids=["1"])
+    like = _e("old", "old.invalid", geo="Berlin, DE")
+    for b_ok, want, probed in [(True, "b", ["a", "b"]), (False, "a", ["a", "b"])]:
+        learned: dict[str, str] = {}
+        seen: list[str] = []
+
+        def verify(p, b_ok=b_ok, seen=seen, learned=learned):
+            seen.append(p["label"])
+            learned[p["label"]] = "Paris, FR" if p["label"] == "a" else "Berlin, DE"
+            return p["label"] == "a" or b_ok
+        got = proxy_registry._pick_answering([a, b], {"proxies": [a, b]}, "9", _FirstRng(), like=like,
+                                             geo=lambda p, learned=learned: learned.get(p["label"]), verify=verify,
+                                             checked={}, deactivated=frozenset())
+        assert (got["label"], seen) == (want, probed), (b_ok, got, seen)
+
+
+def _rebalance_registry(*entries):
+    proxy_registry.REGISTRY_PATH.write_text(json.dumps({"proxies": [
+        {**_e(label, f"{label}.invalid", ids=ids, geo=geo), "pool": True, "tier": tier}
+        for label, tier, ids, geo in entries]}))
+
+
+def _step(bad=(), due=(), answers=None, deactivated=(), tiers=(0,), geo=None, seen=None):
+    seen = [] if seen is None else seen
+
+    def verify(p):
+        seen.append(p["label"])
+        return (answers or {}).get(p["label"], True)
+    return proxy_registry.rebalance_step(bad=set(bad), due=set(due), geo=lambda p: (geo or {}).get(p["label"]),
+                                         verify=verify, deactivated=frozenset(deactivated), tiers=tiers,
+                                         rng=_FirstRng())
+
+
+def _loads_by_label():
+    return {p["label"]: proxy_registry._ids_on(p) for p in proxy_registry.list_proxies()}
+
+
+def case_rebalance_spreads_a_stack_one_move_per_step():
+    _rebalance_registry(("a", 0, ["1", "2", "3", "4"], None), ("b", 0, [], None), ("c", 0, [], None),
+                        ("d", 0, [], None), ("t2", 2, ["8", "9"], None), ("t2b", 2, [], None))
+    switched: list[list[str]] = []
+    proxy_registry._switch_listeners.append(switched.append)
+    try:
+        steps = [_step() for _ in range(4)]
+    finally:
+        proxy_registry._switch_listeners.remove(switched.append)
+    assert steps == [("4", "a", "b"), ("3", "a", "c"), ("2", "a", "d"), None], steps
+    assert switched == [["4"], ["3"], ["2"]], switched
+    assert _loads_by_label() == {"a": ["1"], "b": ["4"], "c": ["3"], "d": ["2"], "t2": ["8", "9"], "t2b": []}
+    assert _step(tiers=(0, 2)) == ("9", "t2", "t2b"), "another tier only when asked for"
+
+
+def case_rebalance_leaves_a_tier_alone_table():
+    rows = [
+        ([("a", 0, ["1", "2"], None), ("b", 0, [], None), ("c", 0, [], None)], {"bad": ["c"]}, []),
+        ([("a", 0, ["1", "2"], None), ("b", 0, [], None)], {"due": ["a"]}, []),
+        ([("a", 0, ["1", "2"], None), ("b", 0, ["3"], None)], {}, []),
+        ([("a", 0, ["1"], None), ("b", 0, [], None)], {}, []),
+        ([("a", 0, ["1", "2"], None), ("b", 0, [], None)], {"deactivated": ["2"]}, []),
+        ([("a", 0, ["1", "2"], None), ("b", 0, [], None)], {"answers": {"b": False}}, ["b"]),
+        ([("a", 0, ["1", "2"], None), ("b", 0, [], None), ("c", 0, [], None), ("d", 0, [], None)],
+         {"answers": {"b": False, "c": False, "d": False}}, ["b", "c"]),
+        ([("a", 0, ["1", "2"], "Berlin, DE"), ("b", 0, [], "Paris, FR")], {}, []),
+        ([("a", 0, ["1", "2"], "Berlin, DE"), ("b", 0, [], None)], {"geo": {"b": "Paris, FR"}}, []),
+    ]
+    for entries, kw, probed in rows:
+        _rebalance_registry(*entries)
+        before, seen = _loads_by_label(), []
+        assert _step(seen=seen, **kw) is None, (entries, kw)
+        assert _loads_by_label() == before and seen == probed, (entries, kw, seen)
+
+
+def case_rebalance_picks_an_answering_same_country_target():
+    _rebalance_registry(("a", 0, ["1", "2", "3"], "Berlin, DE"), ("b", 0, [], None), ("c", 0, [], "Paris, FR"),
+                        ("d", 0, [], None))
+    seen: list[str] = []
+    assert _step(answers={"b": False}, deactivated=["3"], seen=seen) == ("2", "a", "d"), "skips b, never the FR c"
+    assert seen == ["b", "d"], seen
+    _rebalance_registry(("a", 0, ["1", "2"], None), ("b", 0, [], "Paris, FR"))
+    assert _step() == ("2", "a", "b"), "an unknown source country takes any idle peer"
+
+
+def case_rebalance_loses_a_race_to_a_concurrent_bind():
+    _rebalance_registry(("a", 0, ["1", "2"], None), ("b", 0, [], None))
+
+    def verify(p):
+        proxy_registry.assign_account("b", "7")
+        return True
+    got = proxy_registry.rebalance_step(bad=set(), due=set(), geo=lambda p: None, verify=verify,
+                                        deactivated=frozenset(), rng=_FirstRng())
+    assert got is None and _loads_by_label() == {"a": ["1", "2"], "b": ["7"]}, (got, _loads_by_label())
 
 
 def case_assign_fallback_table():

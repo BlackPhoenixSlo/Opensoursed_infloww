@@ -165,7 +165,7 @@ async def case_truncated_crawl_writes_nothing():
         _restore()
     assert fake.calls == [], fake.calls
     row = await _row(lid)
-    assert row.sync_state == "error" and "incomplete" in row.sync_error, row.sync_error
+    assert row.sync_state == "error" and row.sync_error == "List crawl incomplete (19000-member cap) — nothing synced", row.sync_error
 
 
 async def case_write_budget_leaves_pending():

@@ -281,11 +281,12 @@ Every ASSUMPTION in the four specs, sharpest first, with what falls if it is wro
 
 - Ticket 08 (owner, rung 2): the Inflowwww look. Creator names sit in the left Creator column with "All Models" on top, selected by default, showing the Today strip and one combined Leak list. One Creator shows its drill-in in the main pane, and phones get the house Creator dropdown (P1 stories 15, 34–37, 39 and 66). Removal is never self-serve: the only CTA is "Contact us to start removal", and the service owner links the client with the mapping CLI (P3 stories 24, 25, 41, 43, 50 and 51). The first open shows the Leak disclaimer, a bot-scrape notice dismissed once per person in that browser, and the demo shows it too (P1 stories 67–69). It replaces variant C. The prototype is variant D.
 - Wayfinder tickets 11–14 (owner, rung 2: sliders, Google previews, a video popup to start removal). Phase 2's drill-in gains a List / Google view of media Leaks, with Google's thumbnails passed through by id, blurred by default, never stored, behind `LEAK_TRACKER_PREVIEWS` (off), and All Models gets one strip of the 12 newest-seen previews (P2 stories 47–58). Phase 3's contact CTA opens the Start removal popup: a captioned generic video served through the Relay, with the Creator's own Leaks drawn over it by the CRM on the service's cue times, the results as text, a Removal preview slider and the contact link; `active` and `former` Creators gain a Taken down gallery of at most 6 sliders (P3 stories 52–63). Phase 4's Demo tracker serves placeholders and the popup with no video. Build tickets 70–80.
+- 2026-11-28 (owner, rung 2): paid Google lane on for every tenant (`TRACKER_PAID_TENANTS` dropped); scan on connect, then weekly or manual refresh (daily pass and the 00:00–04:00 pending window superseded); previews legal go, blurred by default, click to unblur; take-caption profanity OK, reddit = `forum` scene, >20 listings → partial OK, `came_back_30d` ASSUMPTION OK; offer video live, goldens unchanged. Spec: docs/spec/leak-tracker-cadence-and-previews.md (tickets 81–85, 70–73 amended).
 
 ## Needs the human
 
 - **Phase 2:**
-  - The legal go for Google previews: copyright display, the Creator's consent scope under the enable checkbox, age-verification duties and whether views need an audit. `LEAK_TRACKER_PREVIEWS` stays off in every tree until the owner records it.
+  - Resolved 2026-11-28: the legal go for Google previews is given (Owner answers).
 - **Phase 4:**
   - D12, the backup inventory. Confirm that the Removal service host has no cron, provider snapshot or volume backup of the tracker DB, or name each one with its retention (at most 30 days after a purge).
 - **Set:**

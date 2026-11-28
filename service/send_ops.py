@@ -124,9 +124,18 @@ def paused() -> bool:
             doc = json.loads(fh.read())
         until, named = doc["until"], doc["box"]
     except (OSError, ValueError, TypeError, KeyError):
-        return True
-    return (not box or named != box or not isinstance(until, (int, float)) or isinstance(until, bool)
-            or until <= time.time())
+        return not _file_store()
+    return ((not box or named != box or not isinstance(until, (int, float)) or isinstance(until, bool)
+             or until <= time.time()) and not _file_store())
+
+
+def _file_store() -> bool:
+    try:
+        with open(os.environ["OI_CELL_MAP"], "rb") as fh:
+            doc = json.loads(fh.read())
+    except (KeyError, OSError, ValueError):
+        return False
+    return isinstance(doc, dict) and doc.get("store") == "file"
 
 
 def check_permit() -> None:
@@ -189,6 +198,9 @@ def _claim(platform: str, account: str, op: str, kind: str, target: str, dig: st
             row = db.execute("SELECT state, digest, result FROM send_ops WHERE account=? AND op_id=?",
                              (account, op)).fetchone()
             again = row is not None and row[0] in ("refused", "resolved_not_sent")
+            if row is None or again:
+                import restore_reconcile
+                restore_reconcile.refuse_queue(platform, kind, db)
             if (row is None or again) and kind not in MANUAL and db.execute(
                     f"SELECT 1 FROM send_ops WHERE account=? AND target=? AND {_HELD} LIMIT 1",
                     (account, target)).fetchone():
@@ -214,6 +226,17 @@ def _claim(platform: str, account: str, op: str, kind: str, target: str, dig: st
     if state in ("sent", "resolved_sent"):
         return Sent(RECONCILED if state == "resolved_sent" else json.loads(result) if result else None, True)
     raise SendRefused(409, "op_pending" if state == "claimed" else "op_uncertain", op_id=op, state=state)
+
+
+def record_uncertain(db: sqlite3.Connection, platform: str, account: str, kind: str, target: str,
+                     data_gen: int, upstream_id: str, result: dict) -> None:
+    epoch = os.environ.get("OI_EPOCH", "")
+    db.execute(
+        "INSERT OR IGNORE INTO send_ops (account, op_id, kind, target, digest, epoch, data_gen, state,"
+        f" upstream_id, result, attempts, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'uncertain',?,?,1,{_NOW},{_NOW})",
+        (account, op_id(platform, account, kind, target, upstream_id), kind, target,
+         digest({"kind": kind, "message_id": upstream_id}), int(epoch) if epoch.isdigit() else None,
+         data_gen, upstream_id, json.dumps(result)))
 
 
 def _finish(account: str, op: str, state: str, budget: send_tripwire.Budget, result: Any = None) -> None:

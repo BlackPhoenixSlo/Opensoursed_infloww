@@ -8,22 +8,25 @@ import { relay } from "@/lib/relay";
 
 import { untrack, withoutCreator, type LeakPage, type LeakRoster } from "./leakView";
 
-export function DeleteWatch({ creatorId, name, brand, onDeleted }: {
+export function DeleteWatch({ creatorId, scopeAccountId, name, brand, onDeleted }: {
   creatorId: string;
+  scopeAccountId: string | null;
   name: string;
   brand: string | null;
   onDeleted: () => void;
 }) {
   const qc = useQueryClient();
   const drop = useMutation({
-    mutationFn: () => relay.delete(`/admin/leaks/watches/${creatorId}`, { accountId: creatorId }),
+    mutationFn: () => relay.delete(`/admin/leaks/watches/${creatorId}`, { accountId: scopeAccountId }),
     onSuccess: () => {
-      qc.setQueriesData<LeakRoster>({ queryKey: ["leak-tracker", "roster"] }, (r) => r && untrack(r, creatorId));
-      qc.setQueriesData<InfiniteData<LeakPage>>({ queryKey: ["leak-tracker", "all"] },
+      qc.setQueriesData<LeakRoster>({ queryKey: ["leak-tracker", "roster", scopeAccountId] }, (r) => r && untrack(r, creatorId));
+      qc.setQueriesData<InfiniteData<LeakPage>>({ queryKey: ["leak-tracker", "all", scopeAccountId] },
         (d) => d && { ...d, pages: d.pages.map((p) => withoutCreator(p, creatorId)) });
-      qc.removeQueries({ queryKey: ["leak-tracker", "watch", creatorId] });
+      qc.removeQueries({ queryKey: ["leak-tracker", "watch", creatorId, scopeAccountId] });
       onDeleted();
-      void qc.invalidateQueries({ queryKey: ["leak-tracker"] });
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "setup", scopeAccountId] });
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "roster", scopeAccountId] });
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "all", scopeAccountId] });
     },
   });
   const ask = async () => {

@@ -681,6 +681,12 @@ async def run_once(
         try:
             ran = "ok"
             try:
+                if _CELLS and kind in ("send_mass_message", "mass_premade"):
+                    import restore_reconcile
+                    dry_mass = kind in ("send_mass_message", "mass_premade") and payload.get("dry_run")
+                    if restore_reconcile.active() and not dry_mass:
+                        await asyncio.to_thread(restore_reconcile.refuse_queue,
+                                                platforms.for_account(account_id).key, "mass_job")
                 with of_call_counter.caller(f"auto:{kind}"):
                     stats = await fn(account_id, payload, run_id=run_id) or {}
             except OutboundWordsBlocked:
@@ -692,7 +698,7 @@ async def run_once(
                 stats.update(guard.summary())
                 guard_status = guard.run_status()
             status, job_status, skip_reason = run_decide.outcome(
-                ran, guard_status, plugin_reason=stats.get("reason"))
+                ran, guard_status, plugin_reason=stats.get("reason"), plugin_status=stats.get("status"))
             plugin_skipped = status == "skipped" and guard_status != "skipped"
             if plugin_skipped:
                 stats.update(status="skipped", reason=skip_reason)
@@ -707,8 +713,8 @@ async def run_once(
                          account_id, kind, run_id, job_id, skip_reason)
                 return {**stats, "run_id": run_id, "job_id": job_id}
             log.info(
-                "automation_run_ok account=%s kind=%s run_id=%s job=%s stats=%s",
-                account_id, kind, run_id, job_id, stats,
+                "automation_run_%s account=%s kind=%s run_id=%s job=%s stats=%s",
+                status, account_id, kind, run_id, job_id, stats,
             )
             return {"status": "ok", **stats, "run_id": run_id, "job_id": job_id}
         except asyncio.CancelledError:

@@ -132,6 +132,7 @@ import send_ops
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
+from side_effect_gate import burst_refusal
 from ._model_pick import resolve_model
 from ._outbound_guard import apply_word_restriction
 from ._send_failure import skip_unreachable_fan
@@ -1075,13 +1076,12 @@ def _screen(t: _Tick, texts: list[str], is_ppv: bool, media: list[int],
 
 
 async def _send_once(t: _Tick, f: _Funnel, cs: FunnelState, entry: fd.Entry,
-                     texts: list[str], facts: fd.Facts) -> None:
+                     texts: list[str], facts: fd.Facts, media: list[int], previews: list[int]) -> None:
     """Screen, send (_send_step commits the marker before OF sees it), then the send-once
     bookkeeping. A lost slot re-raises after what landed is recorded."""
     fan_id, c = int(cs.fan_id), entry.current_step
     step = f.script.steps[c]
     is_ppv = step.get("type") == "paid_ppv"
-    media, previews = _resolve_step_media(step, f.acct_media) if is_ppv else ([], [])
     texts, problems = _screen(t, texts, is_ppv, media, fan_id, c)
     if problems:
         # A broken step won't fix itself per tick: backed off, still pending.
@@ -1151,13 +1151,17 @@ async def _leased_step(t: _Tick, f: _Funnel, cs: FunnelState, entry: fd.Entry) -
         return
     if t.tally.key_error and _is_generated(step):
         return  # no usable key this run — one failed call, not one per fan
+    media, previews = _resolve_step_media(step, f.acct_media) if step.get("type") == "paid_ppv" else ([], [])
+    if media and (refused := burst_refusal(t.account_id, fan_id, [fd.ppv_send_kwargs(step, media, previews)])):
+        t.tally.refused = refused
+        return
     texts = await _compose(t, fan_id, step, c)
     if texts is None:
         return
     if t.k.dry_run:
         t.tally.advanced += 1  # would-send; do NOT send or advance state
         return
-    await _send_once(t, f, cs, entry, texts, facts)
+    await _send_once(t, f, cs, entry, texts, facts, media, previews)
 
 
 async def _end_lease(t: _Tick, fan_id: int, sent_ok: bool) -> None:
@@ -1187,6 +1191,9 @@ async def _walk_fan(t: _Tick, f: _Funnel, cs: FunnelState) -> None:
     fan_id = int(cs.fan_id)
     # A fan who left (or never joined) the folder stops advancing; an admit resumes him.
     if not await _audience_allows(t, fan_id):
+        return
+    if refused := burst_refusal(t.account_id, fan_id):
+        t.tally.refused = refused
         return
     # Another automation messaged this fan recently → rest it (W3 cooldown).
     if await ax.fan_on_cooldown(t.account_id, fan_id):

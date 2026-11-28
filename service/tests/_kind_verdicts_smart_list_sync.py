@@ -27,7 +27,7 @@ VERDICTS = {
 PAYLOADS = {"smart_list_sync": dict.fromkeys(VERDICTS["onlyfans"]["smart_list_sync"], {})}
 
 _SYNCED = ("add_users_to_lists", "create_list", "table:smart_lists")
-_CREATED = ("create_list", "table:smart_lists", "table:subscriber_snapshot")
+_CREATED = ("create_list", "table:smart_lists", "table:subscriber_crawl", "table:subscriber_snapshot")
 
 SAME_EFFECTS = {
     "fansly": {"smart_list_sync": {"chat": ("POST /lists", "POST /lists/commands", "table:smart_lists")}},

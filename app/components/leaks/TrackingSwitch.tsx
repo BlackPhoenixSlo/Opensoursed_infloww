@@ -7,16 +7,22 @@ import { relay } from "@/lib/relay";
 
 import { PAUSED, TRACKING_ON } from "./leakView";
 
-export function TrackingSwitch({ creatorId, on, paused, canWrite }: {
+export function TrackingSwitch({ creatorId, scopeAccountId, on, paused, canWrite }: {
   creatorId: string;
+  scopeAccountId: string | null;
   on: boolean;
   paused: string | null;
   canWrite: boolean;
 }) {
   const qc = useQueryClient();
   const flip = useMutation({
-    mutationFn: (next: boolean) => relay.post(`/admin/leaks/watches/${creatorId}/tracking`, { on: next }, { accountId: creatorId }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["leak-tracker"] }),
+    mutationFn: (next: boolean) => relay.post(`/admin/leaks/watches/${creatorId}/tracking`, { on: next }, { accountId: scopeAccountId }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "setup", scopeAccountId] });
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "roster", scopeAccountId] });
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "all", scopeAccountId] });
+      void qc.invalidateQueries({ queryKey: ["leak-tracker", "watch", creatorId, scopeAccountId] });
+    },
   });
   const label = paused ?? (on ? TRACKING_ON : PAUSED);
   return (

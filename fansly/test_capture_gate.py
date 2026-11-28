@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -16,9 +18,12 @@ import blank  # noqa: E402
 import drive  # noqa: E402
 import gate  # noqa: E402
 import mirror  # noqa: E402
+import policy  # noqa: E402
 import watch  # noqa: E402
 
 API = "https://apiv3.fansly.com"
+WAF_ORIGIN = "https://abc123.edge.sdk.awswaf.com"
+WAF_PATH = "/abc/verify"
 USERNAME = "plantedcreator"
 IDS = [{"role": "creator", "username": USERNAME, "displayName": "Planted Creator",
         "accountId": "900000000000000001"}]
@@ -54,6 +59,10 @@ def decide_table(fails):
         ("POST", "http://api-iam.intercom.io/messenger/web/ping", False, "fail", "halted", True),
         ("POST", "https://www.google-analytics.com/g/collect", False, "fail", "halted", True),
         ("POST", "https://abc123.edge.sdk.awswaf.com/abc/verify", False, "continue", "waf", False),
+        ("POST", "http://abc123.edge.sdk.awswaf.com/abc/verify", False, "fail", "halted", True),
+        ("POST", "https://abc123.edge.sdk.awswaf.com:9443/abc/verify", False, "fail", "halted", True),
+        ("POST", "https://abc123.edge.sdk.awswaf.com/abc/other", False, "fail", "halted", True),
+        ("POST", "https://unlisted.edge.sdk.awswaf.com/abc/verify", False, "fail", "halted", True),
         ("PUT", "https://abc123.edge.sdk.awswaf.com/abc/verify", False, "fail", "halted", True),
         ("POST", "https://awswaf.com.evil.example/verify", False, "fail", "halted", True),
         ("DELETE", "https://apiv3.fansly.com/api/v1/message", False, "fail", "halted", True),
@@ -198,6 +207,8 @@ class FakeConn:
             if self.spawn:
                 self.targets.append({"targetId": f"n{self.lists}", "type": "page", "url": "https://fansly.com/n"})
             return {"targetInfos": [dict(t) for t in self.targets]}
+        if method == "Target.closeTarget":
+            self.targets = [t for t in self.targets if t["targetId"] != params["targetId"]]
         if method == "Target.attachToTarget":
             return {"sessionId": "s-" + params["targetId"]}
         if method == "Page.navigate":
@@ -420,6 +431,26 @@ class Root:
         return d
 
 
+def stop_table(fails):
+    worker = BLANK_TARGETS[-1]
+    c = FakeConn([worker])
+    check(_blank(c, close_others=True)[0] == (0, []) and ("Target.closeTarget", "w1") in c.calls,
+          "worker-only blank closes the worker", fails)
+    c = FakeConn([worker], fail=("Target.closeTarget",))
+    check(_blank(c, close_others=True)[0] == (0, ["w1"]),
+          "worker-only blank reports a worker that remains live", fails)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        sdir = gate.session_dir(root, "s1")
+        sdir.mkdir(parents=True)
+        port_file = gate.ports_path(root, 9231)
+        gate.write_json(port_file, {"session": "s1"})
+        with patch.object(gate, "_blank", return_value=(0, ["w1"])):
+            asyncio.run(gate.do_stop(9231, root))
+        check(not (sdir / "STOP").exists() and port_file.exists(),
+              "stop keeps interception when a target remains live", fails)
+
+
 def req(method, decision, ts=5.0, path="/api/v1/x", host="apiv3.fansly.com", **kw):
     return {"ts": ts, "method": method, "host": host, "path": path, "query_keys": [],
             "resource_type": "XHR", "target_type": "page", "decision": decision,
@@ -438,10 +469,14 @@ def audit_table(fails):
         ("continued POST", [ARMED, req("POST", "continued"), STOPPED], UNREAD, (), False),
         ("continued HEAD", [ARMED, req("HEAD", "continued"), req("OPTIONS", "continued"), STOPPED],
          UNREAD, (), True),
-        ("waf POST", [ARMED, req("POST", "waf", host="x.edge.sdk.awswaf.com"), STOPPED], UNREAD, (), True),
+        ("waf POST", [ARMED, req("POST", "waf", path=WAF_PATH, origin=WAF_ORIGIN), STOPPED], UNREAD, (), True),
+        ("unknown waf POST", [ARMED, req("POST", "waf", host="unknown.awswaf.com"), STOPPED],
+         UNREAD, (), False),
         ("socket frame", [ARMED, {"ts": 3.0, "event": "ws_frame_sent"}, STOPPED], UNREAD, (), False),
         ("socket created", [ARMED, {"ts": 3.0, "event": "ws_created", "host": "x"}, STOPPED], UNREAD, (), False),
         ("unread drop", [ARMED, STOPPED], [{"g1": 2, "g2": 3}, {"g1": 0, "g2": 3}], (), False),
+        ("unread rebounded", [ARMED, STOPPED], [{"g1": 1}, {"g1": 0}, {"g1": 1}], (), False),
+        ("unread missing at close", [ARMED, STOPPED], [{"g1": 1, "g2": 0}, {"g2": 0}], (), False),
         ("unread rise", [ARMED, STOPPED], [{"g1": 0, "g2": 3}, {"g1": 1, "g2": 3}], (), True),
         ("one groups obs", [ARMED, STOPPED], [{"g1": 0}], (), False),
         ("empty first obs, drop later", [ARMED, STOPPED], [{}, {"g1": 2}, {"g1": 0}], (), False),
@@ -491,9 +526,12 @@ def audit_table(fails):
 
 
 def unread_parse_table(fails):
+    body = {"success": True, "response": {"data": [{"groupId": "missing"}, {"groupId": "zero", "unreadCount": 0}]}}
+    check(gate.unread_from_groups(body) == {"zero": 0}, "missing unread count is unknown", fails)
+
     body = {"success": True, "response": {"data": [{"groupId": "g1", "unreadCount": 2},
                                                    {"groupId": "g2"}], "aggregationData": {}}}
-    check(gate.unread_from_groups(body) == {"g1": 2, "g2": 0}, "unread_from_groups reads data[]", fails)
+    check(gate.unread_from_groups(body) == {"g1": 2}, "unread_from_groups reads data[]", fails)
     check(gate.unread_from_groups({"success": False}) is None, "unread_from_groups on a failed reply", fails)
     me = {"success": True, "response": {"account": {"id": "1", "username": "u", "displayName": "D",
                                                     "avatar": {"id": "2", "locations": []}, "n": 3}}}
@@ -711,8 +749,15 @@ def manifest_table(fails):
     m = r.build()
     homes = [e for e in m["entries"] if e["id"] == "home"]
     check(len(homes) == 1 and homes[0]["session"] == "s1" and "home" not in m["unaudited"]
-          and (r.root / "pages" / "home.html").read_text() == "<html>new</html>",
+          and homes[0].get("sha256", {}).get("file") == hashlib.sha256(b"<html>new</html>").hexdigest(),
           f"a re-saved entry keeps only the latest: {homes} unaudited={m['unaudited']}", fails)
+
+    for ext, changed in (("html", b"<html>new</html>"), ("png", b"new screenshot")):
+        r = ManifestRoot()
+        (r.root / "pages" / f"home.{ext}").write_bytes(changed)
+        m = r.build()
+        check(not m["complete"] and "home" in m["missing"],
+              f"interrupted {ext} replacement cannot inherit a passing audit", fails)
 
     variants = [
         ("missing non-optional entry", dict(drop=("settings/account",))),
@@ -749,14 +794,19 @@ def manifest_table(fails):
 
 def main(argv) -> int:
     fails: list[str] = []
-    decide_table(fails)
+    check(gate.decide("POST", WAF_ORIGIN + WAF_PATH, "XHR", False, API).halt,
+          "unconfigured WAF endpoint halts", fails)
+    with patch.object(policy, "WAF_ENDPOINTS", {(WAF_ORIGIN, WAF_PATH)}):
+        decide_table(fails)
     on_open_table(fails)
     redact_table(fails)
     stale_table(fails)
     binds_table(fails)
     log_line_table(fails)
     blank_table(fails)
-    audit_table(fails)
+    stop_table(fails)
+    with patch.object(policy, "WAF_ENDPOINTS", {(WAF_ORIGIN, WAF_PATH)}):
+        audit_table(fails)
     unread_parse_table(fails)
     cli_table(fails)
     plan_table(fails)

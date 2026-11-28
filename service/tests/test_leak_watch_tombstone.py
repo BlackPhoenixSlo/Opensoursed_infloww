@@ -61,7 +61,10 @@ class Tracker:
         if isinstance(answer, Exception):
             raise answer
         assert request.method == answer["method"], request.method
-        return httpx.Response(answer["status"], json=answer["response"])
+        response = answer["response"]
+        if answer is PUT_CREATED:
+            response = {**response, "watch_id": request.url.path.rsplit("/", 1)[-1]}
+        return httpx.Response(answer["status"], json=response)
 
     def deletes(self) -> list[tuple[str, str]]:
         return [(r.url.path.removeprefix("/v1/watches/"), r.url.params["requested_at"]) for r in self.calls

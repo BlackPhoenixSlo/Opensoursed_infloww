@@ -1,4 +1,4 @@
-import json, re, shutil, sys
+import hashlib, json, re, shutil, sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -45,6 +45,8 @@ profile = dst / "pages/profile.html"
 pr = profile.read_text()
 assert '<div class="avatar-container"><img class="user-avatar"' in pr
 profile.write_text(re.sub(r'<div class="avatar-container"><img class="user-avatar"[^>]*></div>', '<div class="avatar default-avatar"></div>', pr, count=1))
+for entry in m["entries"]:
+    entry["sha256"] = {"file": hashlib.sha256((dst / entry["file"]).read_bytes()).hexdigest()}
 (dst / "manifest.json").write_text(json.dumps(m, indent=1))
 (dst / "mirror_plan.json").write_text(json.dumps(plan))
 CSS = '<link rel="stylesheet" href="https://assets.fansly.com/styles.css">'

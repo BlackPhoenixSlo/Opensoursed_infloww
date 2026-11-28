@@ -62,7 +62,7 @@ afterEach(() => {
 const open = async (read: OfferRead | Error = READ, onClose = vi.fn()) => {
   if (read instanceof Error) relayGet.mockRejectedValue(read);
   else relayGet.mockResolvedValue(read);
-  renderWithProviders(<StartRemovalPopup creatorId="acc-a" offer={OFFER} onClose={onClose} />);
+  renderWithProviders(<StartRemovalPopup creatorId="acc-a" scopeAccountId="acc-b" offer={OFFER} onClose={onClose} />);
   const dialog = await screen.findByRole("dialog", { name: `Start removal with ${BRAND}` });
   if (!(read instanceof Error)) await within(dialog).findByRole("region", { name: "Results" });
   return { dialog, onClose };
@@ -76,9 +76,9 @@ const seek = async (t: number, event: "seeked" | "timeUpdate" = "seeked") => {
 };
 
 describe("Start removal popup", () => {
-  it("reads live with the Creator header and lays out video, results, then the contact link", async () => {
+  it("reads live with the roster scope and lays out video, results, then the contact link", async () => {
     const { dialog } = await open();
-    expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/offer", { accountId: "acc-a" });
+    expect(relayGet).toHaveBeenCalledWith("/admin/leaks/watches/acc-a/offer", { accountId: "acc-b" });
     const v = video()!;
     const results = within(dialog).getByRole("region", { name: "Results" });
     const link = within(dialog).getByRole("link", { name: `Contact ${BRAND}` });
@@ -104,9 +104,9 @@ describe("Start removal popup", () => {
     expect(dialog.querySelector("iframe")).toBeNull();
     const srcs = [v.getAttribute("src"), v.getAttribute("poster"), track.getAttribute("src")];
     expect(srcs).toEqual([
-      "/admin/leaks/offer-video/video?account_id=acc-a",
-      "/admin/leaks/offer-video/poster?account_id=acc-a",
-      "/admin/leaks/offer-video/captions?account_id=acc-a",
+      "/admin/leaks/offer-video/video?account_id=acc-b",
+      "/admin/leaks/offer-video/poster?account_id=acc-b",
+      "/admin/leaks/offer-video/captions?account_id=acc-b",
     ]);
     for (const el of dialog.querySelectorAll("[src],[href],[poster]")) {
       for (const a of ["src", "poster"]) {
@@ -196,7 +196,7 @@ describe("Start removal popup", () => {
 
   it("the poster is left to the video element, never fetched a second time", async () => {
     await open();
-    expect(video()!.getAttribute("poster")).toBe("/admin/leaks/offer-video/poster?account_id=acc-a");
+    expect(video()!.getAttribute("poster")).toBe("/admin/leaks/offer-video/poster?account_id=acc-b");
     expect(probes).toBe(0);
   });
 
@@ -223,7 +223,7 @@ function Harness() {
   return (
     <>
       <button type="button" onClick={() => setOn(true)}>Contact us to start removal</button>
-      {on && <StartRemovalPopup creatorId="acc-a" offer={OFFER} onClose={() => setOn(false)} />}
+      {on && <StartRemovalPopup creatorId="acc-a" scopeAccountId="acc-b" offer={OFFER} onClose={() => setOn(false)} />}
     </>
   );
 }

@@ -318,6 +318,13 @@ for _p in platforms.ALL:
         app.add_exception_handler(_p.backend.APIError, _backend_api_error_handler(_p.key))
 
 
+@app.exception_handler(of_paging.ListGone)
+async def _list_gone_handler(request: Request, exc: of_paging.ListGone):
+    return JSONResponse(status_code=501,
+                        content={"ok": False, "error": platforms.for_account(_current_aid()).key,
+                                 "detail": str(exc)})
+
+
 @app.exception_handler(_llm_client.LLMKeyError)
 async def _llm_key_error_handler(request, exc):  # noqa: ANN001
     log.warning("llm key error path=%s kind=%s provider=%s purpose=%s",
@@ -420,8 +427,10 @@ if _CELLS:
     app.include_router(restore_reconcile.router)
 if _CELLS and cell_mode.is_control():
     import agency_copy  # noqa: E402
+    import cell_notices  # noqa: E402
     import creator_reservations  # noqa: E402
     app.include_router(agency_copy.router)
+    app.include_router(cell_notices.router)
     app.include_router(creator_reservations.router)
     app.include_router(actor_token.router())
 app.include_router(_chatters_router)
@@ -514,7 +523,9 @@ async def _account_isolation_middleware(request: Request, call_next):
         return await call_next(request)
 
     # `is_account` raises rather than guess if it can't read the tree: a gate that can't answer must not allow.
-    if any(account_registry.is_account(c) for c in candidates - allowed_ids):
+    # A Creator a data Cell doesn't own is route_guard's 409 not_owner: the app reloads Placement on it, not on 403.
+    stray = {qaid} if _CELLS and qaid and not cell_mode.is_control() and qaid not in cell_mode.owned_ids() else set()
+    if any(account_registry.is_account(c) for c in candidates - allowed_ids - stray):
         if _leak_tracker_api.owns(path):
             return _leak_tracker_api.hidden()
         return Response("not your account", status_code=403)
@@ -1246,6 +1257,8 @@ async def _start_event_pumps() -> None:
             if os.environ.get("OI_CELL_CONTROL_URL"):
                 _spawn_bg(agency_copy.poll_forever(agency_copy.db_path(sync_database_url())), "agency-copy-poll")
                 _spawn_bg(creator_reservations.retry_activations(), "reservation-activation-retry")
+                import cell_notices
+                _spawn_bg(cell_notices.forward_forever(), "bell-notices-to-control")
             else:
                 log.error("Cells: OI_CELL_CONTROL_URL unset: this data Cell never receives the Agency copy")
 
@@ -1331,6 +1344,7 @@ async def _start_event_pumps() -> None:
     asyncio.create_task(db_retention._db_optimize_loop(), name="sqlite-optimize")
 
     asyncio.create_task(proxy_health.probe_loop(), name="proxy-health-probe")
+    asyncio.create_task(proxy_health.rebalance_loop(), name="proxy-rebalance")
 
     sign_rules.enable_background()
 
@@ -3599,6 +3613,7 @@ def of_subscribers_chart(start: str | None = Query(None), end: str | None = Quer
     """Daily new-subscriber time-series (Statistics > Fans). Earnings-based:
     accurate for paid pages, 0 for free pages. `by` = the Subscriptions tab
     (All=total / Renews=renew / New=new), as OF's page sends it."""
+    side_effect_gate.refuse_if_platform_lacks(_current_aid(), "subscribers_chart", "subscribers chart")
     return _proxy(lambda: _get_client().subscribers_chart(start=start, end=end, by=by))
 
 
@@ -5496,11 +5511,13 @@ def _delete_list(list_id: ListId):
     aid = _current_aid()
     side_effect_gate.raise_if_refused(side_effect_gate.delete_list_ungranted(aid, list_id), "delete list")
     client = _get_client()
-    side_effect_gate.raise_if_refused(side_effect_gate.delete_list_refusal(
-        aid, list_id, functools.partial(of_paging.list_audience, client, list_id)), "delete list")
-    verdict, reason = side_effect_gate.classify(client, "delete_list")
-    if verdict != "live_check":
-        side_effect_gate.raise_if_refused(reason, "delete list")
+    page = platforms.for_account(aid).list_page
+    try:
+        why = side_effect_gate.delete_list_refusal(
+            aid, list_id, client, lambda: of_paging.list_audience(client, list_id, list_page=page))
+    except of_paging.ListGone:
+        why = "platform_lacks:delete_list"
+    side_effect_gate.raise_if_refused(why, "delete list")
     return client.delete_list(list_id)
 
 

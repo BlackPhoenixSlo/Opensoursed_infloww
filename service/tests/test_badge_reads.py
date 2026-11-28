@@ -1413,7 +1413,7 @@ async def case_socket_up_r_unknown_reads_once():
         t = clock.t
         for s in range(0, 60_001, 1000):
             await _tick_at(clock, t + s)
-        assert len(wire.calls) == 1 and unread_total.restricted_unknown(A), ("one ask per lifetime", wire.calls)
+        assert len(wire.calls) == 1 and unread_total.restricted_unknown(A), ("one seed attempt", wire.calls)
     wire = _Wire(unread=[_row(F)])
     with _world(wire, seeded=False) as (clock, _pub, lines):
         _DOWN.add(A)
@@ -1421,6 +1421,23 @@ async def case_socket_up_r_unknown_reads_once():
         for s in range(0, 15_001, 1000):
             await _tick_at(clock, t + s)
         assert [x - t for x in _starts(wire)] == [15000] and _polls(lines) == 1, ("socket down: poll only", lines)
+
+
+async def case_socket_up_seed_stays_consumed_after_tab_reopen():
+    wire = _Wire(unread=[_row(F)])
+    tabs = {A}
+    with _world(wire, tabs=tabs, seeded=False) as (clock, _pub, _lines):
+        hold = badge_reads.app_open_warm.exit_held_s
+        badge_reads.app_open_warm.exit_held_s = lambda _: 60
+        try:
+            await _tick_at(clock, clock.t)
+            tabs.clear()
+            await _tick_at(clock, clock.t + 1000)
+        finally:
+            badge_reads.app_open_warm.exit_held_s = hold
+        tabs.add(A)
+        await _tick_at(clock, clock.t + 1000)
+        assert wire.calls == [] and unread_total.restricted_unknown(A)
 
 
 _harness.run()

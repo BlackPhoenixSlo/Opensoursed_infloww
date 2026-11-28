@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import types
+from contextlib import contextmanager
 from pathlib import Path
 
 import fansly_shim as shim
@@ -15,6 +17,16 @@ ACCOUNT_ID = "900000000000000001"
 def check(cond: bool, label: str, fails: list[str]) -> None:
     if not cond:
         fails.append(label)
+
+
+@contextmanager
+def shim_clock(now_ms: int):
+    real = shim.time
+    shim.time = types.SimpleNamespace(time=lambda: now_ms / 1000)
+    try:
+        yield
+    finally:
+        shim.time = real
 
 
 def main() -> int:
@@ -237,15 +249,20 @@ def main() -> int:
     print("mark-all: batched ack of every unread id; capped; clean inbox no-ops")
 
     class _NotifProbe(shim.FanslyShimClient):
-        def __init__(self, rows, *, accounts=True):  # noqa: D107
+        def __init__(self, rows, *, accounts=True, unack=None):  # noqa: D107
             self.rows = rows
             self._accounts = accounts
+            self._unack = unack
             self.calls = []
 
         def _request(self, method, path, *, params=None, json_body=None, **kw):
             self.calls.append((method, path))
             if path == "/notifications":
                 return {"notifications": self.rows}
+            if path == "/notifications/unack":
+                if isinstance(self._unack, Exception):
+                    raise self._unack
+                return self._unack
             if path == "/account":
                 if not self._accounts:
                     raise shim.FanslyAPIError("GET /account -> 500")
@@ -262,7 +279,10 @@ def main() -> int:
     feed = notif.notifications(limit=20)
     got = {i["fanslyType"]: i["type"] for i in feed["list"]}
     check(got.get(15006) == "subscribed" and got.get(3002) == "subscribed",
-          f"notif: subscribe/follow codes -> 'subscribed', got {got}", fails)
+          f"notif: subscribe codes -> 'subscribed', got {got}", fails)
+    follow = _NotifProbe([_row("6", 3003), _row("7", 15016)]).notifications(limit=20)["list"]
+    check({i["fanslyType"]: i["type"] for i in follow} == {3003: "followed", 15016: "subscribed"},
+          f"notif: a 3003 follow is 'followed', never 'subscribed', got {follow}", fails)
     check(got.get(7001) == "tip", f"notif: 7001 -> 'tip', got {got.get(7001)}", fails)
     check(got.get(2007) == "purchases",
           f"notif: 2007 -> 'purchases', got {got.get(2007)}", fails)
@@ -282,11 +302,28 @@ def main() -> int:
     check([i["fanslyType"] for i in subs] == [15006, 3002],
           f"notif: type filter selects the subscribe bucket, got {subs}", fails)
 
-    counts = notif.notifications_count()
-    check(counts["subscribes"] == 2 and counts["tips"] == 1,
-          f"notif: badge buckets by mapped type, got {counts}", fails)
-    check(counts["all"] == 4,
-          f"notif: acked row excluded from the badge, got all={counts['all']}", fails)
+    mixed = _NotifProbe([_row("1", 15016), _row("2", 1002), _row("3", 15006), _row("4", 7001)])
+    pages = [mixed.notifications(type="subscribed", limit=1, offset=n) for n in range(3)]
+    check([([i["fanslyType"] for i in p["list"]], p["hasMore"]) for p in pages]
+          == [([15016], True), ([15006], False), ([], False)],
+          f"notif: a filtered page ends paging at the last filtered row, got {pages}", fails)
+
+    unack = fixture_read("/api/v1/notifications/unack")
+    counted = _NotifProbe([_row("1", 7001)], unack=unack)
+    counts = counted.notifications_count()
+    check(counts == {"subscribes": 1, "tips": 0, "comments": 1, "mentions": 0,
+                     "hearts": 2, "gifts": 0, "all": 6},
+          f"notif: badge is the /unack per-code totals (bell 6 = their sum), got {counts}", fails)
+    check([c[1] for c in counted.calls] == ["/notifications/unack"],
+          f"notif: the badge reads /unack only, got {counted.calls}", fails)
+    for label, answer in (("a fetch error", shim.FanslyAPIError("GET /notifications/unack -> 500")),
+                          ("a non-list answer", {"total": 6}),
+                          ("a row without a total", [{"type": 3003}])):
+        try:
+            got_counts = _NotifProbe([], unack=answer).notifications_count()
+            fails.append(f"notif: {label} must raise, never read as zero, got {got_counts}")
+        except shim.FanslyAPIError:
+            pass
 
     # Profile hydration is decoration: losing it must not empty the feed.
     blind = _NotifProbe([_row("1", 7001)], accounts=False)
@@ -327,6 +364,13 @@ def main() -> int:
           f"{by[1002]['text']!r} / {by[5003]['text']!r}", fails)
     print("notifications: actor field resolved per code (follow/post-like/none)")
 
+    presence = json.loads((HERE / "fixtures" / "presence.json").read_text())
+    with shim_clock(presence["now"]):
+        seen = {k: shim.of_user(a).get("isOnline") for k, a in presence["accounts"].items()}
+    check(seen == {"dormant": None, "recent": True, "stale": None},
+          f"presence: lastSeenAt decides, statusId 1 on all three does not, got {seen}", fails)
+    print("presence: dormant/recent/stale -> offline/online/offline")
+
     payload = fixture_read("/api/v1/subscribers")
     accounts = fixture_read("/api/v1/account")
     sub_fan = str(payload["subscriptions"][0]["subscriberId"])
@@ -356,8 +400,14 @@ def main() -> int:
           f"subs: endsAt is ms -> ISO, got {fans[0]['subscribedByExpireDate']}", fails)
     check(sp.subscribers(type="expired")["list"] == [],
           "subs: an active row is not in the expired filter", fails)
-    check([f["id"] for f in sp.iter_online_subscribers(max_fans=5)] == [sub_fan],
-          "subs: iter_online_subscribers yields the online fan", fails)
+    with shim_clock(presence["now"]):
+        accounts[0]["lastSeenAt"] = presence["accounts"]["recent"]["lastSeenAt"]
+        check([f["id"] for f in sp.iter_online_subscribers(max_fans=5)] == [sub_fan],
+              "subs: iter_online_subscribers yields the fan seen inside the window", fails)
+        accounts[0]["lastSeenAt"] = presence["accounts"]["stale"]["lastSeenAt"]
+        check(sp.iter_online_subscribers(max_fans=5) == [],
+              "subs: iter_online_subscribers drops a fan last seen days ago", fails)
+        del accounts[0]["lastSeenAt"]
     check(sp.subscription_counts() == {"active": 1, "expired": 0, "all": 1},
           "subs: counts come off stats", fails)
     check("renew" not in fans[0]["subscribedOnData"] and fans[0]["fanslySubscription"]["autoRenew"] == 1,
@@ -400,6 +450,22 @@ def main() -> int:
             fails.append(f"subs: iter_online_subscribers must refuse a {label} roster")
         except shim.FanslyUnsupported as e:
             check(e.reason == "platform_lacks:subscribers:incomplete", f"subs: refusal reason {e!r}", fails)
+    class MissingProfiles(_SubProbe):
+        def _request(self, method, path, **kwargs):
+            if path == "/account":
+                if self.failed:
+                    raise shim.FanslyAPIError("profile read failed")
+                return []
+            return super()._request(method, path, **kwargs)
+
+    for failed in (False, True):
+        probe = MissingProfiles()
+        probe.failed = failed
+        try:
+            probe.iter_online_subscribers()
+            fails.append(f"subs: missing profile coverage must refuse, request failed={failed}")
+        except shim.FanslyUnsupported as e:
+            check(e.reason == probe.ROSTER_INCOMPLETE, f"subs: refusal reason {e!r}", fails)
     many = [sub(str(900000000000000100 + i), 3) for i in range(5)]
     full = roster({"totalActive": 5}, *many)
     pages = [full.subscribers(type="active", limit=2, offset=off) for off in (0, 2, 4)]
@@ -639,10 +705,11 @@ def main() -> int:
     try:
         gone.list_users_in(lid)
         fails.append("list-read: a list absent from /lists/account must raise, never read empty")
-    except shim.FanslyUnsupported as e:
-        check(e.reason == "platform_lacks:list_users_in:unknown_list" and gone.calls == [lists_read],
-              f"list-read: an unknown list refuses after the account read, got {e.reason} {gone.calls}", fails)
-    for label, answer in (("a null", None), ("a dict", {"list": [{"id": lid}]})):
+    except shim.ListGone as e:
+        check(gone.calls == [lists_read],
+              f"list-read: an unknown list refuses after the account read, got {e} {gone.calls}", fails)
+    for label, answer in (("a null", None), ("a dict", {"list": [{"id": lid}]}),
+                          ("a row without an id", [{"label": "misformed"}])):
         odd = _ReadProbe([member(fid)], lists=answer)
         try:
             odd.list_users_in(lid)
@@ -662,7 +729,6 @@ def main() -> int:
             fails.append(f"list-read: {label} is a bad answer, not a refusal")
         except shim.FanslyAPIError:
             pass
-    check(shim.FanslyShimClient.platform_list_page == 50, "list-read: platform_list_page is 50", fails)
     print("list-read: one itemsnew page, hasMore from 50 rows, refusals before any request, unknown list refused")
 
     np = _ReadProbe(lambda body: {"accountId": ACCOUNT_ID, "type": 1, "id": body["id"], "label": body["label"]})
@@ -763,6 +829,18 @@ def main() -> int:
           and made["subscribeCounts"] == 3,
           f"create_promo: a new-subscriber giftcode still posts, got {pp.calls}", fails)
     print("create_promo: type other than new, finish_days and unlimited claims raise before any request")
+
+    chart_reason = ("Fansly reports subscriber TOTALS only, with no per-day series; "
+                    "synthesising one would be invented analytics")
+    for kw in ({}, {"start": "2026-10-01 00:00:00", "end": "2026-10-31 23:59:59", "by": "new"}):
+        cp = _PromoProbe()
+        try:
+            got = cp.subscribers_chart(**kw)
+            fails.append(f"subscribers_chart {kw}: answered {got!r} instead of raising")
+        except shim.FanslyUnsupported as e:
+            check(str(e) == f"subscribers_chart: {chart_reason}" and cp.calls == [],
+                  f"subscribers_chart {kw}: {e} after {cp.calls}", fails)
+    print("subscribers_chart: raises with no returns, before any request")
 
     missing = set(reads) - used
     check(not missing, f"fixture reads not used: {sorted(missing)}", fails)

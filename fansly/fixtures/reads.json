@@ -197,6 +197,14 @@
     }
    ]
   },
+  "/api/v1/notifications/unack": [
+   {"type": 1002, "total": 1},
+   {"type": 1004, "total": 1},
+   {"type": 2007, "total": 1},
+   {"type": 3003, "total": 1},
+   {"type": 5003, "total": 1},
+   {"type": 15016, "total": 1}
+  ],
   "/api/v1/subscribers": {
    "stats": {
     "totalActive": 1,

@@ -107,14 +107,14 @@ def _bump_lifetime_fn():
 
 async def _mark_scanned(account_id: str, *, inserted: int) -> None:
     # Don't clear paused_until here: that disabled the failure backoff; an expiring backoff clears it, as on OF.
-    # Stamp the shared scan row: _decide_mode reads fully_backfilled, and an unstamped Fansly account would sit at "backfilling" forever.
     async with get_session() as s:
         row = await s.get(TransactionScanHistory, account_id)
         if row is None:
             row = TransactionScanHistory(account_id=account_id)
             s.add(row)
         row.last_scan_at = datetime.utcnow()
-        row.fully_backfilled = True
+        # Never True: Fansly has no ledger to backfill; the backfill bucket this leaves it in still ticks revenue_tick (run_one_tick routes Backends first).
+        row.fully_backfilled = False
         row.current_status = "ok"
         row.consecutive_failures = 0
         row.last_error = None

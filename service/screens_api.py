@@ -21,6 +21,7 @@ import platforms
 import relay_cache
 import relay_host
 import settings_api
+import side_effect_gate
 import stats_per_model
 
 log = logging.getLogger("of-relay.screens")
@@ -50,6 +51,7 @@ class Read:
     # Call the route function with every argument explicit: a FastAPI Query(...) default is a truthy FieldInfo when called directly.
     call: Callable[[], Awaitable[Any]]
     reuse: bool = False
+    needs: tuple[str, str] | None = None
 
 
 @dataclass
@@ -111,6 +113,8 @@ async def _serve(outer: Request, read: Read, sem: asyncio.Semaphore, focus: str 
             refused = await _gate(inner)
             if refused is not None:
                 return _Done(read, status=refused[0], detail=refused[1])
+            if read.needs and read.aid:
+                side_effect_gate.refuse_if_platform_lacks(read.aid, *read.needs)
             last = _LAST.get(_read_key(read)) if read.reuse else None
             if last is not None and time.time() - last[0] <= STALE_MAX_S:
                 _keep(asyncio.ensure_future(_shared(read, inner)))
@@ -287,7 +291,8 @@ async def dashboard_screen(
                               {"start": from_, "end": to},
                               lambda aid=aid: _cached("screen_subs_chart", aid, (from_, to, None),
                                                       lambda: srv.of_subscribers_chart(start=from_, end=to,
-                                                                                       by=None)), reuse))
+                                                                                       by=None)), reuse,
+                              needs=("subscribers_chart", "subscribers chart")))
     head = [_body(None, "settings", settings), *head, *refused]
     return await run_screen(request, response, reads, until, focus, head)
 

@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import { ArrowUp, ChevronLeft, LifeBuoy, X } from "lucide-react";
+import { ArrowUp, ChevronLeft, ImagePlus, LifeBuoy, X } from "lucide-react";
 
 import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+import { imageFiles, toJpeg } from "./supportPhoto";
 import {
-  buildPayload, canSend, errorText, initialSupportState, messagesOf, supportReducer,
+  buildPayload, canSend, droppedPhotos, errorText, initialSupportState, MAX_SUPPORT_PHOTOS, messagesOf, photoRoom,
+  SUPPORT_THREAD_POLL_MS, supportReducer, type PendingPhoto, type SupportEntryAction, type SupportState,
 } from "./supportReducer";
 
 export const SUPPORT_EMPTY = "Tell us what's missing or annoying — the team reads every message.";
@@ -26,26 +28,43 @@ export function SupportButton({ unread, onClick }: { unread: boolean; onClick: (
   );
 }
 
-export function SupportPanel({ frame, column, composerPad, inputText, unread, onBack, onClose, onRead }: {
+const lastSupportId = (ms: SupportState["messages"]) => ms.reduce((n, m) => (m.from === "support" && m.id > n ? m.id : n), 0);
+let photoSeq = 0;
+
+export function SupportPanel({ frame, column, composerPad, inputText, unread, draft, onEntry, onBack, onClose, onRead }: {
   frame: string;
   column: string;
   composerPad: string;
   inputText: string;
   unread: number;
+  draft: string;
+  onEntry: (a: SupportEntryAction) => void;
   onBack: () => void;
   onClose?: () => void;
   onRead: () => void;
 }) {
   const [s, dispatch] = useReducer(supportReducer, initialSupportState);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const live = useRef(true);
   const loadedOnce = useRef(false);
+  const stick = useRef(true);
+  const seenSupport = useRef(0);
+  const shownPhotos = useRef<PendingPhoto[]>([]);
   const wake = unread > 0;
 
   useEffect(() => {
     live.current = true;
-    return () => { live.current = false; };
+    return () => {
+      live.current = false;
+      shownPhotos.current.forEach((p) => URL.revokeObjectURL(p.url));
+    };
   }, []);
+
+  useEffect(() => {
+    droppedPhotos(shownPhotos.current, s.photos).forEach((p) => URL.revokeObjectURL(p.url));
+    shownPhotos.current = s.photos;
+  }, [s.photos]);
 
   const load = useCallback(() => {
     dispatch({ type: "load_started" });
@@ -53,8 +72,12 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, on
       .then(() => relay.get<unknown>("/admin/support/thread"))
       .then((body) => {
         if (!live.current) return;
-        dispatch({ type: "loaded", messages: messagesOf(body) });
-        return relay.post<unknown>("/admin/support/read", {}).then(() => { if (live.current) onRead(); });
+        const messages = messagesOf(body);
+        dispatch({ type: "loaded", messages });
+        return relay.post<unknown>("/admin/support/read", {}).then(() => {
+          seenSupport.current = Math.max(seenSupport.current, lastSupportId(messages));
+          if (live.current) onRead();
+        });
       })
       .catch((e) => { if (live.current) dispatch({ type: "load_failed", error: errorText(e) }); });
   }, [onRead]);
@@ -66,17 +89,63 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, on
   }, [wake, load]);
 
   useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void Promise.resolve()
+        .then(() => relay.get<unknown>("/admin/support/thread"))
+        .then((body) => {
+          if (!live.current) return;
+          const messages = messagesOf(body);
+          dispatch({ type: "polled", messages });
+          const newest = lastSupportId(messages);
+          if (newest > seenSupport.current) {
+            return relay.post<unknown>("/admin/support/read", {}).then(() => {
+              seenSupport.current = Math.max(seenSupport.current, newest);
+              if (live.current) onRead();
+            });
+          }
+        })
+        .catch(() => {});
+    }, SUPPORT_THREAD_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [onRead]);
+
+  useEffect(() => {
     const el = listRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [s.messages]);
 
+  const addPhotos = (files: File[]) => {
+    if (files.length === 0) return;
+    const take = files.slice(0, photoRoom(s));
+    void Promise.all(take.map((f) => toJpeg(f).then(
+      (blob): PendingPhoto => ({ key: `p${++photoSeq}`, blob, url: URL.createObjectURL(blob) }),
+    )))
+      .then((photos) => { if (live.current) dispatch({ type: "photos_added", photos, requested: files.length }); })
+      .catch((e: unknown) => {
+        if (live.current) dispatch({ type: "photo_failed", error: e instanceof Error ? e.message : "Couldn't read that photo." });
+      });
+  };
+
   const send = () => {
-    if (!canSend(s)) return;
-    const payload = buildPayload(s);
+    if (!canSend(s, draft)) return;
+    const payload = buildPayload(s, draft);
+    const keys = payload.photos.map((p) => p.key);
     dispatch({ type: "send_started" });
     void Promise.resolve()
-      .then(() => relay.post<unknown>("/admin/support/messages", payload))
-      .then((body) => { if (live.current) dispatch({ type: "sent", messages: messagesOf(body) }); })
+      .then(() => {
+        if (payload.photos.length === 0) return relay.post<unknown>("/admin/support/messages", { text: payload.text });
+        const form = new FormData();
+        form.append("text", payload.text);
+        payload.photos.forEach((p, i) => form.append("photos", p.blob, `photo${i}.jpg`));
+        return relay.uploadForm<unknown>("/admin/support/messages/upload", form);
+      })
+      .then((body) => {
+        onEntry({ type: "sent", text: payload.text });
+        if (!live.current) return;
+        stick.current = true;
+        dispatch({ type: "sent", messages: messagesOf(body), keys });
+      })
       .catch((e) => { if (live.current) dispatch({ type: "send_failed", error: errorText(e) }); });
   };
 
@@ -112,7 +181,11 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, on
         </div>
       </div>
 
-      <div ref={listRef} className="-mt-4 flex-1 min-h-0 overflow-y-auto overscroll-contain pb-3">
+      <div ref={listRef} className="-mt-4 flex-1 min-h-0 overflow-y-auto overscroll-contain pb-3"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        }}>
         <div className={cn("px-5 flex flex-col gap-2", column)}>
           {s.phase === "loading" && s.messages.length === 0 && (
             <div className="px-1 text-[13px] text-fg-dim animate-pulse">Loading…</div>
@@ -123,12 +196,25 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, on
           {s.messages.map((m) => (
             <div key={m.id} className={cn("flex flex-col gap-0.5", m.from === "me" ? "items-end" : "items-start")}>
               {m.from === "support" && <span className="px-1 text-[11px] text-muted">Support</span>}
-              <div className={cn(
-                "max-w-[85%] rounded-2xl px-3.5 py-2 text-[13px] whitespace-pre-wrap break-words",
-                m.from === "me" ? "rounded-br-md bg-fg text-panel" : "rounded-bl-md bg-bg-elev-1 text-fg",
-              )}>
-                {m.text}
-              </div>
+              {m.text && (
+                <div className={cn(
+                  "max-w-[85%] rounded-2xl px-3.5 py-2 text-[13px] whitespace-pre-wrap break-words",
+                  m.from === "me" ? "rounded-br-md bg-fg text-panel" : "rounded-bl-md bg-bg-elev-1 text-fg",
+                )}>
+                  {m.text}
+                </div>
+              )}
+              {m.photos.length > 0 && (
+                <div className={cn("flex max-w-[85%] flex-wrap gap-1.5", m.from === "me" && "justify-end")}>
+                  {m.photos.map((p) => (
+                    <a key={p.id} href={`/admin/support/photos/${p.id}`} target="_blank" rel="noopener noreferrer"
+                      title="Open photo" className="block overflow-hidden rounded-xl border border-border bg-bg-elev-1">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={`/admin/support/photos/${p.id}`} alt="Photo" loading="lazy" className="h-24 w-24 object-cover" />
+                    </a>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
           {s.error && (
@@ -144,14 +230,59 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, on
 
       <div className="shrink-0 border-t border-border bg-panel">
         <div className={cn("px-4 pt-2.5 pb-4", composerPad, column)}>
-          <div className="flex items-end gap-2 rounded-3xl border border-border bg-panel py-1.5 pl-4 pr-1.5 focus-within:border-fg-dim">
+          {s.photos.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2" aria-label="Photos to send">
+              {s.photos.map((p) => (
+                <div key={p.key} className="relative">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={p.url} alt="Photo to send" className="h-14 w-14 rounded-lg border border-border object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => dispatch({ type: "photo_removed", key: p.key })}
+                    className="absolute -right-1.5 -top-1.5 grid h-5 w-5 place-items-center rounded-full border border-border bg-bg-elev-2 text-fg"
+                    aria-label="Remove photo"
+                    title="Remove photo"
+                  >
+                    <X className="h-3 w-3" aria-hidden />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex items-end gap-2 rounded-3xl border border-border bg-panel py-1.5 pl-2 pr-1.5 focus-within:border-fg-dim">
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              aria-label="Choose photos"
+              onChange={(e) => { addPhotos(imageFiles(e.currentTarget.files)); e.currentTarget.value = ""; }}
+            />
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={s.photos.length >= MAX_SUPPORT_PHOTOS}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-fg-dim hover:text-fg disabled:opacity-25"
+              aria-label="Add photos"
+              title={`Add up to ${MAX_SUPPORT_PHOTOS} photos`}
+            >
+              <ImagePlus className="h-[18px] w-[18px]" aria-hidden />
+            </button>
             <textarea
-              value={s.draft}
-              onChange={(e) => dispatch({ type: "draft", text: e.target.value })}
+              value={draft}
+              onChange={(e) => onEntry({ type: "draft", text: e.target.value })}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   send();
+                }
+              }}
+              onPaste={(e) => {
+                const files = imageFiles(e.clipboardData?.files);
+                if (files.length > 0) {
+                  e.preventDefault();
+                  addPhotos(files);
                 }
               }}
               placeholder="Message Support…"
@@ -166,7 +297,7 @@ export function SupportPanel({ frame, column, composerPad, inputText, unread, on
             <button
               type="button"
               onClick={send}
-              disabled={!canSend(s)}
+              disabled={!canSend(s, draft)}
               className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-fg text-panel transition-opacity disabled:opacity-25"
               aria-label="Send to Support"
               title="Send"

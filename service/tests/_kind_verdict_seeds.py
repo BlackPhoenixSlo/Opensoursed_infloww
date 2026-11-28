@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import time
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -13,7 +12,7 @@ from db.engine import get_session
 from db.models import (
     Account, AccountAiConfig, AutomationRule, Fan, FanProfile, FunnelState, MassBroadcastCache, MassMessageFunnel,
     MassRun, Message, MessageMedia, NudgeState, Post, S4SMedia, S4SProfile, S4SRequest, S4SSlot,
-    PromoCampaign, SmartList, SubscriberSnapshot, User, UserAccount,
+    SmartList, SubscriberSnapshot, User, UserAccount,
 )
 from of_client import OFAPIError, OFClient
 
@@ -44,7 +43,6 @@ class OFStandIn:
                         "create_list", "add_users_to_lists", "delete_list", "post_story_from_url", "follow_user",
                         "create_post", "delete_post", "set_fan_custom_name", "set_fan_note",
                         "mark_chat_read", "create_promo", "upload_media", "remove_user_from_list"})
-    platform_list_page = None
 
     def __init__(self, aid: str) -> None:
         self.account_id = self.user_id = aid
@@ -164,6 +162,14 @@ class OFStandIn:
         self.calls.append("set_fan_note")
         return {"notice": note}
 
+    def my_settings(self):
+        self.calls.append("my_settings")
+        return {"replyOnSubscribe": True}
+
+    def message_templates(self, **_kw):
+        self.calls.append("message_templates")
+        return [{"template": "reply_on_subscribe", "text": "<p>hi, welcome!</p>"}]
+
     def notifications(self, *, offset=0, type=None, **_kw):
         self.calls.append("notifications")
         row = {"id": "n1", "type": "subscribed", "createdAt": datetime.utcnow().isoformat() + "+00:00",
@@ -217,7 +223,7 @@ async def _key(_aid):
 
 
 @contextlib.contextmanager
-def _jev_answers():
+def _jev_answers(_aid):
     with patch.object(tenant_keys, "typesafe_key_for", _key), \
             patch.object(_router_jev, "_client", lambda _k: FakeJev(*[(QUIET, 1.0)] * 6)), \
             patch.object(_info_jev, "_client", lambda _k: FakeInfoJev()), \
@@ -406,7 +412,6 @@ SEEDS = {
     ("resubscribe_message", "run"): _rows(
         _fan(), _rule("resubscribe_message"), _snap(1, timedelta(days=2)),
         _snap(int(FAN), timedelta(days=3), subscribe_at=datetime.utcnow() - timedelta(days=30))),
-    ("nudge_online_fire", "run"): _rows(_NUDGE_CFG, _rule("nudge_online"), _seen(int(FAN), timedelta(0))),
     ("customs_watch", "owed"): _rows(_fan(customs_owed_at=datetime.utcnow() - timedelta(hours=2)),
                                      _out(timedelta(hours=1)), _audio),
     ("purchase_followup", "run"): _rows(_fan(), _rule("purchase_followup", text="thanks babe"), _out(
@@ -416,39 +421,15 @@ SEEDS = {
     ("reply_mass_funnel", "landed"): _seed_landed_funnel_send,
     ("full_ai_chat", "shadow"): _seed_turn,
     ("full_ai_chat", "live"): _seed_live_turn,
-    ("promo_reactivate", "run"): _rows(_rule("promo_reactivate", dry_run=False), lambda aid, _p: PromoCampaign(
-        account_id=aid, of_promo_id=7701, name="keep", discount_percent=50, subscribe_counts=10, subscribe_days=30,
-        auto_reactivate=True, keep_host_id=HOST, keep_ticked_at=datetime.utcnow())),
-    ("apply_profiles", "local"): _rows(_fan(hobbies="gym"), _profile),
-    ("apply_profiles", "push"): _rows(_fan(hobbies="gym"), _profile),
-    ("gen_info", "local"): _rows(_fan(notes="his own note"), _in(timedelta(hours=1))),
-    ("gen_info", "push"): _rows(_fan(), _in(timedelta(hours=1))),
-    ("process_old_fans", "local"): _rows(_fan()),
-    ("process_old_fans", "push"): _rows(_fan(hobbies="gym"), _profile),
     ("send_followup", "run"): _rows(_fan(lifetime_spend_cents=500), _out(timedelta(hours=30))),
     ("welcome_chatter_for_info", "run"): _rows(_fan(), _out(timedelta(hours=2), automation_kind="send_welcome"),
                                                _in(timedelta(hours=1))),
-    ("s4s_post", "run"): _s4s(),
-    ("s4s_post", "media"): _s4s(media=True),
-    ("s4s_check", "text_baseline"): _s4s({"id": 5501, "text": "go follow\n#advertisement"}),
-    ("s4s_check", "empty_baseline"): _s4s({}),
     ("unsend_messages", "mass"): _seed_broadcast_cache,
     ("unsend_messages", "chat"): _seed_own_message,
 }
 
 
-def _subscribed(fake) -> None:
-    fake.notifications.insert(0, {
-        "id": "900000000000000802", "accountId": fake.account_id, "type": 15016, "correlationId": "900000000000000502",
-        "correlationGroupId": FAN, "acknowledgedAt": 0, "createdAt": int(datetime.utcnow().timestamp()),
-        "metadata": json.dumps({"subscriptionStreak": 0})})
-
-
-def _renewal_off(fake) -> None:
-    fake.renewal_off(int((time.time() + 12 * 3600) * 1000))
-
-
-FAKE_STATE = {("send_welcome", "run"): _subscribed, ("expiry_message", "run"): _renewal_off}
+FAKE_STATE: dict = {}
 
 WORLDS = {("full_ai_chat", "shadow"): _jev_answers, ("full_ai_chat", "live"): _jev_answers}
 

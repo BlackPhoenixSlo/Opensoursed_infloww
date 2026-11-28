@@ -19,6 +19,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Header, Query
 from fastapi.responses import JSONResponse, Response
 
+from tenant_keys import NON_LLM_PROVIDERS
+
 log = logging.getLogger(__name__)
 
 FORMAT = 1
@@ -54,6 +56,7 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "runtime_switches": ("name", "value_json", "updated_by", "updated_at"),
 }
 COPIED = tuple(FIELDS)
+CONTROL_ONLY_ROWS = {"user_llm_keys": ("provider", frozenset(NON_LLM_PROVIDERS))}
 SECRET = frozenset({"password", "totp_secret", "totp_enabled_at", "totp_recovery", "totp_last_step"})
 LOCAL = {"users": ("last_seen_at",), "chatters": ("last_seen_at",), "owner_tokens": ("last_used_at",)}
 # NOT NULL columns a Cell never receives, filled only when a row is first inserted; '!' is never a valid hash.
@@ -125,6 +128,25 @@ def _sync(db: sqlite3.Connection, prefix: str, want: dict[str, str]) -> int:
 
 def _tables(db: sqlite3.Connection) -> set[str]:
     return {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+class _Schema:
+    def __init__(self, db: sqlite3.Connection) -> None:
+        self.db, self.tables, self._shape = db, _tables(db), {}
+
+    def shape(self, t: str) -> tuple[list[str], list[str], list[str], str]:
+        if t not in self._shape:
+            local_cols, pk = set(_columns(self.db, t)), _pk(self.db, t)
+            cols = [c for c in FIELDS[t] if c in local_cols]
+            fill = [c for c in _FILL if c in local_cols and c not in cols]
+            ins_cols = ", ".join(f'"{c}"' for c in cols + fill)
+            vals = ", ".join("?" * (len(cols) + len(fill)))
+            set_cols = [c for c in cols if c not in pk]
+            sets = ", ".join(f'"{c}" = excluded."{c}"' for c in set_cols)
+            conflict = f"DO UPDATE SET {sets}" if set_cols else "DO NOTHING"
+            sql = f'INSERT INTO "{t}" ({ins_cols}) VALUES ({vals}) ON CONFLICT ({", ".join(pk)}) {conflict}'
+            self._shape[t] = (pk, cols, fill, sql)
+        return self._shape[t]
 
 
 def read_only_triggers(db: sqlite3.Connection) -> dict[str, str]:
@@ -327,6 +349,9 @@ def read_snapshot(path: str) -> dict[str, Any]:
                 order = ", ".join(f'"{c}"' for c in _pk(db, t))
                 rows = [dict(zip(cols, r)) for r in db.execute(
                     f'SELECT {", ".join(chr(34) + c + chr(34) for c in cols)} FROM "{t}" ORDER BY {order}')]
+                if t in CONTROL_ONLY_ROWS:
+                    col, kept = CONTROL_ONLY_ROWS[t]
+                    rows = [r for r in rows if r[col] not in kept]
                 for r in rows:
                     if any(isinstance(v, bytes) for v in r.values()):
                         raise ValueError(f"{t}: binary value, not copyable")
@@ -536,10 +561,9 @@ async def owner_missing(s, ids) -> bool:
     return (await s.execute(q, {"ids": sorted(ids)})).first() is not None
 
 
-def _apply_section(db: sqlite3.Connection, t: str, rows: list[dict], refs, changes: dict, scope=None) -> None:
-    local_cols = set(_columns(db, t))
-    cols = [c for c in FIELDS[t] if c in local_cols]
-    pk = _pk(db, t)
+def _apply_section(db: sqlite3.Connection, schema: _Schema, t: str, rows: list[dict], refs, changes: dict,
+                   scope=None) -> None:
+    pk, cols, fill, sql = schema.shape(t)
     only, args = (f' WHERE "{scope[0]}" IS ?', (scope[1],)) if scope else ("", ())
     want = {tuple(r.get(k) for k in pk) for r in rows}
     have = db.execute(f'SELECT {", ".join(pk)} FROM "{t}"{only}', args).fetchall()
@@ -569,15 +593,7 @@ def _apply_section(db: sqlite3.Connection, t: str, rows: list[dict], refs, chang
         for aid in {r["account_id"] for r in rows if r.get("account_id") is not None}:
             db.execute("INSERT INTO accounts (id, is_active_default) SELECT ?, 0"
                        " WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE id = ?)", (aid, aid))
-    fill = [c for c in _FILL if c in local_cols and c not in cols]
-    ins_cols = ", ".join(f'"{c}"' for c in cols + fill)
-    vals = ", ".join("?" * (len(cols) + len(fill)))
-    set_cols = [c for c in cols if c not in pk]
-    conflict = (f'DO UPDATE SET {", ".join(f"{chr(34)}{c}{chr(34)} = excluded.{chr(34)}{c}{chr(34)}" for c in set_cols)}'
-                if set_cols else "DO NOTHING")
-    sql = f'INSERT INTO "{t}" ({ins_cols}) VALUES ({vals}) ON CONFLICT ({", ".join(pk)}) {conflict}'
-    for r in rows:
-        db.execute(sql, [r.get(c) for c in cols] + [_FILL[c](r) for c in fill])
+    db.executemany(sql, ([r.get(c) for c in cols] + [_FILL[c](r) for c in fill] for r in rows))
 
 
 def _person(name: str) -> tuple[str, Any]:
@@ -587,9 +603,10 @@ def _person(name: str) -> tuple[str, Any]:
     return kind, int(pid) if kind == "employee" else pid
 
 
-def _apply_person(db: sqlite3.Connection, name: str, rows: dict, refs, changes: dict, touched: set) -> None:
+def _apply_person(db: sqlite3.Connection, schema: _Schema, name: str, rows: dict, refs, changes: dict,
+                  touched: set) -> None:
     kind, pid = _person(name)
-    present = _tables(db)
+    present = schema.tables
     for t in rows:
         if t not in present and rows[t]:
             raise ValueError(f"{name}: missing Cell table {t}")
@@ -597,7 +614,7 @@ def _apply_person(db: sqlite3.Connection, name: str, rows: dict, refs, changes: 
             raise ValueError(f"{name}: rows of {t} are not this person's")
     for t, (k, col) in PEOPLE.items():
         if k == kind and t in present:
-            _apply_section(db, t, rows.get(t, []), refs, changes, scope=(col, pid))
+            _apply_section(db, schema, t, rows.get(t, []), refs, changes, scope=(col, pid))
             touched.add(t)
 
 
@@ -651,15 +668,16 @@ def _apply_tx(db: sqlite3.Connection, doc: dict, repair: bool) -> dict[str, Any]
     db.execute("PRAGMA defer_foreign_keys=ON")
     db.execute("UPDATE agency_copy_gate SET open = 1")
     refs = _local_no_action_refs(db)
+    schema = _Schema(db)
     for n in drop_people:
-        _apply_person(db, n, {}, refs, changes, touched)
+        _apply_person(db, schema, n, {}, refs, changes, touched)
     for n in changed:
         rows = sections[n]["rows"]
         sha = sections[n]["sha256"]
         if n.startswith(GRANTS):
-            _apply_person(db, n, rows, refs, changes, touched)
+            _apply_person(db, schema, n, rows, refs, changes, touched)
         elif n in COPIED:
-            _apply_section(db, n, rows, refs, changes)
+            _apply_section(db, schema, n, rows, refs, changes)
             touched.add(n)
         else:
             sha = _UNMATERIALIZED + sha

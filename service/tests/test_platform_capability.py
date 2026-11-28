@@ -3,10 +3,12 @@ import _harness
 
 import re
 import tempfile
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
 import platforms
+import fansly_shim
 from side_effect_gate import LIVE_CHECK_LANES, classify
 from of_client import OFClient
 
@@ -78,6 +80,10 @@ def failures(backends, surface: dict[str, set[str]], routes: set[str],
     return out
 
 
+def verdict_counts(shim, surface) -> dict[str, int]:
+    return dict(sorted(Counter(v for n in surface if (v := verdict(shim, n)) != "live_check").items()))
+
+
 def live_checks(shim, surface) -> set[str]:
     return {n for n in surface if verdict(shim, n) == "live_check"} | LIVE_CHECK_LANES
 
@@ -87,17 +93,16 @@ def case_every_backend_shim_holds_the_surface():
     surface, routes = scan()
     for module in backends:
         shim = module.Shim
-        kinds: dict[str, list[str]] = {}
-        for name in sorted(surface):
-            kinds.setdefault(verdict(shim, name), []).append(name)
-        route_misses = [n for n in kinds.get("missing", []) if n in routes]
-        other_misses = [n for n in kinds.get("missing", []) if n not in routes]
+        of = lambda v: [n for n in sorted(surface) if verdict(shim, n) == v]  # noqa: E731
+        missing = of("missing")
+        route_misses = [n for n in missing if n in routes]
+        other_misses = [n for n in missing if n not in routes]
         live = live_checks(shim, surface)
         print(f"{module.__name__}: {len(surface)} names, {len(routes)} route-reached; "
-              + ", ".join(f"{k} {len(v)}" for k, v in sorted(kinds.items()) if k != "live_check")
+              + ", ".join(f"{k} {n}" for k, n in verdict_counts(shim, surface).items())
               + f"; live_check {len(live)}"
               + f"; route misses {len(route_misses)}, other misses {len(other_misses)}")
-        for name in kinds.get("blocked", []):
+        for name in of("blocked"):
             print(f"    Blocked {name}: {classify(shim, name)[1]}")
     problems = failures(backends, surface, routes, UNREACHED)
     assert not problems, f"{len(problems)} capability failures:\n  " + "\n  ".join(problems)
@@ -165,10 +170,43 @@ def case_fansly_counts_hold_the_lists_phase_verdicts():
     surface, routes = scan()
     shim = platforms.FANSLY.backend.Shim
     live = live_checks(shim, surface)
-    assert live == {"delete_list", "block_user", "priority_mass"}, live
+    assert live == {"delete_list", "block_user", "priority_mass", "nudge_online"}, live
     assert {n: verdict(shim, n) for n in ("list_users_in", "rename_list", "unblock_user")} == {
         "list_users_in": "built", "rename_list": "built", "unblock_user": "blocked"}
     assert {"list_users_in", "rename_list", "block_user", "unblock_user"} <= routes, routes
+    assert verdict_counts(shim, surface) == FANSLY_COUNTS, verdict_counts(shim, surface)
+
+
+FANSLY_MONEY_READS = (
+    ("transactions", "Fansly per-sale feed unproven; the earnings capture holds aggregates only"),
+    ("payout_requests", "Fansly payouts not captured"),
+    ("payout_balances", "Fansly wallet balance unit and shape unproven; no non-zero wallet seen"),
+    ("earnings_chart", "Fansly earnings aggregates captured; category map and paging unproven; no Fansly caller"),
+)
+FANSLY_COUNTS = {"blocked": 149, "built": 56, "missing": 8, "unsupported": 25}
+
+
+def case_fansly_money_reads_are_blocked_before_any_request():
+    shim = platforms.FANSLY.backend.Shim
+    sent: list = []
+
+    class _Probe(shim):
+        def __init__(self):
+            pass
+
+        def _request(self, *a, **k):
+            sent.append(a)
+            return {}
+
+    for name, reason in FANSLY_MONEY_READS:
+        assert classify(shim, name) == ("blocked", reason), (name, classify(shim, name))
+        try:
+            getattr(_Probe(), name)()
+        except fansly_shim.FanslyBlocked as e:
+            assert e.status_code == 501 and str(e) == f"{name}: {reason}", (name, e)
+        else:
+            raise AssertionError(f"{name} answered instead of refusing")
+    assert sent == [], sent
 
 
 if __name__ == "__main__":

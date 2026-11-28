@@ -133,7 +133,7 @@ Per-Relay tools. Perf log upload names several Creators: a down Cell's Creators 
 
 Say "yes, Release 1 features signed" in the build chat.
 We record your name, the date and the table's fingerprint
-(short form: `85262cde2eaf22b0`).
+(short form: `41ce06fb3d20ce3c`).
 Any change to the table needs a new yes.
 
 ## What is in each part
@@ -616,7 +616,7 @@ Generated from `service/cell_features.json` by
 
 </details>
 
-<details><summary>Agency settings and alerts (works; 29 routes, 1 job)</summary>
+<details><summary>Agency settings and alerts (works; 30 routes, 2 jobs)</summary>
 
 - `DELETE /admin/mcp`
 - `DELETE /admin/owner-tokens/{token_id}`
@@ -642,11 +642,13 @@ Generated from `service/cell_features.json` by
 - `POST /admin/sensitive-words/delete`
 - `POST /admin/sensitive-words/import`
 - `POST /admin/sensitive-words/update`
+- `POST /fleet/notices`
 - `POST /push/test`
 - `PUT /admin/mcp`
 - `PUT /admin/my-llm-keys`
 - `PUT /admin/settings/{tab}`
 - `PUT /push/subscription`
+- `bell-notices-to-control`
 - `push-send`
 
 </details>
@@ -1136,23 +1138,29 @@ Generated from `service/cell_features.json` by
 
 </details>
 
-<details><summary>Support chat (works; 15 routes)</summary>
+<details><summary>Support chat (works; 21 routes)</summary>
 
+- `GET /admin/support/photos/{photo_id}`
 - `GET /admin/support/thread`
 - `GET /admin/support/unread`
 - `GET /support`
+- `GET /support/api/instance/photos/{photo_id}`
 - `GET /support/api/instance/thread`
 - `GET /support/api/instance/unread`
+- `GET /support/api/photos/{photo_id}`
 - `GET /support/api/threads`
 - `GET /support/api/threads/{thread_id}`
 - `POST /admin/support/messages`
+- `POST /admin/support/messages/upload`
 - `POST /admin/support/read`
 - `POST /support/api/instance/messages`
+- `POST /support/api/instance/messages/upload`
 - `POST /support/api/instance/read`
 - `POST /support/api/login`
 - `POST /support/api/logout`
 - `POST /support/api/summarise`
 - `POST /support/api/threads/{thread_id}/reply`
+- `POST /support/api/threads/{thread_id}/reply/upload`
 
 </details>
 

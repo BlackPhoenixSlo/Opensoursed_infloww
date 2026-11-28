@@ -99,6 +99,7 @@ export interface NavLink {
   popout?: boolean;
   masterOnly?: boolean;
   flag?: FeatureFlag;
+  flagIncludesPermission?: boolean;
   permission?: string;
   tabOf?: string;
   hidden?: boolean;
@@ -230,7 +231,7 @@ const COMMON_NAV: NavNode[] = [
     children: [
       { label: "Manage creators", href: "/creators", chatterHidden: true },
       { label: "Custom proxy", href: "/creators/proxy", chatterHidden: true },
-      { label: "Leak tracker", href: "/creators/leaks", flag: "leak_tracker" },
+      { label: "Leak tracker", href: "/creators/leaks", flag: "leak_tracker", flagIncludesPermission: true },
     ],
   },
   {
@@ -364,10 +365,9 @@ const PERMISSION_OF: ReadonlyMap<string, string> = new Map(
     .flatMap((l) => (l.permission ? [[l.href, l.permission] as const] : [])),
 );
 
-// A flagged page with no `permission` alias answers to its flag alone: the Relay folds the role gate into it.
 const FLAG_PAGES: ReadonlySet<string> = new Set(
   SIDEBAR.flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]))
-    .flatMap((l) => (l.flag && !l.permission ? [l.href] : [])),
+    .flatMap((l) => (l.flagIncludesPermission ? [l.href] : [])),
 );
 
 export const CHATTER_OPT_IN_PAGES: ReadonlySet<string> = new Set(

@@ -17,6 +17,7 @@ if str(_FANSLY_PKG) not in sys.path:
 from fansly_client import FanslyAPIError as APIError  # noqa: E402,F401
 from fansly_client import FanslySession  # noqa: E402
 from fansly_shim import FanslyShimClient  # noqa: E402
+from fansly_shim import ListGone as ListGone  # noqa: E402
 from fansly_shim import check_sendable  # noqa: E402,F401
 from fansly_ws import FanslyWebSocket  # noqa: E402
 
